@@ -1,0 +1,89 @@
+name: Dynamic role isolated validation
+
+on:
+  push:
+    branches: [build/dynamic-roles-20260924]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dynamic-role-transfer
+  cancel-in-progress: false
+
+jobs:
+  assemble:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.publish.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verify transfer and publish exact source delta
+        id: publish
+        shell: bash
+        env:
+          EXPECTED: 5cad867dbe6b685130abd64ef50e19b94db831db
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/feat/access-profiles | cut -f1)" = "$EXPECTED"
+          TARGET="$RUNNER_TEMP/role-clean"
+          git -c core.hooksPath=/dev/null worktree add --detach "$TARGET" "$EXPECTED"
+          python3 _transfer/dynamic-roles/apply.py _transfer/dynamic-roles "$TARGET"
+          git -C "$TARGET" config user.name 'CodePier automation'
+          git -C "$TARGET" config user.email 'codepier-automation@users.noreply.github.com'
+          git -C "$TARGET" -c core.hooksPath=/dev/null commit -m 'feat(auth): dynamic roles with live project grants and scoped creation delegation'
+          SHA=$(git -C "$TARGET" rev-parse HEAD)
+          git -C "$TARGET" -c core.hooksPath=/dev/null push origin HEAD:refs/heads/feat/access-profiles
+          echo "source_sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Published source commit: $SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Only 29 hash-verified source files were committed. No main merge or deployment.' >> "$GITHUB_STEP_SUMMARY"
+  verify:
+    needs: assemble
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.assemble.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Install locked dependencies and build browser assets
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt -r requirements-tools.txt
+          .venv/bin/python -m playwright install --with-deps chromium webkit
+          npm --prefix web/mcp-apps ci --ignore-scripts
+          npm --prefix web/mcp-apps run build
+          .venv/bin/python scripts/build_integration_assets.py
+      - name: Lint, syntax and release checks
+        run: |
+          .venv/bin/python -m ruff check agent hub shared scripts tests
+          node --check web/roles.js
+          node --check web/access-profiles.js
+          node --check web/app.js
+          .venv/bin/python scripts/check_release.py
+      - name: Authorization, live Agent and real browser regressions
+        run: |
+          mkdir -p dist
+          .venv/bin/python -m pytest -q tests/test_roles.py tests/test_roles_integration.py tests/test_roles_ui.py tests/test_access_profiles.py tests/test_access_profiles_ui.py tests/test_continuous_access.py tests/test_audit_store.py tests/test_coding_workflow.py tests/test_audit_api.py tests/test_audit_runtime.py tests/test_agentdock_workflows.py tests/test_reliability.py tests/test_unit.py tests/test_agentdock_bridge.py tests/test_bridge.py tests/test_coding_integration.py tests/test_computer_integration.py tests/test_integration.py --junitxml=dist/dynamic-roles-junit.xml
+      - name: Retain evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dynamic-roles-validation-${{ github.run_id }}
+          path: dist/dynamic-roles-junit.xml
+          if-no-files-found: warn
+          retention-days: 14
