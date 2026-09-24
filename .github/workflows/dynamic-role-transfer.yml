@@ -12,39 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  assemble:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    outputs:
-      source_sha: ${{ steps.publish.outputs.source_sha }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-      - name: Verify transfer and publish exact source delta
-        id: publish
-        shell: bash
-        env:
-          EXPECTED: 5cad867dbe6b685130abd64ef50e19b94db831db
-        run: |
-          set -euo pipefail
-          test "$(git ls-remote origin refs/heads/feat/access-profiles | cut -f1)" = "$EXPECTED"
-          TARGET="$RUNNER_TEMP/role-clean"
-          git -c core.hooksPath=/dev/null worktree add --detach "$TARGET" "$EXPECTED"
-          python3 _transfer/dynamic-roles/apply.py _transfer/dynamic-roles "$TARGET"
-          git -C "$TARGET" config user.name 'CodePier automation'
-          git -C "$TARGET" config user.email 'codepier-automation@users.noreply.github.com'
-          git -C "$TARGET" -c core.hooksPath=/dev/null commit -m 'feat(auth): dynamic roles with live project grants and scoped creation delegation'
-          SHA=$(git -C "$TARGET" rev-parse HEAD)
-          git -C "$TARGET" -c core.hooksPath=/dev/null push origin HEAD:refs/heads/feat/access-profiles
-          echo "source_sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "Published source commit: $SHA" >> "$GITHUB_STEP_SUMMARY"
-          echo 'Only 29 hash-verified source files were committed. No main merge or deployment.' >> "$GITHUB_STEP_SUMMARY"
   verify:
-    needs: assemble
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -52,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ needs.assemble.outputs.source_sha }}
+          ref: eb5e49939c2598742e6ede758c5cf75d40487c0d
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
