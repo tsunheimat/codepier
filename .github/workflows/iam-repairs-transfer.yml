@@ -1,0 +1,92 @@
+name: IAM regression repair checkpoint
+on:
+  push:
+    branches: [build/iam-repairs-20260925]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Apply exact tested source delta and fast-forward feature branch
+        id: source
+        env:
+          EXPECTED: c238f91a04421c4745f40554bee0f2df86a32c23
+          EXPECTED_TREE: 56d4c1807746b79ae61152e163cad90c19c4e2db
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/feat/multiuser-oidc | cut -f1)" = "$EXPECTED"
+          cp _transfer/iam-repairs.b64 "$RUNNER_TEMP/delta.b64"
+          git -c core.hooksPath=/dev/null checkout --detach "$EXPECTED"
+          python - <<'PY'
+          import base64,gzip,hashlib,json,os
+          from pathlib import Path
+          raw=base64.b64decode((Path(os.environ['RUNNER_TEMP'])/'delta.b64').read_text(),validate=True)
+          assert hashlib.sha256(raw).hexdigest()=='74e0e23fb4ce10cb20e388d573c42183fef9b57924a3ad7cfd1c7008e363c22f'
+          records=json.loads(gzip.decompress(raw))
+          assert len(records)==19
+          for record in records:
+              path=Path(record['path'])
+              assert not path.is_absolute() and '..' not in path.parts and path.parts[0] in {'hub','web','tests'}
+              original=path.read_bytes()
+              assert hashlib.sha256(original).hexdigest()==record['old'],str(path)
+              text=original.decode('utf-8')
+              for start,end,replacement in reversed(record['edits']):
+                  assert 0<=start<=end<=len(text)
+                  text=text[:start]+replacement+text[end:]
+              result=text.encode('utf-8')
+              assert hashlib.sha256(result).hexdigest()==record['new'],str(path)
+              path.write_bytes(result)
+          PY
+          git diff --check
+          git add -u
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git config user.name 'CodePier development'
+          git config user.email 'codepier-development@users.noreply.github.com'
+          git -c core.hooksPath=/dev/null commit -m 'fix(iam): audit provenance, scoped links, approval invalidations and regression fixtures'
+          git -c core.hooksPath=/dev/null push origin HEAD:refs/heads/feat/multiuser-oidc
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Published exact tested tree $EXPECTED_TREE; no main merge or deployment." >> "$GITHUB_STEP_SUMMARY"
+  verify:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.publish.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Install locked test tools and browser assets
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt -r requirements-tools.txt
+          .venv/bin/python -m playwright install --with-deps chromium webkit
+          npm --prefix web/mcp-apps ci --ignore-scripts
+          npm --prefix web/mcp-apps run build
+          .venv/bin/python scripts/build_integration_assets.py
+      - name: Verify corrected legacy contracts and integrated multi-user flows
+        run: |
+          mkdir -p dist
+          .venv/bin/python -m ruff check agent hub shared scripts tests
+          .venv/bin/python scripts/check_release.py
+          .venv/bin/python -m pytest -q tests/test_iam_integration.py tests/test_oidc_integration.py tests/test_iam_agent.py tests/test_iam_ui.py tests/test_audit_web.py tests/test_chat_fullstack.py tests/test_claude_browser.py tests/test_computer_approval_events.py tests/test_computer_approvals.py tests/test_continuous_access_ui.py tests/test_native_supervisor_regressions.py tests/test_operation_continuation.py tests/test_queue_optimization.py tests/test_ui_editorial.py tests/test_user_flow_app_continuation.py tests/test_workspace_dashboard.py --junitxml=dist/iam-repairs-junit.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: iam-repairs-validation-${{ github.run_id }}
+          path: dist/iam-repairs-junit.xml
+          retention-days: 14
