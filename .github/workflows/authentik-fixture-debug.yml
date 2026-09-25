@@ -55,11 +55,27 @@ jobs:
                       scopes = [row['pk'] for row in mappings if row.get('scope_name') in scope_names]
                       phase = 'authentik-test-users'
           '''
-          # YAML block indentation is separate from the Python source indentation.
           lines=replacement.splitlines()
           replacement=lines[0]+'\n'+'\n'.join(line[10:] if line.startswith(' '*22) else line for line in lines[1:])+'\n'
-          p.write_text(s[:start]+replacement+s[end:])
-          compile(p.read_text(),str(p),'exec')
+          s=s[:start]+replacement+s[end:]
+          target='                    page.locator(\'input[name="uidField"]\').fill(user[\'username\'])'
+          diagnostic='''                    try:
+                                  page.locator('input[name="uidField"]').wait_for(state='visible', timeout=30000)
+                              except Exception:
+                                  result['login_page_path'] = urlsplit(page.url).path
+                                  result['login_page_title'] = page.title()
+                                  result['login_page_text'] = page.locator('body').inner_text()[:2000]
+                                  result['login_inputs'] = page.locator('input').evaluate_all('(xs)=>xs.map(x=>({name:x.name,type:x.type}))')
+                                  output.parent.mkdir(parents=True,exist_ok=True)
+                                  page.screenshot(path=str(output.parent/'authentik-login-debug.png'))
+                                  raise
+          '''
+          lines=diagnostic.splitlines()
+          diagnostic=lines[0]+'\n'+'\n'.join(line[10:] if line.startswith(' '*30) else line for line in lines[1:])+'\n'
+          assert target in s
+          s=s.replace(target,diagnostic+target,1)
+          p.write_text(s)
+          compile(s,str(p),'exec')
           PY
       - name: Real isolated provider and full login/consent/offboarding
         run: .venv/bin/python scripts/check_oidc_authentik.py --output dist/authentik-acceptance.json
@@ -67,5 +83,7 @@ jobs:
         if: always()
         with:
           name: authentik-fixture-${{ github.run_id }}
-          path: dist/authentik-acceptance.json
+          path: |
+            dist/authentik-acceptance.json
+            dist/authentik-login-debug.png
           retention-days: 14
