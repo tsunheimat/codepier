@@ -1,0 +1,114 @@
+name: IAM hardening and real Authentik acceptance
+on:
+  push:
+    branches: [build/iam-hardening-20260925]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Verify exact tested source and fast-forward feature branch
+        id: source
+        env:
+          EXPECTED: ed33a27f092a85d2463e373444f208901a5abef8
+          EXPECTED_TREE: 919846287daeeaea246b554b1e275fb2101df795
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/feat/multiuser-oidc | cut -f1)" = "$EXPECTED"
+          cp -R _transfer/iam-hardening "$RUNNER_TEMP/iam-hardening"
+          git -c core.hooksPath=/dev/null checkout --detach "$EXPECTED"
+          python - <<'PY'
+          import gzip,hashlib,json,os,subprocess
+          from pathlib import Path
+          parts=sorted((Path(os.environ['RUNNER_TEMP'])/'iam-hardening').glob('*.gzpart'))
+          assert len(parts)==12
+          raw=b''.join(p.read_bytes() for p in parts)
+          assert hashlib.sha256(raw).hexdigest()=='e26ff12dee75514bc6257a0988a3a3ddd01ecca64d4a4341c5b18a54f6e4cbe1'
+          records=json.loads(gzip.decompress(raw))
+          assert len(records)==17
+          for record in records:
+              path=Path(record['path'])
+              assert not path.is_absolute() and '..' not in path.parts and path.parts[0] in {'hub','web','tests','scripts','.github'}
+              if record['old'] is None:
+                  assert not path.exists()
+                  text=record['content']
+              else:
+                  original=path.read_bytes()
+                  assert hashlib.sha256(original).hexdigest()==record['old'],str(path)
+                  text=original.decode('utf-8')
+                  for start,end,replacement in reversed(record['edits']):
+                      assert 0<=start<=end<=len(text)
+                      text=text[:start]+replacement+text[end:]
+              result=text.encode('utf-8')
+              assert hashlib.sha256(result).hexdigest()==record['new'],str(path)
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_bytes(result)
+          subprocess.run(['git','add','--',*[r['path'] for r in records]],check=True)
+          PY
+          git diff --cached --check
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git config user.name 'CodePier development'
+          git config user.email 'codepier-development@users.noreply.github.com'
+          git -c core.hooksPath=/dev/null commit -m 'feat(iam): complete revocation boundaries, scoped replay and real Authentik acceptance'
+          git -c core.hooksPath=/dev/null push origin HEAD:refs/heads/feat/multiuser-oidc
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Published exact tested tree $EXPECTED_TREE; no main merge or deployment." >> "$GITHUB_STEP_SUMMARY"
+  regression:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.publish.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Install locked dependencies and test
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt -r requirements-tools.txt
+          mkdir -p dist
+          .venv/bin/python -m ruff check agent hub shared scripts tests
+          .venv/bin/python -m pytest -q tests/test_iam_hardening.py tests/test_iam_integration.py tests/test_oidc_integration.py tests/test_iam_agent.py tests/test_roles.py tests/test_access_profiles.py tests/test_reliability.py tests/test_agent_install_api.py tests/test_coding_workflow.py tests/test_native_supervisor_regressions.py --junitxml=dist/iam-hardening-junit.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: iam-hardening-${{ github.run_id }}
+          path: dist/iam-hardening-junit.xml
+          retention-days: 14
+  authentik:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.publish.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Install pinned tools and real browser
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt
+          .venv/bin/python -m playwright install --with-deps chromium
+      - name: Verify full login, MCP consent and group revocation with real Authentik
+        run: .venv/bin/python scripts/check_oidc_authentik.py --output dist/authentik-acceptance.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: authentik-hardening-${{ github.run_id }}
+          path: dist/authentik-acceptance.json
+          retention-days: 14
