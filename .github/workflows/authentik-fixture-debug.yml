@@ -1,0 +1,71 @@
+name: Isolated Authentik bootstrap verification
+on:
+  push:
+    branches: [build/authentik-fixture-20260925]
+permissions:
+  contents: read
+jobs:
+  authentik:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Install exact tools and apply bootstrap-only fixture fix
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt
+          .venv/bin/python -m playwright install --with-deps chromium
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/check_oidc_authentik.py')
+          s=p.read_text()
+          start=s.index('            def one(path, field, value):')
+          end=s.index("            group = ak_call('POST', 'core/groups/'",start)
+          replacement='''            # API authentication becomes ready before worker blueprints finish.
+                      # Wait for actual required configuration, not an arbitrary sleep or
+                      # an assumption that the built-in signing certificate is exposed.
+                      phase = 'authentik-default-flows'
+                      flow_slugs = {'default-provider-authorization-implicit-consent',
+                                    'default-provider-invalidation-flow', 'default-authentication-flow'}
+                      def flows_ready():
+                          rows = ak_call('GET', 'flows/instances/?page_size=100')['results']
+                          return flow_slugs <= {row['slug'] for row in rows}
+                      await_ready(flows_ready)
+                      flows = {row['slug']: row['pk'] for row in ak_call('GET', 'flows/instances/?page_size=100')['results']}
+                      authorization = flows['default-provider-authorization-implicit-consent']
+                      invalidation = flows['default-provider-invalidation-flow']
+                      authentication = flows['default-authentication-flow']
+                      phase = 'authentik-signing-key'
+                      signing_key = ak_call('POST', 'crypto/certificatekeypairs/generate/', {
+                          'common_name': 'codepier-acceptance-signing', 'validity_days': 1})
+                      assert signing_key['private_key_available'] is True
+                      signing = signing_key['pk']
+                      phase = 'authentik-scope-mappings'
+                      scope_names = {'openid', 'profile', 'email', 'offline_access'}
+                      def scopes_ready():
+                          rows = ak_call('GET', 'propertymappings/provider/scope/?page_size=100')['results']
+                          return scope_names <= {row.get('scope_name') for row in rows}
+                      await_ready(scopes_ready)
+                      mappings = ak_call('GET', 'propertymappings/provider/scope/?page_size=100')['results']
+                      scopes = [row['pk'] for row in mappings if row.get('scope_name') in scope_names]
+                      phase = 'authentik-test-users'
+          '''
+          # YAML block indentation is separate from the Python source indentation.
+          lines=replacement.splitlines()
+          replacement=lines[0]+'\n'+'\n'.join(line[10:] if line.startswith(' '*22) else line for line in lines[1:])+'\n'
+          p.write_text(s[:start]+replacement+s[end:])
+          compile(p.read_text(),str(p),'exec')
+          PY
+      - name: Real isolated provider and full login/consent/offboarding
+        run: .venv/bin/python scripts/check_oidc_authentik.py --output dist/authentik-acceptance.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: authentik-fixture-${{ github.run_id }}
+          path: dist/authentik-acceptance.json
+          retention-days: 14
