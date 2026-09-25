@@ -1,0 +1,89 @@
+name: OIDC integrated source checkpoint
+
+on:
+  push:
+    branches: [build/multiuser-oidc-20260925]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: multiuser-oidc-transfer
+  cancel-in-progress: false
+
+jobs:
+  assemble:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.publish.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verify exact source and publish non-force feature checkpoint
+        id: publish
+        shell: bash
+        env:
+          EXPECTED: d950040443301981cc45bce70dcdcc5b71246adb
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/feat/multiuser-oidc | cut -f1)" = "$EXPECTED"
+          TARGET="$RUNNER_TEMP/oidc-clean"
+          git -c core.hooksPath=/dev/null worktree add --detach "$TARGET" "$EXPECTED"
+          python3 _transfer/oidc/apply.py _transfer/oidc "$TARGET"
+          git -C "$TARGET" config user.name 'CodePier automation'
+          git -C "$TARGET" config user.email 'codepier-automation@users.noreply.github.com'
+          git -C "$TARGET" -c core.hooksPath=/dev/null commit -m 'feat(iam): integrate persistent Spaces, OIDC login and scoped multi-user application paths'
+          SHA=$(git -C "$TARGET" rev-parse HEAD)
+          git -C "$TARGET" -c core.hooksPath=/dev/null push origin HEAD:refs/heads/feat/multiuser-oidc
+          echo "source_sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Published exact verified source: $SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo '51 source files only; transfer files are not part of feature branch. No main merge/deployment.' >> "$GITHUB_STEP_SUMMARY"
+  verify:
+    needs: assemble
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.assemble.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Install pinned dependencies and browser resources
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt -r requirements-tools.txt
+          .venv/bin/python -m playwright install --with-deps chromium webkit
+          npm --prefix web/mcp-apps ci --ignore-scripts
+          npm --prefix web/mcp-apps run build
+          .venv/bin/python scripts/build_integration_assets.py
+      - name: Source checks
+        run: |
+          .venv/bin/python -m ruff check agent hub shared scripts tests
+          node --check web/identity.js
+          node --check web/app.js
+          node --check web/chat.js
+          .venv/bin/python scripts/check_release.py
+      - name: OIDC, multi-user, Agent and real-browser regressions
+        run: |
+          mkdir -p dist
+          .venv/bin/python -m pytest -q tests/test_multiuser_policy.py tests/test_iam_integration.py tests/test_oidc_integration.py tests/test_iam_agent.py tests/test_iam_ui.py tests/test_roles.py tests/test_roles_integration.py tests/test_roles_ui.py tests/test_access_profiles.py tests/test_access_profiles_ui.py tests/test_continuous_access.py tests/test_shell.py tests/test_ui_standards.py --junitxml=dist/oidc-checkpoint-junit.xml
+      - name: Preserve actual test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oidc-checkpoint-${{ github.run_id }}
+          path: dist/oidc-checkpoint-junit.xml
+          if-no-files-found: warn
+          retention-days: 14
