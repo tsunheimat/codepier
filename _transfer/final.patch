@@ -1,162 +1,44 @@
-diff --git a/hub/iam_api.py b/hub/iam_api.py
-index d5eecda..b51559d 100644
---- a/hub/iam_api.py
-+++ b/hub/iam_api.py
-@@ -162,9 +162,15 @@ def make_iam_router(auth,runtime):
-     async def block_member(space_id:str,user_id:str,request:Request,body:BlockEdit):
-         with store.lock,store.db:
-             store.db.execute('BEGIN IMMEDIATE');p=admin(request,space_id,True)
--            target=iam.membership(store,user_id,space_id) if body.blocked else None
--            if target and target['level']=='owner' and iam.membership(store,p.user_id,space_id)['level']!='owner':
--                raise DevError('OWNER_REQUIRED','只有主理人可以暂停另一主理人',403)
-+            if body.blocked:
-+                iam.membership(store,user_id,space_id)
-+            # Restoration is a privilege increase too. A suspended owner's
-+            # membership cannot be resolved by membership(), which rejects the
-+            # block; inspect the stored owner assignment without bypassing the
-+            # acting administrator's live checks.
-+            target_owner=store.one("SELECT 1 AS ok FROM memberships WHERE space_id=? AND user_id=? AND level='owner'",(space_id,user_id))
-+            if target_owner and iam.membership(store,p.user_id,space_id)['level']!='owner':
-+                raise DevError('OWNER_REQUIRED','只有主理人可以暂停或恢复另一主理人',403)
-             if body.blocked:owner_guard(space_id,user_id,'guest',False)
-             store.db.execute('INSERT INTO membership_blocks VALUES(?,?,?) ON CONFLICT(space_id,user_id) DO UPDATE SET blocked=excluded.blocked',(space_id,user_id,int(body.blocked)))
-             wake(p,'membership.suspension',user_id,body.model_dump())
-diff --git a/hub/oidc.py b/hub/oidc.py
-index 6999efe..62aaa63 100644
---- a/hub/oidc.py
-+++ b/hub/oidc.py
-@@ -267,12 +267,21 @@ class OIDCService:
-         if revoke:
-             self.store.db.execute('UPDATE grants SET revoked=1 WHERE identity_id=?',(identity['id'],))
-             self.store.db.execute('UPDATE external_identities SET upstream_tokens=NULL WHERE id=?',(identity['id'],))
-+            # Cancel link attempts begun before unlink, including a callback
-+            # currently awaiting the provider. provision() rechecks this row in
-+            # its final transaction. A new explicit link gets a new state.
-+            self.store.db.execute('DELETE FROM oidc_transactions WHERE provider_id=? AND link_user_id=?',
-+                                  (identity['provider_id'],identity['user_id']))
-         self.runtime.publish('iam',{'user_id':identity['user_id']});self.runtime.wake.set()
+diff --git a/docs/MULTIUSER_OIDC.md b/docs/MULTIUSER_OIDC.md
+index 7b00a0b..62906d0 100644
+--- a/docs/MULTIUSER_OIDC.md
++++ b/docs/MULTIUSER_OIDC.md
+@@ -86,7 +86,11 @@ source of truth and test your own deployment before broad enrollment.
+ Create an OAuth2/OpenID provider and application for CodePier:
  
-     def provision(self,provider,claims,groups,txn,tokens):
-         store=self.store;subject=claims['sub'];now=time.time()
-         with store.lock,store.db:
-             store.db.execute('BEGIN IMMEDIATE')
-+            live_txn=store.one('SELECT 1 AS ok FROM oidc_transactions WHERE state_hash=? AND provider_id=? AND used=1 AND expires>?',
-+                               (txn['state_hash'],provider['id'],now))
-+            if not live_txn:
-+                raise DevError('OIDC_STATE_INVALID','登录或关联已过期或被取消，请重新发起',400)
-             current=self.provider(provider['id'])
-             if current['version']!=txn['provider_version']:raise DevError('OIDC_CONFIG_CHANGED','身份配置已改变，请重新登录',409)
-             identity=store.one('SELECT * FROM external_identities WHERE issuer=? AND subject=?',(provider['issuer'],subject))
+ - Confidential client with a generated client secret.
+-- Authorization Code grant and S256 PKCE; no implicit flow is needed.
++- Explicitly enable the Authorization Code grant and S256 PKCE. Enable the Refresh
++  Token grant when requesting `offline_access`; no implicit flow is needed.
++  When provisioning Authentik through its API, set `grant_types` to
++  `["authorization_code", "refresh_token"]`: the API default is an empty list,
++  which rejects authorization before the login form even though discovery works.
+ - An asymmetric signing key. CodePier accepts configured public RSA/EC signatures,
+   not unsigned or symmetric ID Tokens.
+ - A strict, exact callback URI, copied from CodePier after the provider record is
 diff --git a/scripts/check_oidc_authentik.py b/scripts/check_oidc_authentik.py
-index 21711f1..c3bafff 100644
+index c3bafff..864382c 100644
 --- a/scripts/check_oidc_authentik.py
 +++ b/scripts/check_oidc_authentik.py
-@@ -70,6 +70,8 @@ def acceptance(output):
-               'checks': [], 'status': 'running'}
-     phase = 'startup'
-     secret_values = []
-+    page = None
-+    browser_diagnostics = {}
-     def secret():
-         value = secrets.token_urlsafe(36)
-         secret_values.append(value)
-@@ -181,9 +183,25 @@ def acceptance(output):
-                     context = browser.new_context()
-                     page = context.new_page()
-                     page.set_default_timeout(30000)
-+                    def capture_navigation(response):
-+                        # Status/path only; never persist authorization query,
-+                        # cookies, submitted credentials, or response bodies.
-+                        if response.request.is_navigation_request():
-+                            u = urlsplit(response.url)
-+                            browser_diagnostics['navigation'] = {'origin': u.scheme + '://' + u.netloc, 'path': u.path, 'status': response.status}
-+                    page.on('response', capture_navigation)
+@@ -167,8 +167,12 @@ def acceptance(output):
+                 'name': 'CodePier isolated test', 'authorization_flow': authorization, 'authentication_flow': authentication,
+                 'invalidation_flow': invalidation, 'client_type': 'confidential', 'client_id': client_id,
+                 'client_secret': client_secret, 'signing_key': signing, 'include_claims_in_id_token': True,
++                # Authentik's API defaults grant_types to an empty list.
++                # Explicitly permit only the code and refresh flows we test.
++                'grant_types': ['authorization_code', 'refresh_token'],
+                 'redirect_uris': [{'matching_mode': 'strict', 'url': callback}], 'property_mappings': scopes,
+             }, 201)
++            assert set(ak_provider['grant_types']) == {'authorization_code', 'refresh_token'}
+             ak_call('POST', 'core/applications/', {'name': 'CodePier isolated test', 'slug': 'codepier-test', 'provider': ak_provider['pk']}, 201)
+             verified = required(owner.post('/api/iam/oidc/providers/'+provider['id']+'/check'))
+             assert verified['issuer'] == provider_config['issuer'] and verified['callback'] == callback
+@@ -189,6 +193,9 @@ def acceptance(output):
+                         if response.request.is_navigation_request():
+                             u = urlsplit(response.url)
+                             browser_diagnostics['navigation'] = {'origin': u.scheme + '://' + u.netloc, 'path': u.path, 'status': response.status}
++                            error = parse_qs(u.query).get('error', [''])[0]
++                            if re.fullmatch(r'[a-z_]{1,64}', error):
++                                browser_diagnostics['oauth_error'] = error
+                     page.on('response', capture_navigation)
                      page.goto(hub_url)
                      page.locator('#oidc-login-buttons a').click()
--                    page.locator('input[name="uidField"]').fill(user['username'])
-+                    try:
-+                        page.locator('ak-stage-identification input[name="uidField"]').fill(user['username'])
-+                    except Exception:
-+                        u = urlsplit(page.url)
-+                        browser_diagnostics['page'] = {'origin': u.scheme + '://' + u.netloc, 'path': u.path}
-+                        # Read only static input metadata through open shadow
-+                        # roots. Never inspect field values or page text, which
-+                        # could contain Tokens on an unexpected error page.
-+                        browser_diagnostics['inputs'] = page.evaluate("""() => {const out=[];const visit=root=>{for(const node of root.querySelectorAll('*')){if(node.tagName==='INPUT')out.push({name:node.name,type:node.type,id:node.id});if(node.shadowRoot)visit(node.shadowRoot);}};visit(document);return out.slice(0,30);}""")
-+                        raise
-                     page.locator('button[type="submit"]').click()
-                     page.locator('input[name="password"]').fill(password)
-                     page.locator('button[type="submit"]').click()
-@@ -270,6 +288,7 @@ def acceptance(output):
-             result['status']='passed'
-         except Exception as exc:
-             result['status']='failed';result['phase']=phase
-+            if browser_diagnostics:result['browser'] = browser_diagnostics
-             # Only type and sanitized bounded text; no raw provider responses/logs.
-             detail=str(exc)
-             for value in secret_values:detail=detail.replace(value,'[redacted]')
-diff --git a/tests/test_iam_final_regressions.py b/tests/test_iam_final_regressions.py
-new file mode 100644
-index 0000000..09812fe
---- /dev/null
-+++ b/tests/test_iam_final_regressions.py
-@@ -0,0 +1,59 @@
-+"""Security regressions found during final multi-user/OIDC integration review."""
-+import pytest
-+
-+from tests.test_iam_integration import team as team, Browser
-+from tests.test_oidc_integration import oidc as oidc, start, callback
-+from tests.test_roles import must
-+
-+
-+def test_space_admin_cannot_restore_suspended_owner(team):
-+    app, browsers = team
-+    store = app.state.store
-+    store.execute("UPDATE memberships SET level='owner' WHERE user_id='alice' AND space_id='team'")
-+    store.execute("UPDATE memberships SET level='admin' WHERE user_id='bob' AND space_id='team'")
-+    path = '/api/iam/spaces/team/members/alice/suspension'
-+    must(browsers['owner'].put(path, json={'blocked': True}))
-+    denied = browsers['bob'].put(path, json={'blocked': False})
-+    assert denied.status_code == 403
-+    assert denied.json()['error']['code'] == 'OWNER_REQUIRED'
-+    assert store.one("SELECT blocked FROM membership_blocks WHERE space_id='team' AND user_id='alice'")['blocked'] == 1
-+    must(browsers['owner'].put(path, json={'blocked': False}))
-+    assert browsers['alice'].get('/api/projects').status_code == 200
-+
-+
-+def local_browser(app, template, user_id):
-+    with app.state.store.transaction():
-+        session = app.state.auth.new_session(user_id)
-+    return Browser(template.client, session['cookie'], session['csrf'], template.space)
-+
-+
-+@pytest.mark.parametrize("when", ["pending", "inflight"])
-+def test_unlink_cancels_pending_link_even_in_another_local_session(oidc, when):
-+    app, browsers, fake, provider, _ = oidc
-+    state, response = start(oidc, browsers['alice'], link=True)
-+    assert callback(oidc, state, response, browser=browsers['alice']).status_code == 303
-+    identity = app.state.store.one('SELECT * FROM external_identities')
-+    first = local_browser(app, browsers['alice'], 'alice')
-+    second = local_browser(app, browsers['alice'], 'alice')
-+    state, response = start(oidc, first, link=True)
-+    def unlink():
-+        fake.on_userinfo = None
-+        if when == 'pending':
-+            must(second.delete('/api/iam/identities/' + identity['id']))
-+        else:
-+            # The callback is awaiting UserInfo here. Apply the same unlink
-+            # mutation as the concurrent HTTP route, without re-entering the
-+            # blocking TestClient from its event-loop thread.
-+            with app.state.store.transaction():
-+                app.state.oidc.disable_identity(identity, 'unlinked', revoke=True)
-+    if when == 'pending':
-+        unlink()
-+    else:
-+        fake.on_userinfo = unlink
-+    denied = callback(oidc, state, response, browser=first)
-+    assert denied.status_code in (400, 401, 403)
-+    row = app.state.store.one('SELECT * FROM external_identities WHERE id=?', (identity['id'],))
-+    assert row['enabled'] == 0 and row['disabled_reason'] == 'unlinked'
-+    # A genuinely new explicit link remains possible for the same local owner.
-+    state, response = start(oidc, first, link=True)
-+    assert callback(oidc, state, response, browser=first).status_code == 303

@@ -19,7 +19,7 @@ jobs:
       - name: Publish exact hash-verified source changes to feature branch only
         id: publish
         env:
-          EXPECTED: 2ee049f6f17f065cfe1e90ba90a9ecd710364c04
+          EXPECTED: 8f7b0ec8d79f6956ca9f54056c026dedfd88072f
         run: |
           set -euo pipefail
           test "$(git ls-remote origin refs/heads/feat/multiuser-oidc | cut -f1)" = "$EXPECTED"
@@ -30,7 +30,7 @@ jobs:
           import hashlib,json,os,subprocess
           from pathlib import Path
           root=Path(os.environ['TARGET']);patch=Path('_transfer/final.patch').resolve()
-          assert hashlib.sha256(patch.read_bytes()).hexdigest()=='4720dbd32a4c234411f1ed82e6a75964c32fd70398be3e5c6ea9a79aaa4940c3'
+          assert hashlib.sha256(patch.read_bytes()).hexdigest()=='b1a66cda8eb10f3f854e9fcd4d0a85939143637c65fd0e641f7da2a2c73127a4'
           manifest=json.loads(Path('_transfer/manifest.json').read_text())
           for path,hashes in manifest.items():
               current=root/path
@@ -43,7 +43,7 @@ jobs:
           subprocess.run(['git','add','--',*manifest],cwd=root,check=True)
           PY
           git -C "$TARGET" diff --cached --check
-          git -C "$TARGET" -c user.name='CodePier automation' -c user.email='codepier-automation@users.noreply.github.com' commit -m 'fix(iam): fence owner restoration and stale OIDC links; diagnose real provider login'
+          git -C "$TARGET" -c user.name='CodePier automation' -c user.email='codepier-automation@users.noreply.github.com' commit -m 'test(oidc): explicitly enable Authentik code and refresh grants'
           SHA=$(git -C "$TARGET" rev-parse HEAD)
           git -C "$TARGET" push origin HEAD:refs/heads/feat/multiuser-oidc
           echo "source_sha=$SHA" >> "$GITHUB_OUTPUT"
