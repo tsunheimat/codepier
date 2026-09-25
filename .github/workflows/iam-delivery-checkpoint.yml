@@ -1,0 +1,61 @@
+name: IAM documentation and fixture checkpoint
+on:
+  push:
+    branches: [build/iam-delivery-20260925]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Publish exact tested source and operational guide
+        env:
+          EXPECTED: b3e3cb49bd0a11e49f718ad0148c59d83995127f
+          EXPECTED_TREE: 940dc7fcff9c0bf7832c893b4170bfed137a82c8
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/feat/multiuser-oidc | cut -f1)" = "$EXPECTED"
+          cp -R _transfer/iam-delivery "$RUNNER_TEMP/iam-delivery"
+          git -c core.hooksPath=/dev/null checkout --detach "$EXPECTED"
+          python - <<'PY'
+          import gzip,hashlib,json,os,subprocess
+          from pathlib import Path
+          parts=sorted((Path(os.environ['RUNNER_TEMP'])/'iam-delivery').glob('*.gzpart'))
+          assert len(parts)==3
+          raw=b''.join(p.read_bytes() for p in parts)
+          assert hashlib.sha256(raw).hexdigest()=='91a54a7c4eca6ab560b15a4f1bb8e34ca6e525fe93611698124bff5f9bb4b000'
+          records=json.loads(gzip.decompress(raw))
+          assert len(records)==8
+          for record in records:
+              path=Path(record['path'])
+              assert not path.is_absolute() and '..' not in path.parts and path.parts[0] in {'.gitignore','README.md','CHANGELOG.md','hub','docs','scripts'}
+              if record['old'] is None:
+                  assert not path.exists()
+                  text=record['content']
+              else:
+                  original=path.read_bytes()
+                  assert hashlib.sha256(original).hexdigest()==record['old'],str(path)
+                  text=original.decode('utf-8')
+                  for start,end,replacement in reversed(record['edits']):
+                      assert 0<=start<=end<=len(text)
+                      text=text[:start]+replacement+text[end:]
+              result=text.encode('utf-8')
+              assert hashlib.sha256(result).hexdigest()==record['new'],str(path)
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_bytes(result)
+          subprocess.run(['git','add','--',*[r['path'] for r in records]],check=True)
+          PY
+          git diff --cached --check
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          python -m py_compile scripts/check_oidc_authentik.py scripts/build_source_bundle.py hub/iam_schema.py
+          git config user.name 'CodePier development'
+          git config user.email 'codepier-development@users.noreply.github.com'
+          git -c core.hooksPath=/dev/null commit -m 'docs(iam): publish complete OIDC setup, migration, authorization and recovery guide'
+          git -c core.hooksPath=/dev/null push origin HEAD:refs/heads/feat/multiuser-oidc
+          echo "Published $(git rev-parse HEAD), tree $EXPECTED_TREE. No merge or deployment." >> "$GITHUB_STEP_SUMMARY"
