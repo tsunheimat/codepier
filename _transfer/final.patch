@@ -1,44 +1,38 @@
-diff --git a/docs/MULTIUSER_OIDC.md b/docs/MULTIUSER_OIDC.md
-index 7b00a0b..62906d0 100644
---- a/docs/MULTIUSER_OIDC.md
-+++ b/docs/MULTIUSER_OIDC.md
-@@ -86,7 +86,11 @@ source of truth and test your own deployment before broad enrollment.
- Create an OAuth2/OpenID provider and application for CodePier:
- 
- - Confidential client with a generated client secret.
--- Authorization Code grant and S256 PKCE; no implicit flow is needed.
-+- Explicitly enable the Authorization Code grant and S256 PKCE. Enable the Refresh
-+  Token grant when requesting `offline_access`; no implicit flow is needed.
-+  When provisioning Authentik through its API, set `grant_types` to
-+  `["authorization_code", "refresh_token"]`: the API default is an empty list,
-+  which rejects authorization before the login form even though discovery works.
- - An asymmetric signing key. CodePier accepts configured public RSA/EC signatures,
-   not unsigned or symmetric ID Tokens.
- - A strict, exact callback URI, copied from CodePier after the provider record is
-diff --git a/scripts/check_oidc_authentik.py b/scripts/check_oidc_authentik.py
-index c3bafff..864382c 100644
 --- a/scripts/check_oidc_authentik.py
 +++ b/scripts/check_oidc_authentik.py
-@@ -167,8 +167,12 @@ def acceptance(output):
-                 'name': 'CodePier isolated test', 'authorization_flow': authorization, 'authentication_flow': authentication,
-                 'invalidation_flow': invalidation, 'client_type': 'confidential', 'client_id': client_id,
-                 'client_secret': client_secret, 'signing_key': signing, 'include_claims_in_id_token': True,
-+                # Authentik's API defaults grant_types to an empty list.
-+                # Explicitly permit only the code and refresh flows we test.
-+                'grant_types': ['authorization_code', 'refresh_token'],
-                 'redirect_uris': [{'matching_mode': 'strict', 'url': callback}], 'property_mappings': scopes,
-             }, 201)
-+            assert set(ak_provider['grant_types']) == {'authorization_code', 'refresh_token'}
-             ak_call('POST', 'core/applications/', {'name': 'CodePier isolated test', 'slug': 'codepier-test', 'provider': ak_provider['pk']}, 201)
-             verified = required(owner.post('/api/iam/oidc/providers/'+provider['id']+'/check'))
-             assert verified['issuer'] == provider_config['issuer'] and verified['callback'] == callback
-@@ -189,6 +193,9 @@ def acceptance(output):
-                         if response.request.is_navigation_request():
-                             u = urlsplit(response.url)
-                             browser_diagnostics['navigation'] = {'origin': u.scheme + '://' + u.netloc, 'path': u.path, 'status': response.status}
-+                            error = parse_qs(u.query).get('error', [''])[0]
-+                            if re.fullmatch(r'[a-z_]{1,64}', error):
-+                                browser_diagnostics['oauth_error'] = error
-                     page.on('response', capture_navigation)
+@@ -200,19 +200,26 @@
                      page.goto(hub_url)
                      page.locator('#oidc-login-buttons a').click()
+                     try:
+-                        page.locator('ak-stage-identification input[name="uidField"]').fill(user['username'])
++                        identification = page.locator('ak-stage-identification')
++                        identification.locator('input[name="uidField"]').fill(user['username'])
++                        identification.locator('button[type="submit"]').click()
++                        # The identification screen has a password-manager
++                        # helper input outside the real password stage. Wait
++                        # for the actual stage instead of filling that helper
++                        # while the previous stage's request is in flight.
++                        password_stage = page.locator('ak-stage-password')
++                        expect(password_stage).to_be_visible()
++                        password_stage.locator('input[name="password"]').fill(password)
++                        password_stage.locator('button[type="submit"]').click()
++                        page.wait_for_url(hub_url+'/**', timeout=60000)
+                     except Exception:
+                         u = urlsplit(page.url)
+                         browser_diagnostics['page'] = {'origin': u.scheme + '://' + u.netloc, 'path': u.path}
+-                        # Read only static input metadata through open shadow
+-                        # roots. Never inspect field values or page text, which
+-                        # could contain Tokens on an unexpected error page.
+-                        browser_diagnostics['inputs'] = page.evaluate("""() => {const out=[];const visit=root=>{for(const node of root.querySelectorAll('*')){if(node.tagName==='INPUT')out.push({name:node.name,type:node.type,id:node.id});if(node.shadowRoot)visit(node.shadowRoot);}};visit(document);return out.slice(0,30);}""")
++                        # Read only static metadata through open shadow roots.
++                        # Never inspect field values or page text, which could
++                        # contain Tokens on an unexpected error page.
++                        browser_diagnostics['elements'] = page.evaluate("""() => {const out=[];const visit=root=>{for(const node of root.querySelectorAll('*')){if(node.tagName==='INPUT')out.push({tag:node.tagName,name:node.name,type:node.type,id:node.id,invalid:node.getAttribute('aria-invalid')});else if(node.tagName.startsWith('AK-STAGE-'))out.push({tag:node.tagName});if(node.shadowRoot)visit(node.shadowRoot);}};visit(document);return out.slice(0,40);}""")
+                         raise
+-                    page.locator('button[type="submit"]').click()
+-                    page.locator('input[name="password"]').fill(password)
+-                    page.locator('button[type="submit"]').click()
+-                    page.wait_for_url(hub_url+'/**', timeout=60000)
+                     expect(page.locator('#iam-active-space')).to_be_visible(timeout=30000)
+                     cookies = {c['name']: c['value'] for c in context.cookies(hub_url)}
+                     client = httpx.Client(base_url=hub_url, cookies=cookies, timeout=30)
