@@ -1,0 +1,32 @@
+name: OIDC source checkpoint
+on:
+  push:
+    branches: [build/oidc-source-checkpoint-20260925]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: c238f91a04421c4745f40554bee0f2df86a32c23
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export exact tracked source and history
+        run: |
+          mkdir -p /tmp/oidc-source
+          test "$(git rev-parse HEAD)" = c238f91a04421c4745f40554bee0f2df86a32c23
+          git branch checkpoint-source HEAD
+          git bundle create /tmp/oidc-source/source.bundle checkpoint-source
+          git archive --format=zip --prefix=codepier/ HEAD > /tmp/oidc-source/source.zip
+          git ls-tree -r HEAD > /tmp/oidc-source/tree.txt
+          git rev-parse HEAD > /tmp/oidc-source/commit.txt
+          sha256sum /tmp/oidc-source/* > /tmp/oidc-source/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oidc-source-checkpoint
+          path: /tmp/oidc-source/
+          retention-days: 14
+          if-no-files-found: error
