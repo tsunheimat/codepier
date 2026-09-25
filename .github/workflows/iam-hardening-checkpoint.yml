@@ -20,7 +20,7 @@ jobs:
         id: source
         env:
           EXPECTED: ed33a27f092a85d2463e373444f208901a5abef8
-          EXPECTED_TREE: 919846287daeeaea246b554b1e275fb2101df795
+          EXPECTED_TREE: 8f1e001cb69835d205fc3f41239a72f76db03742
         run: |
           set -euo pipefail
           test "$(git ls-remote origin refs/heads/feat/multiuser-oidc | cut -f1)" = "$EXPECTED"
@@ -35,6 +35,7 @@ jobs:
           assert hashlib.sha256(raw).hexdigest()=='e26ff12dee75514bc6257a0988a3a3ddd01ecca64d4a4341c5b18a54f6e4cbe1'
           records=json.loads(gzip.decompress(raw))
           assert len(records)==17
+          changed=[]
           for record in records:
               path=Path(record['path'])
               assert not path.is_absolute() and '..' not in path.parts and path.parts[0] in {'hub','web','tests','scripts','.github'}
@@ -50,18 +51,22 @@ jobs:
                       text=text[:start]+replacement+text[end:]
               result=text.encode('utf-8')
               assert hashlib.sha256(result).hexdigest()==record['new'],str(path)
+              if str(path)=='.github/workflows/ci.yml':
+                  continue
               path.parent.mkdir(parents=True,exist_ok=True)
               path.write_bytes(result)
-          subprocess.run(['git','add','--',*[r['path'] for r in records]],check=True)
+              changed.append(str(path))
+          assert len(changed)==16
+          subprocess.run(['git','add','--',*changed],check=True)
           PY
           git diff --cached --check
           test "$(git write-tree)" = "$EXPECTED_TREE"
           git config user.name 'CodePier development'
           git config user.email 'codepier-development@users.noreply.github.com'
-          git -c core.hooksPath=/dev/null commit -m 'feat(iam): complete revocation boundaries, scoped replay and real Authentik acceptance'
+          git -c core.hooksPath=/dev/null commit -m 'feat(iam): revocation boundaries, scoped replay and real Authentik acceptance'
           git -c core.hooksPath=/dev/null push origin HEAD:refs/heads/feat/multiuser-oidc
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "Published exact tested tree $EXPECTED_TREE; no main merge or deployment." >> "$GITHUB_STEP_SUMMARY"
+          echo "Published exact tested source; workflow change will use the authorized connector. No main merge or deployment." >> "$GITHUB_STEP_SUMMARY"
   regression:
     needs: publish
     runs-on: ubuntu-24.04
