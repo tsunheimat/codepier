@@ -1,0 +1,56 @@
+name: Publish verified PR3 review fixes
+on:
+  push:
+    branches: ['build/pr3-review-fixes-20260926']
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'tsunheimat/codepier'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Publish checksum-verified changes to feature branch only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, pathlib, subprocess, tempfile
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          manifest = json.loads(pathlib.Path('.review-transfer/manifest.json').read_text())
+          expected = 'f8a34af4bca2370821ad4b11031cea37d3e351b7'
+          assert manifest['base'] == expected
+          encoded = []
+          for part in manifest['parts']:
+              data = pathlib.Path(part['path']).read_bytes()
+              actual = hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+              assert actual == part['blob'], part['path']
+              encoded.append(data.strip())
+          patch = gzip.decompress(base64.b64decode(b''.join(encoded), validate=True))
+          assert len(patch) < 200000
+          assert hashlib.sha256(patch).hexdigest() == manifest['patch_sha256']
+          assert set(manifest['delete']) == {'hub/multiuser_policy.py', 'tests/test_multiuser_policy.py'}
+          assert set(manifest['paths']) == set(manifest['target_blobs']) | set(manifest['delete'])
+          for path in manifest['paths']:
+              p = pathlib.PurePosixPath(path)
+              assert not p.is_absolute() and '..' not in p.parts and p.parts[0] in {'docs','hub','tests'}
+          git('fetch','--no-tags','--depth=1','origin','feat/multiuser-oidc')
+          assert git('rev-parse','FETCH_HEAD') == expected, 'Feature branch changed; refusing to overwrite newer work'
+          git('checkout','--detach',expected)
+          with tempfile.NamedTemporaryFile() as f:
+              f.write(patch); f.flush()
+              git('apply','--check','--unidiff-zero',f.name)
+              git('apply','--index','--unidiff-zero',f.name)
+          git('rm','--',*manifest['delete'])
+          assert sorted(git('diff','--cached','--name-only').splitlines()) == sorted(manifest['paths'])
+          for path, expected_blob in manifest['target_blobs'].items():
+              assert git('rev-parse',':'+path) == expected_blob, path
+          git('diff','--cached','--check')
+          git('config','user.name','CodePier review fixes')
+          git('config','user.email','codepier-review@users.noreply.github.com')
+          git('commit','-m','fix(iam): address OIDC scheduling, claims, capacity, audit and authorization review')
+          git('push','origin','HEAD:refs/heads/feat/multiuser-oidc')
+          print('Published exact verified source:', git('rev-parse','HEAD'))
+          print('No main merge, deployment, production secrets or IdP changes.')
+          PY
