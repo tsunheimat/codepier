@@ -1,0 +1,55 @@
+name: Publish verified PR3 second-review fixes
+on:
+  push:
+    branches: ['build/pr3-review2-fixes-20260927']
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'tsunheimat/codepier'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Publish exact verified changes to feature branch only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, pathlib, subprocess, tempfile
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          manifest = json.loads(pathlib.Path('.review2-transfer/manifest.json').read_text())
+          expected = '22d548767c0686bcb3b95a4c3a0bf13590972b06'
+          assert manifest['base'] == expected
+          encoded = []
+          for part in manifest['parts']:
+              data = pathlib.Path(part['path']).read_bytes()
+              assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest() == part['blob']
+              encoded.append(data.strip())
+          patch = gzip.decompress(base64.b64decode(b''.join(encoded), validate=True))
+          assert len(patch) < 100000
+          assert hashlib.sha256(patch).hexdigest() == manifest['patch_sha256']
+          paths = manifest['target_blobs']
+          assert len(paths) == 14
+          for path in paths:
+              p = pathlib.PurePosixPath(path)
+              assert not p.is_absolute() and '..' not in p.parts
+              assert p.parts[0] in {'docs','hub','tests','web'} or path == 'CHANGELOG.md'
+          git('fetch','--no-tags','--depth=1','origin','feat/multiuser-oidc')
+          assert git('rev-parse','FETCH_HEAD') == expected, 'Feature head changed; refusing to overwrite newer work'
+          git('checkout','--detach',expected)
+          with tempfile.NamedTemporaryFile() as f:
+              f.write(patch); f.flush()
+              git('apply','--check','--unidiff-zero',f.name)
+              git('apply','--index','--unidiff-zero',f.name)
+          assert sorted(git('diff','--cached','--name-only').splitlines()) == sorted(paths)
+          for path, expected_blob in paths.items():
+              assert git('rev-parse',':'+path) == expected_blob, path
+          git('diff','--cached','--check')
+          git('config','user.name','CodePier review fixes')
+          git('config','user.email','codepier-review@users.noreply.github.com')
+          git('commit','-m','fix(oidc): free completed capacity, contain sync failures and preserve refresh ownership')
+          git('push','origin','HEAD:refs/heads/feat/multiuser-oidc')
+          print('Published verified source:', git('rev-parse','HEAD'))
+          print('No main merge, deployment or production IdP changes.')
+          PY
