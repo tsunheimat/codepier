@@ -1,0 +1,28 @@
+name: Pinned integration Node tooling
+on:
+  push:
+    branches: [build/integration-node-20260927]
+permissions:
+  contents: read
+jobs:
+  tooling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: cyeinfpro/codepier
+          ref: 84e24d53b33ca24e3d54609f65df8c14c347f29e
+          persist-credentials: false
+      - name: Install locked frontend tooling
+        run: |
+          cd web/mcp-apps
+          npm ci --ignore-scripts
+          tar -czf ../../node-tooling.tar.gz node_modules package-lock.json
+          cd ../..
+          sha256sum node-tooling.tar.gz > node-tooling.tar.gz.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: codepier-integration-node
+          path: node-tooling.tar.gz*
+          retention-days: 3
