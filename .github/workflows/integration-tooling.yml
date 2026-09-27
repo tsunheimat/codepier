@@ -1,0 +1,36 @@
+name: Pinned offline integration tooling
+on:
+  push:
+    branches: [build/integration-snapshot-20260927]
+permissions:
+  contents: read
+jobs:
+  tooling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: cyeinfpro/codepier
+          ref: 84e24d53b33ca24e3d54609f65df8c14c347f29e
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - name: Download hash-verified Python wheels and exact frontend dependencies
+        run: |
+          mkdir -p offline/wheels
+          python -m pip download --only-binary=:all: --require-hashes -r requirements-dev.txt -d offline/wheels
+          python -m pip download --no-deps 'PyJWT==2.13.0' -d offline/wheels
+          npm ci --prefix web/mcp-apps --ignore-scripts
+          tar -C web/mcp-apps -czf offline/node-modules.tar.gz node_modules
+          cp requirements*.in requirements*.txt offline/
+          (cd offline && find wheels -type f -print0 | sort -z | xargs -0 sha256sum > wheels.sha256)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: codepier-pinned-offline-tooling
+          path: offline/
+          retention-days: 7
