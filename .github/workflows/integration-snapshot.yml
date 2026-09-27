@@ -1,0 +1,31 @@
+name: Pinned integration source snapshot
+on:
+  push:
+    branches: [build/integration-snapshot-20260927]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export exact existing commits, not the delivery workflow
+        run: |
+          git fetch https://github.com/cyeinfpro/codepier.git 84e24d53b33ca24e3d54609f65df8c14c347f29e
+          git branch snapshot-upstream 84e24d53b33ca24e3d54609f65df8c14c347f29e
+          git branch snapshot-main 9366b23fed7f374cf744f1cd461c8192428c910d
+          git branch snapshot-gateway 68aa9c8d2bf279b4579779f304b28410f23a3fe9
+          git bundle create integration.bundle snapshot-upstream snapshot-main snapshot-gateway
+          git bundle verify integration.bundle
+          sha256sum integration.bundle > integration.bundle.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codepier-pinned-integration-git
+          path: |
+            integration.bundle
+            integration.bundle.sha256
+          retention-days: 7
