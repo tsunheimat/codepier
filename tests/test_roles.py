@@ -1,3 +1,4 @@
+from tests.public_contract_support import project_create_arguments
 """Live role grants: additions, revocation, rule pairing and delegated creation."""
 import asyncio
 import json
@@ -51,6 +52,9 @@ def error(response, code):
     result = response.json()['result']
     assert result['isError'], result
     value = result.get('structuredContent') or json.loads(result['content'][0]['text'])
+    if 'operations' in value:
+        assert len(value['operations']) == 1, value
+        value = value['operations'][0]
     assert value['error']['code'] == code, value
     assert 'mcp/www_authenticate' not in result.get('_meta', {})
     return value
@@ -104,8 +108,8 @@ def test_read_all_execute_one_never_cross_multiplies(api):
     who=principal(app,t['token'])
     assert role_project_scopes(app.state.store,who,'project') == {'read','write','execute'}
     assert role_project_scopes(app.state.store,who,'future') == {'read'}
-    error(call(client,t['token'],'shell_exec',{'project':'future','command':'echo forbidden','idempotency_key':'must-not-run-001'}),'ROLE_POLICY_DENIED')
-    error(call(client,t['token'],'fs_write',{'project':'future','path':'x.txt','content':'forbidden','expected_sha256':'new','idempotency_key':'must-not-write-01'}),'ROLE_POLICY_DENIED')
+    error(call(client,t['token'],'exec',{'project':'future','command':'echo forbidden','idempotency_key':'must-not-run-001'}),'ROLE_POLICY_DENIED')
+    error(call(client,t['token'],'write',{'project':'future','path':'x.txt','content':'forbidden','expected_sha256':'new','idempotency_key':'must-not-write-01'}),'ROLE_POLICY_DENIED')
     assert app.state.store.one('SELECT count(*) AS n FROM operations')['n'] == 0
 
 
@@ -115,7 +119,7 @@ def test_paused_role_is_policy_denial_not_reauth_and_can_resume(api):
     paused=must(update_role(client,r,enabled=False))
     assert data(call(client,t['token']))['id'] == p['id']
     assert data(call(client,t['token'],'get_access_context'))['role']['enabled'] is False
-    error(call(client,t['token'],'projects_list'),'ROLE_POLICY_DENIED')
+    error(call(client,t['token'],'workspace', {'operation': 'list'}),'ROLE_POLICY_DENIED')
     must(update_role(client,paused,enabled=True))
     assert visible_projects(client,t['token']) == {'project'}
 
@@ -183,7 +187,7 @@ def test_role_oauth_refresh_keeps_coarse_scope_but_follows_new_projects(api):
     paused=must(update_role(client,r,enabled=False))
     rotated=must(client.post('/oauth/token',data={'grant_type':'refresh_token','refresh_token':fresh['refresh_token'],'client_id':cid}))
     assert rotated['scope']==ROLE_SCOPE
-    error(call(client,rotated['access_token'],'projects_list'),'ROLE_POLICY_DENIED')
+    error(call(client,rotated['access_token'],'workspace', {'operation': 'list'}),'ROLE_POLICY_DENIED')
     must(update_role(client,paused,enabled=True))
     assert visible_projects(client,rotated['access_token'])=={'project','future'}
 
@@ -216,7 +220,9 @@ def test_role_catalog_oauth_schemes_and_entry_challenge(api,catalog):
     assert ROLE_SCOPE in unauth.headers['WWW-Authenticate']
     result=must(client.post(endpoint,json={'jsonrpc':'2.0','id':1,'method':'tools/list'},headers={
         'Authorization':'Bearer '+t['token'],'Accept':'application/json, text/event-stream'}))['result']['tools']
-    assert {'devices_list','projects_create','get_profile'} <= {tool['name'] for tool in result}
+    assert {'workspace','get_profile'} <= {tool['name'] for tool in result}
+    assert not {'devices_list','projects_create'} & {tool['name'] for tool in result}
+    assert len(result) == 11
     for tool in result:
         assert tool['securitySchemes']==tool['_meta']['securitySchemes']==[{'type':'oauth2','scopes':[ROLE_SCOPE]}]
     assert next(tool for tool in result if tool['name']=='get_profile')['_meta']['openai/profile'] is True
@@ -224,7 +230,7 @@ def test_role_catalog_oauth_schemes_and_entry_challenge(api,catalog):
 
 def test_role_ui_endpoint_parameter_is_not_authority(api):
     app,client,fixed=api
-    response=call(client,fixed,'shell_exec',{'project':'project','command':'echo no','idempotency_key':'old-not-role-01'},endpoint='/mcp?authorization=role')
+    response=call(client,fixed,'exec',{'project':'project','command':'echo no','idempotency_key':'old-not-role-01'},endpoint='/mcp?authorization=role')
     assert response.json()['result']['isError']
     assert grant_for(app,fixed)['authorization_mode']=='fixed'
 
@@ -283,21 +289,21 @@ def test_queue_rechecks_paired_current_permission(api):
     app,client,_=api
     r,p,t=setup_role(client,project_rules=[{'actions':['read','execute'],'projects':['project']}])
     store=app.state.store;store.execute('UPDATE projects SET allow_tasks=1 WHERE id=?',('project',))
-    receipt=data(call(client,t['token'],'shell_exec',{'project':'project','command':'echo no-run','idempotency_key':'queue-role-live'}))
+    receipt=data(call(client,t['token'],'exec',{'project':'project','command':'echo no-run','idempotency_key':'queue-role-live'}))
     op=store.one('SELECT * FROM operations WHERE id=?',(receipt['operation_id'],));req=json.loads(store.decrypt(op['payload']))
     assert app.state.runtime.permission_error(op,req) is None
     add_project(app)
     must(update_role(client,r,project_rules=[{'actions':['read'],'all_projects':True},{'actions':['read','execute'],'projects':['future']}]))
     assert app.state.runtime.permission_error(op,req) is not None
-    error(call(client,t['token'],'operations_get',{'operation_id':op['id']}),'ROLE_POLICY_DENIED')
+    error(call(client,t['token'],'process',{'operation_ids': [op['id']], 'operation': 'get'}),'ROLE_POLICY_DENIED')
 
 
 def test_same_role_does_not_share_operation_ownership(api):
     app,client,_=api
     r,p,t=setup_role(client)
     other=must(credential(client,r,p))
-    receipt=data(call(client,t['token'],'fs_read',{'project':'project','path':'README.md'}))
-    error(call(client,other['token'],'operations_get',{'operation_id':receipt['operation_id']}),'OPERATION_NOT_FOUND')
+    receipt=data(call(client,t['token'],'read',{'project':'project','path':'README.md'}))
+    error(call(client,other['token'],'process',{'operation_ids': [receipt['operation_id']], 'operation': 'get'}),'OPERATION_NOT_FOUND')
 
 
 def test_create_project_with_delegation_new_resource_and_same_token(api,monkeypatch):
@@ -305,7 +311,7 @@ def test_create_project_with_delegation_new_resource_and_same_token(api,monkeypa
     r,p,t=setup_role(client,project_rules=[{'actions':['read','write'],'created_projects':True}],
                     device_rules=[{'actions':['devices.read','projects.create'],'devices':['device'],'max_project_mode':'write','root_prefixes':['/tmp/new-roots']}])
     assert visible_projects(client,t['token'])==set()
-    devices=data(call(client,t['token'],'devices_list'))['devices']
+    devices=data(call(client, t['token'], 'workspace', {'operation': 'devices'}))['devices']
     assert devices==[{'id':'device','name':'fixture','enabled':True,'online':False}]
     calls=[]
     async def validate(name,args,project,who,**kwargs):
@@ -313,13 +319,13 @@ def test_create_project_with_delegation_new_resource_and_same_token(api,monkeypa
         return {'root':project['root'],'writable':True,'allow_tasks':True}
     monkeypatch.setattr(app.state.runtime,'dispatch',validate)
     args={'alias':'new-work','device_id':'device','root':'/tmp/new-roots/work','mode':'write','idempotency_key':'role-create-work-1'}
-    created=data(call(client,t['token'],'projects_create',args))
+    created=data(call(client, t['token'], 'workspace', project_create_arguments(args)))
     assert created['created_by_role']==r['id'] and created['role_access']==['read','write']
     assert visible_projects(client,t['token'])=={created['id']}
-    replay=data(call(client,t['token'],'projects_create',args))
+    replay=data(call(client, t['token'], 'workspace', project_create_arguments(args)))
     assert replay['id']==created['id'] and calls==[('system_validate',False)]
     assert app.state.store.one('SELECT count(*) AS n FROM role_created_projects')['n']==1
-    error(call(client,t['token'],'projects_create',{**args,'alias':'changed'}),'IDEMPOTENCY_CONFLICT')
+    error(call(client, t['token'], 'workspace', project_create_arguments({**args, 'alias': 'changed'})),'IDEMPOTENCY_CONFLICT')
 
 
 @pytest.mark.parametrize('change',[{'root':'/etc'}, {'mode':'write'}, {'allow_tasks':True}, {'device_id':'other'}])
@@ -330,7 +336,7 @@ def test_create_delegation_gates_before_agent_dispatch(api,monkeypatch,change):
         pytest.fail('unauthorized request reached Agent dispatch')
     monkeypatch.setattr(app.state.runtime,'dispatch',forbidden)
     args={'alias':'x','device_id':'device','root':'/tmp/new-roots/x','idempotency_key':'create-denied-1',**change}
-    error(call(client,t['token'],'projects_create',args),'ROLE_POLICY_DENIED')
+    error(call(client, t['token'], 'workspace', project_create_arguments(args)),'ROLE_POLICY_DENIED')
 
 
 def test_create_revocation_while_agent_validation_waits_prevents_commit(api,monkeypatch):
@@ -340,7 +346,7 @@ def test_create_revocation_while_agent_validation_waits_prevents_commit(api,monk
         app.state.store.execute('UPDATE access_roles SET enabled=0 WHERE id=?',(r['id'],))
         return {'root':project['root'],'writable':True,'allow_tasks':True}
     monkeypatch.setattr(app.state.runtime,'dispatch',validate)
-    error(call(client,t['token'],'projects_create',{'alias':'blocked','device_id':'device','root':'/tmp/new','idempotency_key':'create-revoked-01'}),'ROLE_POLICY_DENIED')
+    error(call(client, t['token'], 'workspace', project_create_arguments({'alias': 'blocked', 'device_id': 'device', 'root': '/tmp/new', 'idempotency_key': 'create-revoked-01'})),'ROLE_POLICY_DENIED')
     assert app.state.store.one("SELECT id FROM projects WHERE alias='blocked'") is None
 
 
@@ -350,7 +356,7 @@ def test_create_uses_agent_canonical_root_not_only_requested_path(api,monkeypatc
     async def validate(*args,**kwargs):
         return {'root':'/outside/canonical','writable':True,'allow_tasks':True}
     monkeypatch.setattr(app.state.runtime,'dispatch',validate)
-    error(call(client,t['token'],'projects_create',{'alias':'blocked','device_id':'device','root':'/tmp/new-roots/link','idempotency_key':'canonical-check-1'}),'ROLE_POLICY_DENIED')
+    error(call(client, t['token'], 'workspace', project_create_arguments({'alias': 'blocked', 'device_id': 'device', 'root': '/tmp/new-roots/link', 'idempotency_key': 'canonical-check-1'})),'ROLE_POLICY_DENIED')
     assert app.state.store.one("SELECT id FROM projects WHERE alias='blocked'") is None
 
 
@@ -360,15 +366,15 @@ def test_create_cannot_alias_or_enclose_existing_restricted_project(api,monkeypa
     r,p,t=setup_role(client,project_rules=[{'actions':['read'],'created_projects':True}],device_rules=[{'actions':['devices.read','projects.create'],'devices':['device']}])
     async def forbidden(*args,**kwargs):pytest.fail('overlap reached Agent')
     monkeypatch.setattr(app.state.runtime,'dispatch',forbidden)
-    error(call(client,t['token'],'projects_create',{'alias':'alternate','device_id':'device','root':root,'idempotency_key':'overlap-denied-1'}),'PROJECT_ROOT_OVERLAP')
+    error(call(client, t['token'], 'workspace', project_create_arguments({'alias': 'alternate', 'device_id': 'device', 'root': root, 'idempotency_key': 'overlap-denied-1'})),'PROJECT_ROOT_OVERLAP')
 
 
 def test_pending_creation_retains_original_operation_and_reauthorizes_delivery(api):
     app,client,_=api
     r,p,t=setup_role(client,project_rules=[],device_rules=[{'actions':['devices.read','projects.create'],'devices':['device']}])
     args={'alias':'pending','device_id':'device','root':'/tmp/new-folder','idempotency_key':'pending-create-1'}
-    first=error(call(client,t['token'],'projects_create',args),'VALIDATION_PENDING')
-    second=error(call(client,t['token'],'projects_create',args),'VALIDATION_PENDING')
+    first=error(call(client, t['token'], 'workspace', project_create_arguments(args)),'VALIDATION_PENDING')
+    second=error(call(client, t['token'], 'workspace', project_create_arguments(args)),'VALIDATION_PENDING')
     assert first['error']['operation_id']==second['error']['operation_id']
     store=app.state.store;op=store.one('SELECT * FROM operations WHERE id=?',(first['error']['operation_id'],));req=json.loads(store.decrypt(op['payload']))
     assert app.state.runtime.permission_error(op,req) is None
@@ -398,7 +404,7 @@ def test_result_disclosure_rechecks_role_after_completion(api):
     from shared.util import DevError
     app,client,_=api
     r,p,t=setup_role(client)
-    receipt=data(call(client,t['token'],'fs_read',{'project':'project','path':'README.md'}))
+    receipt=data(call(client,t['token'],'read',{'project':'project','path':'README.md'}))
     original=principal(app,t['token'])
     must(update_role(client,r,enabled=False))
     with pytest.raises(DevError) as exc:
@@ -419,14 +425,12 @@ def test_settings_and_first_role_auth_challenge(api):
 def test_workflow_permissions_are_per_resource_even_in_update_metadata(api):
     app,client,_=api
     r,p,t=setup_role(client,project_rules=[{'actions':['read','write'],'projects':['project']}])
-    created=data(call(client,t['token'],'workflows_create',{'project':'project','title':'Original task','goal':'Test exact resource policy',
-                'idempotency_key':'workflow-role-pair-1'}))
+    created=data(call(client,t['token'],'workspace',{'project': 'project', 'idempotency_key': 'workflow-role-pair-1', 'operation': 'workflow_create', 'options': {'title': 'Original task', 'goal': 'Test exact resource policy'}}))
     add_project(app)
     must(update_role(client,r,project_rules=[{'actions':['read'],'all_projects':True},{'actions':['read','write'],'projects':['future']}]))
-    workflow=data(call(client,t['token'],'workflows_get',{'workflow_id':created['workflow_id']}))
+    workflow=data(call(client,t['token'],'workspace',{'operation': 'workflow_get', 'options': {'workflow_id': created['workflow_id']}}))
     assert workflow['can_update'] is False
-    error(call(client,t['token'],'workflows_update',{'workflow_id':created['workflow_id'],'expected_version':workflow['version'],
-        'action':'checkpoint','summary':'Must not overwrite','idempotency_key':'workflow-role-update-1'}),'ROLE_POLICY_DENIED')
+    error(call(client,t['token'],'workspace',{'idempotency_key': 'workflow-role-update-1', 'operation': 'workflow_update', 'options': {'workflow_id': created['workflow_id'], 'expected_version': workflow['version'], 'action': 'checkpoint', 'summary': 'Must not overwrite'}}),'ROLE_POLICY_DENIED')
 
 
 def test_schema6_upgrade_keeps_fixed_grants_profiles_and_master_key(api,tmp_path):

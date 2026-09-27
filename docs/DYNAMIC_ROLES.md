@@ -75,10 +75,10 @@
 角色连接可调用：
 
 ```text
- devices_list()
- projects_create(alias="new-work", device_id="DEVICE_ID",
-                 root="/srv/projects/new-work", mode="write", allow_tasks=false,
-                 idempotency_key="create-new-work-001")
+ workspace(operation="devices")
+ workspace(operation="project_create", idempotency_key="create-mapping-001",
+           options={"alias":"new-work", "device_id":"DEVICE_ID",
+                    "root":"/approved/new-work", "mode":"write"})
 ```
 
 创建复用原有 `system_validate`、持久 operation 和幂等保存回执。返回验证仍在执行时，用原请求/原幂等键继续查询，不创建新请求。派送前及真正保存前重验当前角色，且用 Agent 返回的规范化真实路径再验路径上限。重复的已完成请求返回原映射，不重复创建。

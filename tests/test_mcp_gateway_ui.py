@@ -21,15 +21,15 @@ def gateway_browser(request):
 @pytest.mark.parametrize('width', [1280, 390])
 def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path, monkeypatch):
     app, b, backend = gw
-    monkeypatch.setenv('HUB_PUBLIC_URL', 'http://127.0.0.1:8765')
+    # Use the actual ASGI request origin; do not rewrite browser Origin/Host.
     r = role(b['owner'], label='UI secretary', project_rules=[])
     page = gateway_browser.new_page(viewport={'width': width, 'height': 900})
     errors = []; page.on('pageerror', lambda error: errors.append(str(error)))
-    page.context.add_cookies([{'name': 'rd_session', 'value': b['owner'].cookie, 'domain': '127.0.0.1', 'path': '/'}])
+    page.context.add_cookies([{'name': 'rd_session', 'value': b['owner'].cookie, 'domain': 'testserver', 'path': '/'}])
     page.add_init_script("sessionStorage.setItem('codepier-space:owner','team')")
     def route(request_route):
         req = request_route.request; parts = urlsplit(req.url)
-        if parts.hostname != '127.0.0.1':
+        if parts.hostname != 'testserver':
             request_route.abort(); return
         # SSE is intentionally outside this DOM test; the HTTP/IAM calls and
         # static files are served by the real app, not canned JSON responses.
@@ -41,7 +41,7 @@ def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path, monkeypa
         request_route.fulfill(status=response.status_code, headers=headers, body=response.content)
     page.route('**/*', route)
     try:
-        page.goto('http://127.0.0.1:8765/#mcp-gateway')
+        page.goto('http://testserver/#mcp-gateway')
         expect(page.locator('#gateway-page')).to_be_visible()
         page.click('[data-gw="connector"]')
         page.fill('#gw-form [name="label"]', 'UI MCP <not markup>')
@@ -76,4 +76,7 @@ def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path, monkeypa
         page.screenshot(path=str(tmp_path / 'gateway-panel.png'), full_page=True)
         assert not errors, errors
     finally:
+        if page.locator('#gw-form').count():
+            print('GATEWAY_FORM_DIAGNOSTIC', page.locator('#gw-form').inner_text(), errors)
+        page.screenshot(path=str(tmp_path / 'gateway-final.png'), full_page=True)
         page.close()

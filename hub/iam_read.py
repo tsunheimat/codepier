@@ -75,4 +75,5 @@ def principal_key(principal):
             principal.profile_id, principal.role_id, principal.authorization_mode,
             principal.user_epoch, principal.identity_id, principal.actor,
             principal.admin, principal.instance_admin,
+            principal.session_hash, principal.token_hash,
             frozenset(principal.scopes), frozenset(principal.projects))

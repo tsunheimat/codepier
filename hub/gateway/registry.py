@@ -1,5 +1,6 @@
 """Human-managed connectors, accounts, reviewed exports and explicit delegation."""
 from __future__ import annotations
+from hub.db_worker import database_endpoint
 
 import json
 import re
@@ -119,7 +120,8 @@ def make_router(auth, runtime):
         return row
 
     @router.get('')
-    async def overview(request: Request):
+    @database_endpoint(runtime.store)
+    def overview(request: Request):
         principal = auth.panel(request)
         if not gateway.enabled:
             return {'enabled': False, 'connectors': [], 'accounts': [], 'bindings': [], 'grants': [], 'calls': []}
@@ -138,7 +140,8 @@ def make_router(auth, runtime):
                 'bindings': bindings, 'grants': grants, 'calls': calls}
 
     @router.post('/connectors', status_code=201)
-    async def create_connector(request: Request, body: ConnectorCreate):
+    @database_endpoint(runtime.store)
+    def create_connector(request: Request, body: ConnectorCreate):
         principal = actor(request, True, instance=True)
         endpoint = network.endpoint(body.endpoint, body.networks, body.allow_http)
         identifier = 'gwc_' + uuid.uuid4().hex
@@ -151,7 +154,8 @@ def make_router(auth, runtime):
         return store.one('SELECT * FROM gateway_connectors WHERE id=?', (identifier,))
 
     @router.patch('/connectors/{identifier}')
-    async def toggle_connector(identifier: str, request: Request, body: Toggle):
+    @database_endpoint(runtime.store)
+    def toggle_connector(identifier: str, request: Request, body: Toggle):
         principal = actor(request, True, instance=True)
         with store.transaction():
             changed = store.db.execute('UPDATE gateway_connectors SET enabled=?,version=version+1 WHERE id=? AND space_id=? AND version=?',
@@ -162,7 +166,8 @@ def make_router(auth, runtime):
         return {'ok': True}
 
     @router.post('/accounts', status_code=201)
-    async def create_account(request: Request, body: AccountCreate):
+    @database_endpoint(runtime.store)
+    def create_account(request: Request, body: AccountCreate):
         principal = actor(request, True)
         if body.sharing == 'space' and not principal.admin:
             raise DevError('SPACE_ADMIN_REQUIRED', '共享服务帐户必须由空间管理员建立', 403)
@@ -178,7 +183,8 @@ def make_router(auth, runtime):
         return public_account(store.one('SELECT * FROM gateway_accounts WHERE id=?', (identifier,)))
 
     @router.patch('/accounts/{identifier}')
-    async def update_account(identifier: str, request: Request, body: AccountUpdate):
+    @database_endpoint(runtime.store)
+    def update_account(identifier: str, request: Request, body: AccountUpdate):
         principal = actor(request, True)
         with store.transaction():
             row = managed_account(store, principal, identifier)
@@ -197,7 +203,8 @@ def make_router(auth, runtime):
         return await gateway.discover(principal, identifier, lambda: actor(request, True))
 
     @router.post('/bindings', status_code=201)
-    async def create_binding(request: Request, body: BindingCreate):
+    @database_endpoint(runtime.store)
+    def create_binding(request: Request, body: BindingCreate):
         principal = actor(request, True)
         with store.transaction():
             account = managed_account(store, principal, body.account_id)
@@ -214,7 +221,8 @@ def make_router(auth, runtime):
         return public_binding(store.one('SELECT * FROM gateway_bindings WHERE id=?', (identifier,)))
 
     @router.post('/bindings/{identifier}/publish')
-    async def publish_binding(identifier: str, request: Request, body: BindingPublish):
+    @database_endpoint(runtime.store)
+    def publish_binding(identifier: str, request: Request, body: BindingPublish):
         principal = actor(request, True)
         with store.transaction():
             binding, _, _ = policy.binding_rows(store, identifier, principal.space_id)
@@ -227,7 +235,8 @@ def make_router(auth, runtime):
         return public_binding(store.one('SELECT * FROM gateway_bindings WHERE id=?', (identifier,)))
 
     @router.patch('/bindings/{identifier}')
-    async def toggle_binding(identifier: str, request: Request, body: Toggle):
+    @database_endpoint(runtime.store)
+    def toggle_binding(identifier: str, request: Request, body: Toggle):
         principal = actor(request, True)
         with store.transaction():
             binding, _, _ = policy.binding_rows(store, identifier, principal.space_id)
@@ -239,7 +248,8 @@ def make_router(auth, runtime):
         return {'ok': True}
 
     @router.post('/grants/{identifier}/consent')
-    async def consent(identifier: str, request: Request, body: Consent):
+    @database_endpoint(runtime.store)
+    def consent(identifier: str, request: Request, body: Consent):
         principal = actor(request, True)
         with store.transaction():
             grant = owned_grant(principal, identifier)
@@ -258,7 +268,8 @@ def make_router(auth, runtime):
         return {'ok': True, 'consent_version': 1}
 
     @router.delete('/grants/{identifier}/consent')
-    async def revoke_consent(identifier: str, request: Request):
+    @database_endpoint(runtime.store)
+    def revoke_consent(identifier: str, request: Request):
         principal = actor(request, True)
         with store.transaction():
             owned_grant(principal, identifier)

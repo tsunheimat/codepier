@@ -5,6 +5,7 @@ import asyncio
 import json
 import time
 from dataclasses import replace
+from contextvars import ContextVar
 
 import pytest
 
@@ -30,11 +31,25 @@ def projects(store,count):
                 (f'load-{n}',f'load-{n}',f'load-{n}','device-team',f'/tmp/load-{n}',time.time()))
 
 
+_measured_call = ContextVar('measured_iam_query_call', default=None)
+
+
 def queries(store,call):
+    # Store.run propagates the request's context to its worker. Do not count
+    # unrelated scheduler queries concurrently using this SQLite connection.
     statements=[]
-    store.db.set_trace_callback(statements.append)
+    marker=object()
+    token=_measured_call.set(marker)
+    def record(sql):
+        if _measured_call.get() is marker:
+            statements.append(sql)
+    with store.lock:
+        store.db.set_trace_callback(record)
     try:result=call()
-    finally:store.db.set_trace_callback(None)
+    finally:
+        with store.lock:
+            store.db.set_trace_callback(None)
+        _measured_call.reset(token)
     return result,[x for x in statements if x.lstrip().upper().startswith(('SELECT','WITH'))]
 
 
@@ -93,9 +108,9 @@ def test_role_or_delegation_revocation_is_not_a_cached_session_permission(team,f
     from tests.test_access_profiles import call,data
     app,b=team;r=shared_role(app,b)
     g=must(credential(b['alice'],r,profile(b['alice'],r)))
-    assert data(call(b['alice'],g['token'],'projects_list'))
+    assert data(call(b['alice'],g['token'],'workspace', {'operation': 'list'}))
     app.state.store.execute(f'UPDATE role_assignments SET {field}=0 WHERE role_id=? AND user_id=?',(r['id'],'alice'))
-    assert call(b['alice'],g['token'],'projects_list').status_code in (401,403)
+    assert call(b['alice'],g['token'],'workspace', {'operation': 'list'}).status_code in (401,403)
 
 
 def test_scope_invalidates_on_in_scope_policy_write(team):

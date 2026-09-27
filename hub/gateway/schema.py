@@ -6,6 +6,7 @@ rules; rollback requires the matching pre-upgrade backup.
 """
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS gateway_keys (id TEXT PRIMARY KEY, secret TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS gateway_connectors (
     id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id),
     label TEXT NOT NULL, endpoint TEXT NOT NULL, protocol TEXT NOT NULL,

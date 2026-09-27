@@ -146,8 +146,8 @@ def test_refresh_reconnect_and_scope_upgrade_keep_profile_id_but_not_grant_owner
     app.state.store.execute('''INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,
         fingerprint,state,created,updated) VALUES (?,?,?,?,?,?,'{}','','succeeded',?,?)''',
         ('op-private', 'device', 'project', 'mcp:' + first_grant['id'], first_grant['id'], 'fs_read', now, now))
-    refused = call(client, second['access_token'], 'operations_get', {'operation_id': 'op-private'}).json()['result']
-    assert refused['isError'] and refused['structuredContent']['error']['code'] == 'OPERATION_NOT_FOUND'
+    refused = call(client, second['access_token'], 'process', {'operation_ids': ['op-private'], 'operation': 'get'}).json()['result']
+    assert refused['isError'] and refused['structuredContent']['operations'][0]['error']['code'] == 'OPERATION_NOT_FOUND'
     assert runtime is not None
 
 
@@ -163,7 +163,7 @@ def test_profile_and_original_consent_are_intersected_never_widened(api):
     assert context['scopes'] == ['read'] and context['profile']['id'] == profile['id']
     assert context['chat_project_is_security_boundary'] is False
     assert 'root' not in json.dumps(context) and 'grant_id' not in json.dumps(context)
-    denied = call(client, token, 'shell_exec', {'project': 'fixture', 'command': 'never run',
+    denied = call(client, token, 'exec', {'project': 'fixture', 'command': 'never run',
         'idempotency_key': 'no-execution-123'}).json()['result']
     assert denied['isError'] and denied['structuredContent']['error']['code'] == 'INSUFFICIENT_SCOPE'
     assert app.state.store.one('SELECT count(*) AS n FROM operations')['n'] == 0
@@ -363,9 +363,9 @@ def test_narrowing_computer_scope_blocks_original_operation_media(api, tool):
         ('media-private', 'device', 'project', 'mcp:' + credential['grant_id'], credential['grant_id'], tool,
          json.dumps({'ok': True, 'data': {'text': 'PRIVATE_BROWSER_MEDIA'}}), now, now))
     assert change(client, profile, scopes=['read']).status_code == 200
-    result = call(client, credential['token'], 'operations_get', {'operation_id': 'media-private'})
+    result = call(client, credential['token'], 'process', {'operation_ids': ['media-private'], 'operation': 'get'})
     assert 'PRIVATE_BROWSER_MEDIA' not in result.text
-    assert result.json()['result']['structuredContent']['error']['code'] == 'INSUFFICIENT_SCOPE'
+    assert result.json()['result']['structuredContent']['operations'][0]['error']['code'] == 'INSUFFICIENT_SCOPE'
 
 
 @pytest.mark.parametrize('field,value', [

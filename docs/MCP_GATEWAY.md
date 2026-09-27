@@ -1,7 +1,9 @@
 # MCP Gateway — reviewed multi-backend tool routing
 
-Status: first implementation on `9366b23` (1.13 + multi-user IAM), **disabled by
- default**. This is not an upstream 1.14 merge, a release or a deployment.
+Status: integrated with upstream 1.14.3 and multi-user IAM. Routing is enabled by
+default; without reviewed connectors and explicit delegation no external capability
+is granted. This is a development integration, not a release or deployment.
+See [integration boundaries](UPSTREAM_INTEGRATION.md).
 
 ## Scope and architecture
 
@@ -64,7 +66,7 @@ are illustrative, not assertions about Kiln's current interface.
 ## Enable and configure
 
 Before upgrade, back up the application version, complete Hub state, database and
-matching `master.key`. The optional tables use `meta.gateway_schema=1`, separate
+matching `master.key`. The Gateway tables use `meta.gateway_schema=1`, separate
 from IAM `meta.schema=10`. Do not run old code against Role policies containing
 `connector_rules`; rollback requires restoring the matching application and
 pre-upgrade data together. Restoring Hub data does not undo external effects.
@@ -75,8 +77,8 @@ Set this in the managed Hub environment (`compose.yml` forwards it):
 CODEPIER_MCP_GATEWAY=1
 ```
 
-Restart the reviewed Hub build. Default `0` disables external routing and all
-configuration writes; native MCP catalog/call behavior stays on its existing path.
+Restart the reviewed Hub build. Explicit `0` disables external routing and all
+configuration writes; the unified native catalog and routing remain in use.
 No endpoint is contacted by upgrading or merely opening the tool catalog.
 
 In **MCP 网关**:
@@ -98,7 +100,7 @@ In **MCP 网关**:
    assign the Role with delegation eligibility and create a Profile/PAT/OAuth grant.
 5. The human who owns that grant must select **查看政策并同意** under **我的连接委派**.
    This explicitly covers current/future reviewed connector rules of that Role.
-   An older project-only consent is not silently reinterpreted. Fixed grants cannot
+   Project-only consent does not silently grant external-account authority. Fixed grants cannot
    become gateway grants through this operation.
 6. Refresh/discover the client's tool catalog. A client which caches tools may need
    its own reconnect/catalog refresh; this version does not claim push invalidation

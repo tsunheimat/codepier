@@ -3,7 +3,7 @@ import asyncio
 import json
 import time
 from fastapi import Request
-from hub.runtime import Principal
+from hub.principal import Principal
 from hub.store import Store
 from hub.access_profiles import effective_grant, validate_profile_consent
 from shared.crypto import digest, token, password_verify
@@ -70,7 +70,7 @@ class Auth:
                 raise DevError('SPACE_FORBIDDEN', '账号没有已启用的空间', 403)
             space_id = row['space_id']
         principal = Principal('panel:' + session['username'], session['user_id'], {'read'}, [],
-                              space_id=space_id, identity_id=session['identity_id'], user_epoch=session['user_epoch'])
+                              space_id=space_id, identity_id=session['identity_id'], user_epoch=session['user_epoch'], session_hash=session['id_hash'])
         principal = iam.live_principal(self.store, principal)
         iam.audit_context.set((self.store, principal.actor, principal.space_id, principal.user_id))
         return principal
@@ -111,47 +111,60 @@ class Auth:
         return Principal("mcp:" + row["grant_id"] + ":" + row["label"], row["user_id"], scopes, projects,
                          grant_id=row["grant_id"], profile_id=row["profile_id"],
                          authorization_mode=row['authorization_mode'], role_id=row['role_id'],
-                         space_id=row['space_id'], identity_id=row['identity_id'], user_epoch=row['user_epoch'])
+                         space_id=row['space_id'], identity_id=row['identity_id'], user_epoch=row['user_epoch'], token_hash=digest(value))
+
+    def _login_attempt(self, request, username):
+        ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        with self.store.lock, self.store.db:
+            self.store.execute("DELETE FROM login_attempts WHERE at<?", (now - 900,))
+            count = self.store.one("SELECT count(*) AS n FROM login_attempts WHERE ip=? AND at>?", (ip, now - 300))["n"]
+            if count >= 8:
+                raise DevError("LOGIN_THROTTLED", "登录尝试过多，5 分钟后重试", 429)
+            self.store.execute("INSERT INTO login_attempts VALUES (?,?)", (ip, now))
+            return ip, self.store.one("SELECT * FROM users WHERE username=?", (username,))
+
+    def _login_session(self, user, ip, username):
+        with self.store.transaction():
+            security = iam.user_security(self.store, user['id'])
+            if not security['local_login']:
+                raise DevError('LOGIN_FAILED', '此账号仅允许身份提供者登录', 401)
+            current = self.store.one('SELECT password_hash FROM users WHERE id=?', (user['id'],))
+            if not current or current['password_hash'] != user['password_hash']:
+                raise DevError('LOGIN_FAILED', '密码已变化，请重新登录', 401)
+            self.store.execute('DELETE FROM login_attempts WHERE ip=?', (ip,))
+            self.store.execute('DELETE FROM sessions WHERE expires<=?', (time.time(),))
+            value = self.new_session(user['id'])
+            self.store.audit('panel:' + username, 'auth.login', detail={'ip': ip})
+            return value
 
     async def login(self, request: Request, username: str, password: str):
         self.check_origin(request)
-        # Scrypt uses substantial RAM; per-IP limits alone do not bound work
-        # queued in the shared thread pool by requests from many addresses.
         if self.login_inflight >= 4:
             raise DevError("LOGIN_THROTTLED", "登录服务繁忙，请稍后重试", 429)
-        ip = request.client.host if request.client else "unknown"
-        now = time.time()
-        self.store.execute("DELETE FROM login_attempts WHERE at<?", (now - 900,))
-        count = self.store.one("SELECT count(*) AS n FROM login_attempts WHERE ip=? AND at>?", (ip, now - 300))["n"]
-        if count >= 8:
-            raise DevError("LOGIN_THROTTLED", "登录尝试过多，5 分钟后重试", 429)
-        self.store.execute("INSERT INTO login_attempts VALUES (?,?)", (ip, now))
-        user = self.store.one("SELECT * FROM users WHERE username=?", (username,))
+        # Reserve BEFORE the first await. Cancellation of scrypt retains capacity
+        # until the actual worker finishes, not until its HTTP waiter disappears.
         self.login_inflight += 1
-        stored = self.store.one('SELECT local_login FROM iam_users WHERE user_id=?', (user['id'],)) if user else None
-        verification = asyncio.create_task(asyncio.to_thread(password_verify, password, user["password_hash"] if user and stored and stored['local_login'] else self.dummy))
-        def finished(task):
-            self.login_inflight -= 1
-            if not task.cancelled():
-                task.exception()
-        verification.add_done_callback(finished)
-        valid = await asyncio.shield(verification)
-        if not user or not valid:
-            self.store.audit("anonymous", "auth.login", username[:80], "failed", {"ip": ip})
-            raise DevError("LOGIN_FAILED", "用户名或密码不正确", 401)
-        security = iam.user_security(self.store, user['id'])
-        if not security['local_login']:
-            raise DevError('LOGIN_FAILED', '此账号仅允许身份提供者登录', 401)
-        now = time.time()
-        with self.store.lock, self.store.db:
-            current = self.store.db.execute("SELECT password_hash FROM users WHERE id=?", (user["id"],)).fetchone()
-            if not current or current["password_hash"] != user["password_hash"]:
-                raise DevError("LOGIN_FAILED", "密码已变化，请重新登录", 401)
-            self.store.db.execute("DELETE FROM login_attempts WHERE ip=?", (ip,))
-            self.store.db.execute("DELETE FROM sessions WHERE expires<=?", (now,))
-            value = self.new_session(user["id"])
-        self.store.audit("panel:" + username, "auth.login", status="ok", detail={"ip": ip})
-        return value
+        hash_owns_slot = False
+        try:
+            ip, user = await self.store.run(self._login_attempt, request, username)
+            stored = await self.store.run(self.store.one, 'SELECT local_login FROM iam_users WHERE user_id=?', (user['id'],)) if user else None
+            verification = asyncio.create_task(asyncio.to_thread(password_verify, password, user["password_hash"] if user and stored and stored["local_login"] else self.dummy))
+            def finished(task):
+                self.login_inflight -= 1
+                if not task.cancelled():
+                    task.exception()
+            verification.add_done_callback(finished)
+            hash_owns_slot = True
+            valid = await asyncio.shield(verification)
+            if not user or not valid:
+                await self.store.run(self.store.audit, "anonymous", "auth.login", username[:80], "failed", {"ip": ip})
+                raise DevError("LOGIN_FAILED", "用户名或密码不正确", 401)
+            return await self.store.run(self._login_session, user, ip, username)
+        finally:
+            if not hash_owns_slot:
+                self.login_inflight -= 1
+
 
     def issue_grant(self, principal: Principal, label: str, scopes: list[str], projects: list[str], days: int = 30, client_id=None, *, profile_id=None, profile_version=None, authorization_mode='fixed', role_version=None, confirm_dynamic_role=False):
         principal = iam.live_principal(self.store, principal)

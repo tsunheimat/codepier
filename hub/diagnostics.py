@@ -4,12 +4,13 @@ import json
 import sqlite3
 import time
 from shared.build_info import BuildIdentity
-from shared.contracts import TOOLS
+from shared.contracts import TOOLS, tool_definitions
+from shared.core_contracts import CORE_TOOLS
 from shared.util import DevError
 from shared.computer_diagnostics import COMPUTER_STAGES, safe_detail
 
 LABELS = {'hub_received':'Hub 已接收', 'dispatched':'已投递设备', 'accepted':'Agent 已接收',
-          'waiting_project':'等待项目读写锁', 'waiting_worker':'等待本机执行槽', 'executing':'本机正在执行',
+          'waiting_resource':'等待共享文件或服务', 'waiting_project':'等待项目读写锁', 'waiting_worker':'等待本机执行槽', 'executing':'本机正在执行',
           'persisting':'结果正在落盘', 'result_ready':'结果已在本机保存', 'hub_completed':'Hub 已保存最终结果'}
 LABELS.update(COMPUTER_STAGES)
 AGENT_STAGES = set(LABELS)-{'hub_received','dispatched','hub_completed'}
@@ -99,7 +100,10 @@ class Diagnostics:
             if build and build.get('restart_required'): warnings.append(f"{row['name']} 的磁盘代码已改变，运行进程尚未更新。")
             if not known: warnings.append(f"{row['name']} 未报告工具能力，缺失情况未知。")
         actual=args['client_catalog_sha256']
+        native_count = len(tool_definitions('core', principal.authorization_mode))
+        gateway = getattr(runtime, 'gateway', None)
+        external_count = len(gateway.tools(principal)) if gateway else 0
         return {'hub':hub,'devices':devices,'warnings':warnings,
                 'client_catalog':{'reported':actual or None,'matches':actual==hub['catalog_sha256'] if actual else None,
                                   'note':'No client hash means unknown; this endpoint cannot inspect the ChatGPT UI cache.'},
-                'tool_count':len(TOOLS),'schema':runtime.store.one("SELECT value FROM meta WHERE key='schema'")['value'],'diagnostic_write_errors':self.errors}
+                'tool_count':native_count+external_count,'native_tool_count':native_count,'core_tool_count':len(CORE_TOOLS),'external_tool_count':external_count,'schema':runtime.store.one("SELECT value FROM meta WHERE key='schema'")['value'],'diagnostic_write_errors':self.errors}

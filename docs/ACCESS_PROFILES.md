@@ -73,7 +73,7 @@ OAuth 同意 `/api/oauth/requests/{id}/decide` 和 PAT 创建 `/api/grants` 可�
 {"id":"prf_<opaque persistent ID>","name":"CodePier","nickname":"NewAPI Dev"}
 ```
 
-`structuredContent` 和 JSON 文本返回同一个对象。不接受 profile/account selector。错误通过 `isError` 和文字返回，不把错误伪装成 profile 对象。固定目录保留原工具集合；动态角色目录额外提供 devices_list 和 projects_create，完整与编码模式均支持。另保留原 app-only 工作区读取工具。
+`structuredContent` 和 JSON 文本返回同一个对象。不接受 profile/account selector。错误通过 `isError` 和文字返回，不把错误伪装成 profile 对象。原生公开目录统一为九个开发工具及 get_profile/get_access_context。设备查询和委派创建项目改用 workspace(operation="devices") 与 workspace(operation="project_create")；固定/动态授权由真实凭据决定。原 app-only 工作区读取契约仍供界面内部使用。
 
 官方接口参考：<https://developers.openai.com/plugins/build/auth>。
 

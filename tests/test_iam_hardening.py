@@ -116,27 +116,62 @@ def test_device_owner_can_manage_lifecycle_without_space_admin(team,monkeypatch)
     assert len(calls)==1
 
 
-def test_pending_receipt_revalidates_membership_after_wait(team,monkeypatch):
-    app,b=team;r=shared_role(app,b)
-    runtime=app.state.runtime;principal=app.state.auth.panel(request_for(b['alice']))
-    project=runtime.project('project-team',principal)
-    runtime.wait_seconds=.01
-    monkeypatch.setattr(runtime,'online',lambda _:True)
-    original=runtime.store.one
-    # Revoke in the asynchronous waiting interval, not before submission.
+@pytest.mark.parametrize('revocation_phase', ['before_admission', 'after_admission'])
+def test_pending_receipt_revalidates_membership_after_wait(team, monkeypatch, revocation_phase):
+    app, browsers = team
+    shared_role(app, browsers)
+    runtime = app.state.runtime
+    principal = app.state.auth.panel(request_for(browsers['alice']))
+    project = runtime.project('project-team', principal)
+    runtime.wait_seconds = .01
+    monkeypatch.setattr(runtime, 'online', lambda _: True)
+    # There is no real Agent in this fixture. Do not start a delivery task in a
+    # second loop; real delivery and cancellation have separate integration tests.
+    monkeypatch.setattr(runtime, 'wake_delivery', lambda: None)
+    original_run = runtime.store.run
+    key = 'pending-then-revoke'
+
     async def run():
+        admitted = asyncio.Event()
+        revoked = asyncio.Event()
+
+        async def database_phase(function, *args, **kwargs):
+            if function == runtime.online and revocation_phase == 'after_admission':
+                # This is the first await after _admit_operation has committed.
+                # Handshake instead of racing a 2ms sleep against a DB worker.
+                admitted.set()
+                await revoked.wait()
+            return await original_run(function, *args, **kwargs)
+
         async def revoke():
-            await asyncio.sleep(.002)
-            runtime.store.execute("INSERT INTO membership_blocks VALUES('team','alice',1)")
-        revocation=asyncio.create_task(revoke())
+            if revocation_phase == 'after_admission':
+                await admitted.wait()
+            await original_run(runtime.store.execute,
+                               "INSERT INTO membership_blocks VALUES('team','alice',1)")
+            revoked.set()
+
+        monkeypatch.setattr(runtime.store, 'run', database_phase)
+        task = asyncio.create_task(revoke())
         try:
+            if revocation_phase == 'before_admission':
+                await revoked.wait()
             with pytest.raises(DevError) as caught:
-                await runtime.dispatch('fs_read',{'project':'same-alias','path':'a','idempotency_key':'pending-then-revoke'},project,principal)
-            assert caught.value.code=='SPACE_FORBIDDEN'
-            identifier=caught.value.details['operation_id']
-            assert original('SELECT id FROM operations WHERE id=?',(identifier,))
-        finally:await revocation
-    asyncio.run(run())
+                await runtime.dispatch('fs_read', {'project': 'same-alias', 'path': 'a',
+                                       'idempotency_key': key}, project, principal)
+            assert caught.value.code == 'SPACE_FORBIDDEN'
+            row = await original_run(runtime.store.one,
+                                     'SELECT id FROM operations WHERE idem=?', (key,))
+            if revocation_phase == 'after_admission':
+                assert row and caught.value.details['operation_id'] == row['id']
+            else:
+                assert row is None and 'operation_id' not in caught.value.details
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    # Use the running application's loop, not an unrelated asyncio.run loop that
+    # can leave its delivery/dispatch locks bound to a closed event loop.
+    browsers['alice'].client.portal.call(run)
 
 
 def populate_native(app,owner='alice'):
@@ -221,7 +256,7 @@ def test_authoritative_refresh_rejection_disables_current_identity(oidc):
 def test_pending_mcp_role_revoke_never_runs_after_device_reconnect(team):
     app,b=team;r=shared_role(app,b,['read','write','execute'])
     grant=must(credential(b['alice'],r,profile(b['alice'],r)))
-    receipt=call(b['alice'],grant['token'],'shell_exec',{'project':'same-alias','command':'echo fixture','idempotency_key':'queued-offline-role'}).json()['result']['structuredContent']
+    receipt=call(b['alice'],grant['token'],'exec',{'project':'same-alias','command':'echo fixture','idempotency_key':'queued-offline-role'}).json()['result']['structuredContent']
     op=app.state.store.one('SELECT * FROM operations WHERE id=?',(receipt['operation_id'],))
     request=json.loads(app.state.store.decrypt(op['payload']))
     assert app.state.runtime.permission_error(op,request) is None

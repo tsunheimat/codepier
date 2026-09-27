@@ -1,46 +1,61 @@
+> **Integration branch (not a deployment or published upstream release).**
+> Based on upstream 1.14.3 with multi-user IAM/OIDC, Spaces, dynamic Roles and MCP Gateway.
+> See [IAM setup](docs/MULTIUSER_OIDC.md) and [Gateway setup](docs/MCP_GATEWAY.md).
+
 # Changelog
 
-## Unreleased — 多 MCP Gateway 第一阶段
+## Unreleased fork integration — 2026-09-27
 
-- 在独立 `hub/gateway/` 中增加远端 MCP 帐户、经审核的命名空间工具、即时 Role 规则、每 grant 明确同意及加密回执；默认关闭，不扩大既有 fixed/role grant。
-- 内建工具继续走原 Runtime；外部工具保留 schema、独立路由，不向后端透传 CodePier token、Cookie、前端元数据或身份标记。保持 `get_profile`；访问上下文增加外部能力摘要。
-- 增加固定服务 endpoint、管理员批准的内网 CIDR、全 DNS 答案校验、IP 固定与原 Host/TLS SNI、禁止重定向和环境代理，以及后端帐户/授权隔离的有限连接池。
-- 支持 2026-07-28 与 legacy Streamable HTTP 的 JSON/SSE 工具响应；只用只读探测协商，不自动重发调用。多回合请求/资源代理等未实现能力明确失败。
-- 工具发现与发布分离，已发现的 schema 改变阻止旧发布工具继续调用；参数/结果 schema 在有界子进程验证。收回权限后拒绝派送或隐藏迟到结果。
-- 在现有 Panel 增加 MCP 网关页面，原 Role 编辑器保留 connector_rules；添加工具分页、同名工具消歧、回执恢复与配置/调用审计。
-- 独立 gateway_schema=1；原 IAM schema=10 不变。此功能不是 upstream 1.14 合并、生产部署或真实外部服务验收。详见 docs/MCP_GATEWAY.md。
+- Integrate all upstream changes through 1.14.3 while preserving multi-user Spaces,
+  OIDC, stable Profiles, dynamic Roles and reviewed multi-MCP accounts.
+- Adopt modular Hub APIs, ownership-checked DB workers, unified Principal and a
+  single native/remote tool registry; keep private call logs and await-time revocation.
+- Retire the old public native aliases; devices/project creation are workspace
+  operations. Keep two independent identity tools beside the nine native tools.
+- Extend key rotation to all OIDC/Gateway secrets, retain persistent receipt
+  identity and drain validator subprocess creation on cancellation.
+- Rebuild native MCP Apps and panel hashed assets; Gateway is enabled with no
+  external capabilities until endpoints/tools/accounts are approved and delegated.
+- This section is development source, not a publication, deployment or full
+  cross-platform acceptance claim. See docs/UPSTREAM_INTEGRATION.md.
 
-## Unreleased — 多用户、OIDC 与 Space 隔离
 
-- **升级兼容性警告：** required_group / 群组映射只接受 UserInfo 的群组字段；Microsoft Entra UserInfo 无法返回自定义 groups，仅配置 ID Token 群组不能修复。升级前验证本地恢复登录与身份代理；不能靠移除准入限制绕过。已有群组配置在 Hub 启动及管理页有明确提示。
-- 修复已消费 OIDC 回调仍占用待处理登录容量、损坏密文令同步批次提前退出、刷新令牌后丢失重试/恢复结果，以及批量 Profile/PAT/OAuth 授权的平方级计算。
-- 密钥轮换使用已验证 Discovery 的 JWKS 端点、有限突发预算与独立失败退避；有效缓存密钥优先使用，保持原签名及权限校验。
+## 1.14.3 — 2026-09-26 — 原生附件导入兼容与失败恢复
 
-- 接入通用 OIDC 授权码/S256 PKCE、签名/issuer/subject/nonce/audience 校验、服务端加密状态、显式账号关联和退出处理；禁止按邮箱自动合并，JIT 默认关闭并保留本机恢复账号。
-- 新增个人/团队 Space、来源可追溯的成员及角色分配、私有 Profile、OIDC 群组映射和有时效的权限校验；普通面板用户不再自动变成管理员。
-- 共用动态 Role 在当前 Space 内实时增减能力与项目，已有明确同意的角色连接无需重新授权；保留旧 fixed grant 语义与稳定身份。
-- 为项目、VPS、设备、操作、工作流、交付物、原生会话、审计和事件添加归属/访问检查；等待、派送和缓存流逐项重验，避免撤权后读到迟到结果。
-- schema 9 迁移保留既有 ID、Token、设备密钥和主密钥；别名及操作/工作流请求键按 Space 隔离，禁止在原地跨 Space 重定向资源。
-- 新增本机设备自助注册/归属、原生私有会话能力检查、用户/空间暂停、最后主理人/本机恢复管理员保护，以及原布局内的身份和成员管理界面。
-- 增加多用户、OIDC 协议、真实临时 Hub/Agent、浏览器矩阵和独立 Authentik 验收；完整原 CI 保留，不以局部套件替代全量验证。
-- 提供升级、群组/撤权、备份回退和恢复说明；此条目不是生产部署或特定 ChatGPT 宿主配置成功的声明。
+- 修复真实宿主文件指向已核验的 Azure 存储账户时，被旧默认来源列表拒绝的问题；统一配置与下载的来源策略，只增加精确主机，不放行整个云存储域名。
+- 增加 `extra_file_hosts` 精确扩展并保留显式收紧/禁用；规范主机名大小写、根点和标签校验，避免保存配置时固化默认列表、导致后续升级继续沿用旧来源。
+- 修复导入帮助、工具调用生成器和网页附件入口将 `file` 放入 `options` 的问题；原生附件参数统一位于顶层，保留已经持有完整对象的旧调用兼容。
+- 导入错误与审计摘要提供脱敏来源主机、失败阶段及恢复建议；区分无权限/失效链接、限流、服务端错误和 DNS/TLS/传输失败，不泄露下载票据、对象路径或文件 ID。
+- 修复网页即时失败被当成未知结果、输入控件持续锁定的问题；明确失败允许用户重新提交，不确定结果继续恢复原回执。同步更正自动创建父目录的说明。
+- 强化无效 URL、重定向原始控制字符、混合私网 DNS 和组播地址检查；显式拦截会被 `is_global` 误归为公网的 IPv6 站点本地地址，同时验证合法公网 IPv6 可用；按原始读取片段检查传输期限，保留大小、SHA、无覆盖、无自动解压及失败临时文件清理。
+- 补充来源策略、配置升级、真实 HTTP 分帧、慢流、网页即时/延迟失败的回归与文件导入说明；就绪检查展示当前来源策略，但不把未执行的宿主往返标成通过。
+- 附件导入按实际目标路径参与资源排队，避免导入父目录项目时阻塞无关子项目的读取；目标文件及其父目录的冲突仍串行处理，重复导入不会覆盖已发布文件。
+- 修复原生 CLI 停止期间，单次进程列表查询失败立即将已退出会话标为孤立进程的问题；保留未回收子进程的身份，在原有截止时间内重新确认进程组，只有确认没有存活成员才报告停止成功。macOS 只调查目标进程组，避免整机枚举占用确认时限；不完整的查询输出不能作为清理成功的证据。
 
-## Unreleased — 动态角色与 Access Profiles
+## 1.14.2 — 2026-09-25 — 授权列表整理与首页工具统计
 
-- Profile 与共用 Role 分离；明确同意角色模式后，已有连接跟随当前项目/能力政策，支持全部未来项目、逐规则排除和本角色创建的项目。
-- 新增 codepier.role_access OAuth 范围、角色管理页、显式确认、版本/幂等及前后审计；旧 fixed grant 不静默转换。
-- 按具体操作与资源配对授权，防止「全项目读取 + A 执行」串成全项目执行。等待结果、派送、工作流及创建提交重新验权。
-- 新增 devices_list/projects_create 管理委派，限制设备、路径、映射模式及任务，保留 Agent 本机否决，防止用重叠映射绕过项目授权。
-- schema 7 增量迁移保留旧授权及主密钥。角色暂停返回政策拒绝而非反复 OAuth；重新绑定另一角色需要再次明确同意。
-- 新增真实临时 Hub/Agent、OAuth、迁移和浏览器矩阵测试；未声明生产部署或真实 ChatGPT 宿主验收。
+- 操作审计卡片首行突出项目名称；压缩卡片高度和命令摘要，移除左侧竖条，改用按项目区分颜色的标签与工具类型色签；支持长名称、浅深色和窄屏。
+- 登录页账号默认留空，移除预填的 admin，改用“输入账号”提示。
+- 访问授权优先显示当前记录，已撤销和已过期记录默认折叠；两组各按 5 条分页，项目范围按需展开，适配窄屏并保留撤销和范围调整。
+- 首页按对外 MCP 工具集合统计，修复将 82 个内部注册项误显示为可用工具的问题；明确标注“9 项 MCP 工具可用”。
+- 真实 Hub/Agent 集成验证首页数量与 MCP tools/list 返回目录一致；继续禁止旧 MCP 工具名调用。
 
-### Access Profiles 基础
+## 1.14.1 — 2026-09-25 — 修复旧面板更新兼容性
 
-- 新增 owner 管理的稳定 Access Profile 身份、OAuth/PAT 绑定、管理页面和授权选择器。
-- 新增已认证 MCP `get_profile`（OpenAI profile 标记）与 `get_access_context`，完整/编码目录均可使用。
-- 有效权限为原 grant 同意与当前 Profile 上限的交集；停用、刷新、派送前复核和跨 grant 归属继续保留。
-- schema 6 增量迁移不重绑定旧授权；传统批量范围设置排除 Profile grant，避免绕过原同意。
-- 新增身份稳定性、越权、撤权、迁移、并发和桌面/手机浏览器回归。未声明生产部署或真实 ChatGPT 宿主验收。
+- 修复 1.13.0 更新器拒绝新开发配置文件、无法安装 1.14.0 的问题；提供兼容的面板更新 ZIP 和完整开发源码 ZIP，运行代码一致。
+- 发布检查使用保留的 1.13.0 原始更新器与当前更新器解包真实附件，验证路径、摘要、清单和版本；保留原安全白名单。
+- CI 同时校验并保留两种附件及各自清单，完整回归继续在完整开发源码上执行。
+
+## 1.14.0 — 2026-09-25 — 九工具接口、调用日志与运行时整理
+
+- MCP 对外收敛为九个工具，将文件、命令、VPS、工作区和专项能力映射到统一入口；旧 MCP 工具名已移除，客户端需重新发现工具并按 docs/CORE_TOOLS.md 更新调用。
+- 增加独立命令与文件执行槽、路径资源协调、有界排队与批量回执查询；继续使用原操作编号恢复结果，避免不确定操作重放。
+- 面板增加可筛选、分页、实时更新的调用日志和执行链路，提供脱敏详情、尾部输出与当前页导出；保留阅读位置并修复退出后的迟到响应。
+- 拆分 Hub API、配置、数据库访问和静态资源职责，完善凭据密钥轮换、协议协商、项目权限及恢复边界。
+- 整理前端共享模块和主题样式，生成内容哈希资源清单；改进安装、CLI 会话、VPS 和移动端交互。
+- 修复 Windows 旧代码页日志引发的 Agent 断连、PowerShell 安装参数引号及 SVG 换行校验；移动端底部导航滑入时保留正在按下的页面点击。
+- 修复 Claude 思考后正文重复、同一消息分块覆盖及旧会话重放重复；输入框使用小圆角，防止正文裁切和中断按钮被挤成竖排。
+- 依赖采用带哈希锁文件，完善公开源码白名单、文档链接校验、跨平台分片回归及覆盖率证据。
 
 ## 1.13.0 — 2026-09-23 — 更新恢复、持续授权与安装执行默认值
 

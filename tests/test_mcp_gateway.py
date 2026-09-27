@@ -159,8 +159,10 @@ def update_policy(b, r, rules):
         'connector_rules': rules, 'expected_version': r['version']}))
 
 
-def test_gateway_is_opt_in_for_instance_and_each_existing_grant(team):
+def test_gateway_can_be_disabled_and_each_grant_requires_consent(team):
     app, b = team
+    assert b['owner'].get('/api/mcp-gateway').json()['enabled']
+    app.state.gateway.enabled = False
     assert not b['owner'].get('/api/mcp-gateway').json()['enabled']
     assert b['owner'].post('/api/mcp-gateway/connectors', json={'label': 'no', 'endpoint': 'https://mcp.example/mcp'}).status_code == 403
     app.state.gateway.enabled = True

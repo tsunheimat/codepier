@@ -88,11 +88,52 @@ async def test_pathological_schema_worker_is_bounded_and_capacity_recovers():
 
 
 @pytest.mark.asyncio
-async def test_cancelled_schema_worker_is_reaped_and_capacity_recovers():
+async def test_cancelled_schema_worker_is_reaped_and_capacity_recovers(monkeypatch):
     validator = Validator(timeout=8)
-    task = asyncio.create_task(validator.validate({'type': 'object'}, {}))
-    await asyncio.sleep(.1)
+    started = asyncio.Event()
+    children = []
+    spawn = asyncio.create_subprocess_exec
+    async def tracked(*args, **kwargs):
+        child = await spawn(*args, **kwargs)
+        children.append(child)
+        started.set()
+        return child
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', tracked)
+    schema = {'type': 'string', 'pattern': '^(a+)+$'}
+    task = asyncio.create_task(validator.validate(schema, 'a' * 1000 + '!'))
+    await asyncio.wait_for(started.wait(), 5)
+    await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert validator.active == 0
+    assert children and all(p.returncode is not None for p in children)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_spawn_does_not_orphan_validator(monkeypatch):
+    validator = Validator()
+    started, release = asyncio.Event(), asyncio.Event()
+    children = []
+    original = asyncio.create_subprocess_exec
+    async def delayed(*args, **kwargs):
+        child = await original(*args, **kwargs)
+        children.append(child)
+        started.set()
+        await release.wait()
+        return child
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', delayed)
+    request = asyncio.create_task(validator.validate({'type': 'object'}, {}))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        request.cancel()
+        await asyncio.sleep(0)
+        assert not request.done() and validator.active == 1
+        request.cancel()  # Repeated cancellation must not release ownership early.
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert validator.active == 0 and all(child.returncode is not None for child in children)
+    finally:
+        release.set()
+        await asyncio.gather(request, return_exceptions=True)

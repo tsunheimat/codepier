@@ -1,3 +1,4 @@
+from tests.public_contract_support import project_create_arguments
 """Two human identities, one authorized role Token and a real disposable Agent."""
 import json
 import time
@@ -34,16 +35,16 @@ def test_real_agent_new_user_role_create_read_revoke_and_mapping_bounds(stack):
         from tests.support import wait_for
         results=[]
         def create():
-            result=data(call(client,grant['token'],'projects_create',args));results.append(result)
+            result=data(call(client, grant['token'], 'workspace', project_create_arguments(args)));results.append(result)
             return result if not result.get('pending') else None
         created=wait_for(create,timeout=20)
         pid=created.get('id') or created.get('project',{}).get('id')
         assert pid,created
-        receipt=data(call(client,grant['token'],'fs_read',{'project':pid,'path':'readme.txt'}))
+        receipt=data(call(client,grant['token'],'read',{'project':pid,'path':'readme.txt'}))
         if receipt.get('pending'):receipt=stack.poll(receipt['operation_id'])['result']['data']
         assert 'allowed-test-data' in json.dumps(receipt)
         must(stack.client.put('/api/iam/spaces/legacy/assignments/'+role['id']+'/'+uid,json={'active':False,'may_delegate':True,'expected_version':assignment['version']}))
-        denied=call(client,grant['token'],'fs_write',{'project':pid,'path':'forbidden.txt','content':'must-not-write','expected_sha256':'new','idempotency_key':uuid.uuid4().hex})
+        denied=call(client,grant['token'],'write',{'project':pid,'path':'forbidden.txt','content':'must-not-write','expected_sha256':'new','idempotency_key':uuid.uuid4().hex})
         assert denied.status_code==403,denied.text
         assert not (directory/'forbidden.txt').exists()
         assert client.get('/api/projects',headers={'X-CodePier-Space':'unrelated-space'}).status_code in {403,404}

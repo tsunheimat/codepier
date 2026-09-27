@@ -128,9 +128,9 @@ def test_no_cross_space_alias_or_action_product(team):
     app,b=team;r=shared_role(app,b)
     r=must(update_role(b['owner'],r,project_rules=[{'actions':['read'],'all_projects':True},{'actions':['read','execute'],'projects':['project-team']}]))
     token=must(credential(b['alice'],r,profile(b['alice'],r)))['token']
-    resolved=data(call(b['alice'],token,'projects_resolve',{'project':'same-alias'}))
+    resolved=data(call(b['alice'],token,'workspace',{'project': 'same-alias', 'operation': 'resolve', 'options': {}}))
     assert resolved['id']=='project-team'
-    denied=call(b['alice'],token,'projects_resolve',{'project':'project-legacy'})
+    denied=call(b['alice'],token,'workspace',{'project': 'project-legacy', 'operation': 'resolve', 'options': {}})
     assert denied.json()['result']['isError'] and 'project-legacy' not in json.dumps(denied.json().get('result',{}).get('structuredContent',{}).get('project',{}))
 
 
