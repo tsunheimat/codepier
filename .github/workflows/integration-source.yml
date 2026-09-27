@@ -1,0 +1,37 @@
+name: Pinned integration source
+on:
+  push:
+    branches: [build/integration-source-20260927]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export exact Git history and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch https://github.com/cyeinfpro/codepier.git 84e24d53b33ca24e3d54609f65df8c14c347f29e
+          git fetch https://github.com/tsunheimat/codepier.git 68aa9c8d2bf279b4579779f304b28410f23a3fe9
+          git update-ref refs/heads/input-main 9366b23fed7f374cf744f1cd461c8192428c910d
+          git update-ref refs/heads/input-gateway 68aa9c8d2bf279b4579779f304b28410f23a3fe9
+          git update-ref refs/heads/input-upstream 84e24d53b33ca24e3d54609f65df8c14c347f29e
+          mkdir -p "$RUNNER_TEMP/integration-source"
+          git bundle create "$RUNNER_TEMP/integration-source/codepier.bundle" refs/heads/input-main refs/heads/input-gateway refs/heads/input-upstream
+          git bundle verify "$RUNNER_TEMP/integration-source/codepier.bundle"
+          git merge-base input-main input-upstream > "$RUNNER_TEMP/integration-source/MERGE_BASE.txt"
+          git rev-parse input-main input-gateway input-upstream > "$RUNNER_TEMP/integration-source/COMMITS.txt"
+          cd "$RUNNER_TEMP/integration-source"
+          sha256sum codepier.bundle > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: codepier-integration-inputs
+          path: ${{ runner.temp }}/integration-source/
+          if-no-files-found: error
+          retention-days: 14
