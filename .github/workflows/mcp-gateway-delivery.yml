@@ -1,0 +1,73 @@
+name: Materialize reviewed MCP gateway source
+
+# One-shot source delivery only. It never updates main or deploys services.
+on:
+  push:
+    branches: [build/mcp-gateway-delivery-20260927]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verify exact patch and create clean feature commit
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          import hashlib
+          import json
+          import lzma
+          import os
+          from pathlib import Path
+          import subprocess
+          
+          BASE = "9366b23fed7f374cf744f1cd461c8192428c910d"
+          FEATURE = "feat/mcp-gateway"
+          EXPECTED = "184da98c13cc1d5b5b8afd8c7a355acb14d98201b37dba9515f74cb0c421b6f0"
+          parts = Path(".gateway-delivery")
+          manifest = json.loads((parts / "manifest.json").read_text())
+          compressed = b"".join((parts / f"part-{i:02}.xz").read_bytes() for i in range(6))
+          decoder = lzma.LZMADecompressor(memlimit=128 * 1024 * 1024)
+          patch = decoder.decompress(compressed, max_length=1024 * 1024)
+          assert decoder.eof and not decoder.unused_data, "Invalid or oversized payload"
+          assert hashlib.sha256(patch).hexdigest() == EXPECTED, "Patch checksum mismatch"
+          assert len(manifest) == 29
+          for name in manifest:
+              p = Path(name)
+              assert not p.is_absolute() and ".." not in p.parts
+              assert not name.startswith((".git/", ".github/", ".gateway-delivery/"))
+          patch_path = Path(os.environ["RUNNER_TEMP"]) / "gateway-reviewed.patch"
+          patch_path.write_bytes(patch)
+          
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          
+          git("checkout", "--detach", BASE)
+          for name, hashes in manifest.items():
+              p = Path(name)
+              before = hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
+              assert before == hashes["before"], f"Base mismatch: {name}"
+          git("apply", "--index", "--unidiff-zero", "--whitespace=error", str(patch_path))
+          assert set(git("diff", "--cached", "--name-only", BASE).splitlines()) == set(manifest)
+          for name, hashes in manifest.items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == hashes["after"], name
+          git("diff", "--cached", "--check")
+          subprocess.run(["python", "-m", "compileall", "-q", "hub/gateway", "hub/app.py", "hub/mcp.py", "hub/roles.py", "hub/store.py"], check=True)
+          for name in ("web/app.js", "web/identity.js", "web/roles.js", "web/mcp-gateway.js"):
+              subprocess.run(["node", "--check", name], check=True)
+          tree = git("write-tree")
+          commit = git("-c", "user.name=CodePier development", "-c", "user.email=codepier-automation@users.noreply.github.com", "commit-tree", tree, "-p", BASE, "-m", "feat(gateway): add consent-gated multi-MCP routing, accounts and reviewed exports")
+          # Never rewrite main or an existing feature branch. Bootstrap files have been
+          # removed before writing the tree; the feature's direct parent is BASE.
+          git("push", "origin", f"{commit}:refs/heads/{FEATURE}")
+          print(f"FEATURE_COMMIT={commit}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(f"Feature branch: `{FEATURE}`\n\nCommit: `{commit}`\n\nBase: `{BASE}`\n\nPatch SHA-256: `{EXPECTED}`\n\n29 source files verified. This job materializes reviewed source and checks syntax; it is not full CI or a deployment.\n")
+          PYTHON
