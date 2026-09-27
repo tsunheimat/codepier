@@ -1,0 +1,110 @@
+name: Publish verified upstream IAM Gateway integration
+
+# Isolated source publication; never updates main or deploys services.
+on:
+  push:
+    branches: [build/upstream-gateway-delivery-20260927]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.16.0'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Reconstruct exact reviewed two-parent merge and publish topic branch
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          import hashlib
+          import json
+          import lzma
+          import os
+          from pathlib import Path, PurePosixPath
+          import subprocess
+
+          UPSTREAM = "84e24d53b33ca24e3d54609f65df8c14c347f29e"
+          GATEWAY = "68aa9c8d2bf279b4579779f304b28410f23a3fe9"
+          EXPECTED_TREE = "08493407ae02e32f185e8469e35251086a29ca4e"
+          EXPECTED_COMMIT = "8c5f824a64c11753d450e35eb689809e81320a86"
+          FEATURE = "integrate/upstream-1.14.3"
+          COMPRESSED_HASH = "6935bbee0751c9eb18289dbaad72c15b76c986a405f50ff1c02dd2f4e9f71e1d"
+          PAYLOAD_HASH = "c21799271d9ccba859d93072a6d7daaf79c7395a53cb39d5f5551375b8807081"
+          RAW_COMMIT = 'tree 08493407ae02e32f185e8469e35251086a29ca4e\nparent 68aa9c8d2bf279b4579779f304b28410f23a3fe9\nparent 84e24d53b33ca24e3d54609f65df8c14c347f29e\nauthor CodePier development <codepier-automation@users.noreply.github.com> 1790520212 +0000\ncommitter CodePier development <codepier-automation@users.noreply.github.com> 1790520212 +0000\n\nMerge upstream 1.14.3 with scoped IAM and unified multi-MCP gateway\n\nPreserve upstream architecture and native fixes; port IAM/OIDC to checked Store worker phases, unify Principal and explicit public tool routing, retain per-user/Space/grant isolation, add first-consent delegation and extension-aware key rotation. Rebuild hashed frontend and integrate pinned PyJWT. Intentional pre-deployment public API break. Local Linux checkpoint: 1731 distinct tests passed; full CI, browsers, real IdP and external MCP acceptance remain pending. No deployment.\n'
+
+          def git(*args, input=None):
+              return subprocess.check_output(["git", *args], input=input).decode().strip()
+
+          def run(*args):
+              subprocess.run(list(args), check=True)
+
+          compressed = b"".join(Path(f".integration-delivery/part-{i:02}.xz").read_bytes() for i in range(6))
+          assert len(compressed) == 60468
+          assert hashlib.sha256(compressed).hexdigest() == COMPRESSED_HASH, "Corrupt delivery payload"
+          decoder = lzma.LZMADecompressor(memlimit=128 * 1024 * 1024)
+          raw = decoder.decompress(compressed, max_length=2 * 1024 * 1024)
+          assert decoder.eof and not decoder.unused_data, "Invalid or oversized payload"
+          assert hashlib.sha256(raw).hexdigest() == PAYLOAD_HASH
+          payload = json.loads(raw)
+          assert payload["version"] == 1
+          assert payload["upstream"] == UPSTREAM and payload["gateway"] == GATEWAY
+          assert payload["expected_tree"] == EXPECTED_TREE
+          assert len(payload["sha256"]) == 153
+          for name in set(payload["restore"] + payload["remove"] + payload["format"] + payload["generated"] + list(payload["sha256"])):
+              path = PurePosixPath(name)
+              assert not path.is_absolute() and ".." not in path.parts
+              assert path.parts[0] not in {".git", ".integration-delivery"}
+          patch = Path(os.environ["RUNNER_TEMP"]) / "reviewed-upstream-integration.patch"
+          patch.write_text(payload["patch"], encoding="utf-8")
+
+          git("config", "core.autocrlf", "false")
+          git("fetch", "--no-tags", "https://github.com/cyeinfpro/codepier.git", UPSTREAM)
+          git("fetch", "--no-tags", "origin", GATEWAY)
+          git("checkout", "--detach", UPSTREAM)
+          if payload["restore"]:
+              git("checkout", GATEWAY, "--", *payload["restore"])
+          if payload["remove"]:
+              git("rm", "-f", "--ignore-unmatch", "--", *payload["remove"])
+          run("npm", "--prefix", "web/mcp-apps", "ci", "--ignore-scripts")
+          if payload["format"]:
+              run("node", "web/mcp-apps/node_modules/prettier/bin/prettier.cjs", "--write", *payload["format"])
+              git("add", "--", *payload["format"])
+          git("apply", "--index", "--unidiff-zero", "--whitespace=error", str(patch))
+          run("npm", "--prefix", "web/mcp-apps", "run", "build")
+          run("python", "scripts/build_web_assets.py")
+          for name, expected in payload["sha256"].items():
+              file = Path(name)
+              actual = hashlib.sha256(file.read_bytes()).hexdigest() if file.exists() else None
+              assert actual == expected, f"Source/build mismatch: {name}"
+          git("add", "--", *payload["generated"])
+          git("diff", "--cached", "--check")
+          run("python", "-m", "compileall", "-q", "hub", "shared", "agent")
+          for name in ("web/identity.js", "web/roles.js", "web/access-profiles.js", "web/mcp-gateway.js"):
+              run("node", "--check", name)
+          tree = git("write-tree")
+          assert tree == EXPECTED_TREE, f"Tree mismatch: {tree}"
+          assert RAW_COMMIT.startswith(f"tree {EXPECTED_TREE}\nparent {GATEWAY}\nparent {UPSTREAM}\n")
+          commit = git("hash-object", "-w", "-t", "commit", "--stdin", input=RAW_COMMIT.encode())
+          assert commit == EXPECTED_COMMIT
+          for parent in (UPSTREAM, GATEWAY):
+              git("merge-base", "--is-ancestor", parent, commit)
+          # No force pushes and no main update. An existing different integration branch
+          # requires explicit reconciliation, not an automatic rewrite.
+          existing = git("ls-remote", "--heads", "origin", f"refs/heads/{FEATURE}")
+          if existing:
+              assert existing.split()[0] == EXPECTED_COMMIT, "Feature branch already exists at another commit"
+          else:
+              git("push", "origin", f"{commit}:refs/heads/{FEATURE}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(f"Verified exact integration commit: `{commit}`\n\nTree: `{tree}`\n\nBranch: `{FEATURE}`\n\nBoth Gateway and upstream ancestry retained. 153 source/build paths verified. Local checkpoint reports 1731 distinct passing tests; this delivery job checks reconstruction and syntax, not full CI or deployment. Main is unchanged.\n")
+          print(f"FEATURE_COMMIT={commit}")
+          PYTHON
