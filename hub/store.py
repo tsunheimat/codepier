@@ -167,6 +167,8 @@ class Store:
         migrate_gateway(self.db)
         from hub.mcp_tasks_schema import migrate as migrate_tasks
         migrate_tasks(self.db)
+        from hub.resource_schema import migrate as migrate_resources
+        migrate_resources(self.db)
 
     @contextmanager
     def transaction(self, *, immediate=True):

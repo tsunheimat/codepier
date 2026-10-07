@@ -34,7 +34,7 @@ def test_read_does_not_choose_latest_workflow_or_create_operations(env):
     recent = operation(env)
     before = env[0].store.one('SELECT count(*) n FROM operations')['n']
     value = dashboard(env)
-    assert value['workflow'] is None and value['workflows'][0]['workflow_id'] == receipt['workflow_id']
+    assert value['workflow'] is None and value['workflows'] == []
     assert not value['execution_started'] and not value['evidence']
     assert value['recent_operations'][0]['operation_id'] == recent
     assert env[0].store.one('SELECT count(*) n FROM operations')['n'] == before
@@ -138,8 +138,8 @@ def test_old_checkpoint_window_is_explicit_and_workflow_list_paginates(env):
     for _ in range(101): receipt = update(env, receipt)
     assert dashboard(env, receipt)['history_truncated']
     for _ in range(3): create(env)
-    first = dashboard(env, limit=2)
-    second = dashboard(env, limit=2, workflow_cursor=first['next_workflow_cursor'])
+    first = dashboard(env, receipt, limit=2)
+    second = dashboard(env, receipt, limit=2, workflow_cursor=first['next_workflow_cursor'])
     assert len({w['workflow_id'] for p in (first, second) for w in p['workflows']}) == 4
     assert second['next_workflow_cursor'] is None
 

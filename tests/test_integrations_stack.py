@@ -259,10 +259,16 @@ def test_activity_is_real_timing_not_model_thinking_and_is_scoped(integrated_sta
 
 def test_handoff_preserves_goal_and_does_not_start_execution(integrated_stack):
     s=integrated_stack
-    created=s.mcp('workspace',{'project': 'Imago', 'idempotency_key': uuid.uuid4().hex, 'operation': 'workflow_create', 'options': {'title': 'Handoff fixture', 'goal': 'Keep original intent'}})['structuredContent']
-    result=s.mcp('workspace',{'operation': 'handoff', 'options': {'workflow_id': created['workflow_id']}})['structuredContent']
+    from tests.historical_workflows import seed_workflow
+    from hub.store import Store
+    store=Store(s.hubdir)
+    try:
+        grant=store.one('SELECT * FROM grants WHERE id=?',(s.grant,))
+        created=seed_workflow(store,project_id=s.project['id'],user_id=grant['user_id'],grant_id=s.grant,goal='Keep original intent')
+    finally:store.close()
+    result=s.mcp('workspace',{'operation':'handoff','options':{'workflow_id':created['workflow_id']}})['structuredContent']
     assert result['original_goal']=='Keep original intent' and not result['execution_started']
-    assert result['remaining'] and result['next']['tool']=='project_query' and result['next']['arguments']['operation']=='workflow_get'
+    assert result['retired'] and result['remaining'] and result['next']=={}
 
 
 def test_local_owner_control_is_loopback_authenticated_and_journaled(integrated_stack):

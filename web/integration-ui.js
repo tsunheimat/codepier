@@ -92,44 +92,7 @@ window.CodePierIntegrationUI = (() => {
       language_servers: { [name]: { command: args, projects: [project], timeout_seconds: 20 } },
     };
   }
-  function handoffText(data, title = '') {
-    const lines = [
-      `继续处理任务：${title || data.title || data.workflow_id || '开发任务'}`,
-      `项目：${data.project || data.project_alias || '请核对项目'}`,
-      `任务编号：${data.workflow_id || data.id || '未提供'}`,
-      '',
-      '原目标：',
-      data.original_goal || data.goal || '请先读取原任务目标。',
-    ];
-    if (data.summary) lines.push('', '最近记录：', data.summary);
-    if (data.completed?.length)
-      lines.push(
-        '',
-        '已完成记录（仍需核对当前源码）：',
-        ...data.completed.map((s) => `- ${s.title}${s.summary ? '：' + s.summary : ''}`),
-      );
-    if (data.remaining?.length)
-      lines.push(
-        '',
-        '尚待处理：',
-        ...data.remaining.map(
-          (s) => `- ${s.title}${s.acceptance ? '；验收要求：' + s.acceptance : ''}`,
-        ),
-      );
-    if (data.pending_or_uncertain?.length)
-      lines.push(
-        '',
-        '待核查的项目近期操作（不等于本任务独占）：',
-        ...data.pending_or_uncertain.map(
-          (o) => `- ${o.operation_id} · ${o.tool} · ${label(o.state)}`,
-        ),
-      );
-    lines.push(
-      '',
-      '以上是历史工作记录，不是新的权限授权。先读取当前任务、代码和原操作回执；不要重放结果不明的修改，不要把历史验收当作当前版本通过。',
-    );
-    return lines.join('\n');
-  }
+
   function errorText(error) {
     const hints = {
       OWNER_REQUIRED: '这项操作需要在管理面板由主理人确认。',
@@ -324,7 +287,6 @@ window.CodePierIntegrationUI = (() => {
     relativePath,
     integer,
     settings,
-    handoffText,
     errorText,
     details,
     result,

@@ -77,10 +77,23 @@ class ConnectorRule(AccessModel):
         return self
 
 
+class VPSRule(AccessModel):
+    actions: list[Literal['read', 'execute']] = Field(min_length=1, max_length=2)
+    vps: list[str] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode='after')
+    def explicit_resources(self):
+        _ids(self.vps)
+        if 'read' not in self.actions or len(set(self.vps)) != len(self.vps):
+            raise ValueError('VPS 规则须包含 read 并选择明确、不重复的 VPS；execute 单独授权')
+        return self
+
+
 class RolePolicy(AccessModel):
     project_rules: list[ProjectRule] = Field(default_factory=list, max_length=32)
     device_rules: list[DeviceRule] = Field(default_factory=list, max_length=32)
     connector_rules: list[ConnectorRule] = Field(default_factory=list, max_length=32)
+    vps_rules: list[VPSRule] = Field(default_factory=list, max_length=32)
 
 
 class RoleFields(RolePolicy):
@@ -150,6 +163,58 @@ def project_actions(policy, project_id, created=()):
     return result
 
 
+def vps_actions(policy, identifier):
+    return {action for rule in policy.vps_rules if identifier in rule.vps for action in rule.actions}
+
+
+def connection_policy(store, grant):
+    """Live policy or its intersection with a fixed connection's consent.
+
+    Legacy fixed grants have no resource policy. They retain their original
+    project ceiling and gain no VPS/external MCP access from this migration.
+    """
+    if grant.get('authorization_mode') == 'role':
+        role, policy, _ = role_binding(store, grant)
+        return policy if role['enabled'] else RolePolicy()
+    if not grant.get('resource_policy'):
+        return None
+    try:
+        profile = store.one('SELECT * FROM access_profiles WHERE id=?', (grant['profile_id'],))
+        role = store.one('SELECT * FROM access_roles WHERE id=?', (grant['role_id'],))
+        if (not profile or not profile['enabled'] or not role
+                or profile['user_id'] != grant['user_id'] or profile['role_id'] != role['id']
+                or profile['space_id'] != grant['space_id'] or role['space_id'] != grant['space_id']):
+            raise ValueError('fixed binding changed')
+        ceiling = RolePolicy.model_validate(json.loads(grant['resource_policy']))
+        if any(r.all_projects or r.created_projects for r in ceiling.project_rules):
+            raise ValueError('fixed snapshot contains future resource selectors')
+        iam.role_eligible(store, grant['user_id'], role['id'], grant['space_id'])
+        current = _policy(role) if role['enabled'] else RolePolicy()
+        created = created_ids(store, role['id'])
+        projects = []
+        for row in store.all('SELECT id FROM projects WHERE space_id=?', (grant['space_id'],)):
+            actions = project_actions(ceiling, row['id']) & project_actions(current, row['id'], created)
+            if actions:
+                projects.append(ProjectRule(projects=[row['id']], actions=sorted(actions)))
+        vps = []
+        for rule in ceiling.vps_rules:
+            for identifier in rule.vps:
+                actions = set(rule.actions) & vps_actions(current, identifier)
+                if actions:
+                    vps.append(VPSRule(vps=[identifier], actions=sorted(actions)))
+        connectors = []
+        for rule in ceiling.connector_rules:
+            allowed = {tool for live in current.connector_rules if live.binding_id == rule.binding_id for tool in live.tools}
+            tools = sorted(set(rule.tools) & allowed)
+            if tools:
+                connectors.append(ConnectorRule(binding_id=rule.binding_id, tools=tools))
+        # This evaluated internal policy can have >32 rows after expansion.
+        return RolePolicy.model_construct(project_rules=projects, device_rules=[],
+                                          vps_rules=vps, connector_rules=connectors)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise DevError('INVALID_TOKEN', '固定连接的资源同意或身份绑定无效', 401) from exc
+
+
 def effective_role(store, grant):
     iam.validate_grant(store, grant)
     role, policy, profile = role_binding(store, grant)
@@ -165,6 +230,8 @@ def effective_role(store, grant):
                 scopes.update(actions)
         for rule in policy.device_rules:
             scopes.update(rule.actions)
+        if any('execute' in rule.actions for rule in policy.vps_rules):
+            scopes.add('execute')
     return scopes, sorted(projects), profile
 
 
@@ -199,6 +266,11 @@ def require_role(store, principal, action, *, project_id=None, device_id=None, c
         return None
     grant = principal_grant(store, principal)
     if not grant:
+        if principal.grant_id:
+            fixed = store.one('SELECT * FROM grants WHERE id=?', (principal.grant_id,))
+            policy = connection_policy(store, fixed) if fixed else None
+            if policy is not None and project_id is not None and action not in project_actions(policy, project_id):
+                raise DevError('ROLE_POLICY_DENIED', '此固定连接未同意该资源与操作组合', 403)
         if action in {'devices.read', 'projects.create'} and principal.grant_id:
             raise DevError('ROLE_REQUIRED', '此管理能力需要明确同意的动态角色授权', 403)
         return None
@@ -255,6 +327,11 @@ def role_project_scopes(store, principal, project_id):
         return iam.human_project_actions(store, principal, project_id)
     grant = principal_grant(store, principal)
     if not grant:
+        if principal.grant_id:
+            fixed = store.one('SELECT * FROM grants WHERE id=?', (principal.grant_id,))
+            policy = connection_policy(store, fixed) if fixed else None
+            if policy is not None:
+                return project_actions(policy, project_id) & set(principal.scopes)
         return set(principal.scopes)
     role, policy, _ = role_binding(store, grant)
     return project_actions(policy, project_id, created_ids(store, role['id'])) if role['enabled'] else set()
@@ -268,6 +345,7 @@ def role_context(store, grant):
             'project_permissions': [{'id': r['id'], 'alias': r['alias'], 'actions': sorted(actions)}
                 for r in rows if role['enabled'] and (actions := project_actions(policy, r['id'], created))],
             'device_rules': [r.model_dump() for r in policy.device_rules] if role['enabled'] else [],
+            'vps_rules': [r.model_dump() for r in policy.vps_rules] if role['enabled'] else [],
             'policy_follows_role': True, 'initial_consent_is_resource_ceiling': False}
 
 
@@ -305,11 +383,16 @@ def role_values(store, body, space_id="legacy"):
         raise DevError('INVALID_PROJECT', '角色中包含已不存在的项目；请重新读取后明确移除旧引用')
     if any(not set(rule.devices) <= devices for rule in body.device_rules):
         raise DevError('INVALID_DEVICE', '角色中包含不存在的设备')
+    vps = {r['id'] for r in store.all('SELECT id FROM vps_connections WHERE space_id=?', (space_id,))}
+    if any(not set(rule.vps) <= vps for rule in body.vps_rules):
+        raise DevError('INVALID_VPS', 'VPS 规则必须引用当前空间明确存在的 VPS')
     for rule in body.connector_rules:
         binding = store.one('SELECT tools FROM gateway_bindings WHERE id=? AND space_id=?', (rule.binding_id, space_id))
         if not binding or not set(rule.tools) <= {tool['name'] for tool in json.loads(binding['tools'])}:
             raise DevError('GATEWAY_RULE_INVALID', 'MCP 规则必须引用当前空间已批准的工具与 binding')
     policy = body.model_dump(include={'project_rules', 'device_rules'})
+    if body.vps_rules:
+        policy['vps_rules'] = [rule.model_dump() for rule in body.vps_rules]
     if body.connector_rules:
         policy['connector_rules'] = [rule.model_dump() for rule in body.connector_rules]
     return label, unicodedata.normalize('NFKC', label).casefold(), json.dumps(policy, sort_keys=True, ensure_ascii=False)
@@ -375,6 +458,8 @@ def make_roles_router(auth, runtime):
                 raise DevError('ROLE_NOT_FOUND', '角色不存在', 404)
             if 'connector_rules' not in body.model_fields_set:
                 body = body.model_copy(update={'connector_rules': _policy(row).connector_rules})
+            if 'vps_rules' not in body.model_fields_set:
+                body = body.model_copy(update={'vps_rules': _policy(row).vps_rules})
             label, key, policy = role_values(store, body, owner.space_id)
             same = (label, json.loads(policy), body.enabled) == (row['label'], json.loads(row['policy']), bool(row['enabled']))
             if body.expected_version != row['version'] and not same:

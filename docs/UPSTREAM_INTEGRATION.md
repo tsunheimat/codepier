@@ -1,5 +1,7 @@
 # Upstream 1.14.3 + IAM + MCP Gateway integration
 
+Current resource/navigation/consent behavior is documented in [RESOURCE_MODEL.md](RESOURCE_MODEL.md) and [CONVERSATIONS.md](CONVERSATIONS.md). Earlier delivery sections below are historical context; source and these product docs define the redesign.
+
 > Historical implementation record from the contribution branch. The features were merged in upstream PR #14 and are included in 1.15.0. Current release validation is recorded in the GitHub Release; the older acceptance counts and unreleased status below describe that earlier checkpoint.
 
 This is an **unreleased fork integration**, not an upstream release or deployment.
@@ -73,7 +75,7 @@ private network/HTTP access requires explicit connector policy.
 When creating a Role PAT or deciding OAuth consent, `confirm_external_mcp: true`
 explicitly includes external MCP delegation in the same transaction as that grant.
 The UI offers the choice in its Role selector. The default is false; non-boolean
-values and fixed grants cannot acquire external delegation. Existing explicit
+values and legacy fixed grants cannot acquire external delegation. New consolidated fixed connections may explicitly consent to an exact account/binding/tool snapshot, including pinned tool definitions; future role/tool additions do not expand it. Existing explicit
 consent/revoke endpoints remain usable; a Role edit cannot fabricate consent.
 
 Gateway discovery and dispatch recheck account/version/policy after waits;

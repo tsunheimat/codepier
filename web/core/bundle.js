@@ -363,7 +363,7 @@ var CP = (() => {
       $("#app").inert = true;
       const dialog = $(".modal");
       const complex = dialog.querySelector(
-        '#role-form,#profile-form,#vps-form,#project-form,#device-form,#device-rename,#agent-command-form,#grant-form,#workflow-create-form,#workflow-update-form,#artifact-form,.gw-tools,#gw-form [name="networks"],#iam-issuer,#iam-group_name'
+        '#role-form,#profile-form,#vps-form,#project-form,#device-form,#device-rename,#agent-command-form,#grant-form,#connection-form,#conversation-form,#project-mcp-form,#artifact-form,.gw-tools,#gw-form [name="networks"],#iam-issuer,#iam-group_name'
       );
       if (complex || large) {
         dialog.classList.add("modal-editor");

@@ -40,7 +40,7 @@ function uiTrapTab(e, root) {
   }
 }
 const uiMobileMedia = matchMedia('(max-width:900px)');
-const uiDockPages = new Set(['overview', 'projects', 'native', 'workflows']);
+const uiDockPages = new Set(['access', 'resources', 'native', 'conversations']);
 function uiSyncNavigation() {
   $$('[data-nav]').forEach((b) => {
     const chosen = b.dataset.nav === S.page;
@@ -555,23 +555,33 @@ function uiSectionTabs(host, groups) {
   choose(groups.some((g) => g.id === tabs[key]) ? tabs[key] : groups[0].id);
 }
 function uiManagementLayout(page) {
-  if (
-    !['identity', 'members', 'identity-admin', 'profiles', 'roles', 'mcp-gateway'].includes(S.page)
-  )
+  const area =
+    S.page === 'access'
+      ? S.accessTab === 'advanced'
+        ? 'profiles'
+        : S.accessTab || 'roles'
+      : S.page === 'resources' && S.resourceTab === 'mcp'
+        ? 'mcp-gateway'
+        : S.page;
+  if (!['identity', 'members', 'identity-admin', 'profiles', 'roles', 'mcp-gateway'].includes(area))
     return;
   const host = $('#profiles-page,#roles-page,#gateway-page', page) || page;
   host.classList.add('management-page');
   const panels = $$(':scope > .panel', host);
-  if (panels.length > 1 && S.page === 'mcp-gateway') {
+  if (panels.length > 1 && area === 'mcp-gateway') {
     uiSectionTabs(host, [
       { id: 'services', label: '服务与账号', panels: panels.slice(0, 2) },
       { id: 'tools', label: '已发布工具', panels: panels.slice(2, 3) },
-      { id: 'delegation', label: '我的委派', panels: panels.slice(3, 4) },
-      { id: 'activity', label: '调用记录', panels: panels.slice(4) },
+      ...(S.page === 'resources'
+        ? [{ id: 'activity', label: '调用记录', panels: panels.slice(3) }]
+        : [
+            { id: 'delegation', label: '我的委派', panels: panels.slice(3, 4) },
+            { id: 'activity', label: '调用记录', panels: panels.slice(4) },
+          ]),
     ]);
   } else if (panels.length > 1) {
     const grid = document.createElement('div');
-    grid.className = 'management-grid management-grid-' + S.page;
+    grid.className = 'management-grid management-grid-' + area;
     panels[0].before(grid);
     grid.append(...panels);
   }
@@ -587,8 +597,8 @@ function uiManagementLayout(page) {
     const input = document.createElement('input');
     input.type = 'search';
     const filters = S.managementFilters || (S.managementFilters = {});
-    const filterKey = S.page + ':' + index;
-    input.id = 'management-filter-' + S.page + '-' + index;
+    const filterKey = S.page + ':' + area + ':' + index;
+    input.id = 'management-filter-' + S.page + '-' + area + '-' + index;
     input.value = filters[filterKey] || '';
     input.placeholder = '搜索名称、范围或标识';
     input.setAttribute('aria-label', '筛选' + (body.previousElementSibling?.textContent || '列表'));
@@ -628,10 +638,15 @@ function uiPolicyEditor(dialog, preferLast = false) {
     const projectRules = $('#role-project-rules', form),
       devices = $('#role-device-rules', form);
     projectRules.before(layout);
-    body.append(projectRules, devices);
+    body.append(
+      projectRules,
+      ...['role-vps-rules', 'role-mcp-rules'].map((id) => $('#' + id, form)).filter(Boolean),
+      devices,
+    );
     $('.policy-add-actions', navigation).append(
       $('#role-add-project-rule', form),
       $('#role-add-device-rule', form),
+      ...['role-add-vps-rule', 'role-add-mcp-rule'].map((id) => $('#' + id, form)).filter(Boolean),
     );
     layout.append(navigation, body);
   }
@@ -667,12 +682,15 @@ function uiPolicyEditor(dialog, preferLast = false) {
       description = document.createElement('small');
       button.append(title, description);
     }
-    title.textContent = `${index + 1} · ${rule.hasAttribute('data-project-rule') ? '项目规则' : '设备委派'}`;
+    title.textContent = `${index + 1} · ${$('legend', rule)?.textContent || '资源规则'}`;
     const update = () => {
       const label = rule._policyButton?.querySelector('small');
       if (!label) return;
       const all = $('[name="all_projects"]', rule)?.checked;
-      const resources = $$('[name="project"]:checked,[name="device"]:checked', rule).length;
+      const resources = $$(
+        '[name="project"]:checked,[name="device"]:checked,[name="vps"]:checked,[name="mcp_tool"]:checked',
+        rule,
+      ).length;
       label.textContent = all
         ? '全部当前与未来项目'
         : resources

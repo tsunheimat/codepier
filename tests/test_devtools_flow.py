@@ -76,7 +76,7 @@ def test_overview_readiness_guidance_raw_collapsed_and_keyboard(tools_page):
     page = tools_page
     expect(page.locator('h1')).to_have_text('开发工具')
     expect(page.locator('[data-i-tab=overview]')).to_have_attribute('aria-selected', 'true')
-    expect(page.locator('.integration-action-card')).to_have_count(4)
+    expect(page.locator('.integration-action-card')).to_have_count(3)
     expect(page.locator('#i-checks')).to_contain_text('基础开发工具已就绪')
     assert page.locator('#i-checks details[open]').count() == 0
     page.focus('[data-i-tab=overview]')
@@ -96,7 +96,7 @@ def test_status_failure_retries_locally_without_hiding_tasks(tools_page):
     }''')
     page.click('[data-i-action=refresh]')
     expect(page.locator('#i-checks')).to_contain_text('fixture connection missing')
-    expect(page.locator('#i-workflows')).to_contain_text('建立开发任务')
+    expect(page.locator('#integration-center [data-nav=conversations]')).to_be_visible()
     page.evaluate('() => {failReady=false;savedReady.browser={connected:true,enabled:true,profile_bound:false,pool:{available:0}};}')
     page.locator('#i-checks [data-i-action=section-retry]').click()
     expect(page.locator('#i-checks')).to_contain_text('基础开发工具已就绪')
@@ -270,22 +270,12 @@ def test_code_navigation_opens_exact_line_and_keeps_dirty_buffer(tools_page, int
     assert page.evaluate('S.work.dirty')
 
 
-def test_handoff_is_readable_bound_and_enters_draft_without_sending(tools_page, integrated_stack):
-    page = tools_page
-    s = integrated_stack
-    created=s.call('workflows_create',{'project':s.project['id'],'title':'Flow handoff fixture','goal':'Preserve the original goal','idempotency_key':uuid.uuid4().hex})
-    wid=created['workflow_id']
-    page.evaluate('(wid)=>CodePierIntegrations.open({project:S.integrations.project,tab:"handoff",workflow_id:wid})', wid)
-    expect(page.locator('#i-result')).to_contain_text('Preserve the original goal')
-    assert page.locator('#i-result details[open]').count() == 0
-    page.click('[data-i-action=handoff-chat]')
-    expect(page.locator('#chat-compose')).to_have_value(re.compile('Preserve the original goal'))
-    assert wid in page.input_value('#chat-compose')
+def test_conversation_entry_has_no_handoff_tracker_or_native_prompt(tools_page, integrated_stack):
+    page=tools_page
+    assert page.locator('[data-i-tab=handoff],[data-i-action=new-workflow]').count()==0
+    page.locator('#integration-center [data-nav=conversations]').click()
+    expect(page.locator('#conversations-page')).to_be_visible()
     assert not page.evaluate("nativeCalls.some(r=>r.path.endsWith('/start')||r.path.endsWith('/chat_prompt'))")
-    page.locator('.chat-overflow summary').click()
-    page.locator('[data-devtools=validation]').click()
-    expect(page.locator('#i-project')).to_have_value(s.project['id'])
-    expect(page.locator('[data-i-tab=validation]')).to_have_attribute('aria-selected','true')
 
 
 def test_validation_details_do_not_replace_newer_selection(tools_page):
@@ -373,7 +363,7 @@ def test_new_overview_setup_and_forms_have_bounded_geometry(tools_page,width,the
     page.emulate_media(color_scheme=theme)
     page.evaluate('(theme)=>document.documentElement.dataset.appearance=theme',theme)
     OUT.mkdir(parents=True,exist_ok=True)
-    for name in ['overview','validation','handoff','navigation','worktrees','browser','status','setup']:
+    for name in ['overview','validation','navigation','worktrees','browser','status','setup']:
         tab(page,name)
         expect(page.locator('#i-body')).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+2'),(width,theme,name)

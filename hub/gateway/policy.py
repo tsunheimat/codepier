@@ -5,22 +5,22 @@ import json
 
 from hub import iam
 from hub.access_profiles import refresh_profile_principal
-from hub.roles import role_binding
+from hub.roles import role_binding, connection_policy
 from hub.gateway.catalog import fingerprint
 from shared.util import DevError
 
 
 def grant_context(store, principal):
     principal = refresh_profile_principal(store, principal)
-    if not principal.grant_id or principal.authorization_mode != 'role':
-        raise DevError('GATEWAY_ROLE_REQUIRED', '外部 MCP 仅接受明确同意的动态 Role 凭据', 403)
+    if not principal.grant_id:
+        raise DevError('GATEWAY_ROLE_REQUIRED', '外部 MCP 需要明确同意的客户端连接', 403)
     grant = store.one('SELECT * FROM grants WHERE id=?', (principal.grant_id,))
+    if grant['authorization_mode'] != 'role' and not grant.get('resource_policy'):
+        raise DevError('GATEWAY_ROLE_REQUIRED', '此传统固定连接未同意外部 MCP；请建立明确配置的连接', 403)
     consent = store.one('SELECT * FROM gateway_consents WHERE grant_id=?', (principal.grant_id,))
     if not consent or consent['consent_version'] != 1 or any(consent[key] != grant[key] for key in ('user_id', 'space_id', 'profile_id', 'role_id')):
         raise DevError('GATEWAY_CONSENT_REQUIRED', '请由此凭据的账号在面板明确同意外部 MCP 委派', 403)
-    role, policy, _ = role_binding(store, grant)
-    if not role['enabled']:
-        raise DevError('GATEWAY_POLICY_DENIED', '当前角色已暂停', 403)
+    policy = connection_policy(store, grant)
     return principal, policy
 
 
@@ -37,6 +37,16 @@ def binding_rows(store, binding_id, space_id):
     return binding, account, connector
 
 
+def within_fixed_consent(store, principal, binding_id, tool):
+    grant = store.one('SELECT authorization_mode,connector_ceiling FROM grants WHERE id=?', (principal.grant_id,))
+    if grant['authorization_mode'] == 'role':
+        return True
+    try:
+        return json.loads(grant['connector_ceiling'])[binding_id].get(tool['name']) == fingerprint(tool)
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def require_tool(store, principal, binding_id, tool_name):
     principal, policy = grant_context(store, principal)
     if not any(rule.binding_id == binding_id and tool_name in rule.tools for rule in policy.connector_rules):
@@ -47,6 +57,8 @@ def require_tool(store, principal, binding_id, tool_name):
     tool = next((tool for tool in json.loads(binding['tools']) if tool['name'] == tool_name), None)
     if tool is None:
         raise DevError('GATEWAY_TOOL_NOT_FOUND', '工具未获批准发布', 404)
+    if not within_fixed_consent(store, principal, binding_id, tool):
+        raise DevError('GATEWAY_FIXED_CONSENT_CHANGED', '工具定义超出此固定连接的初次同意；请核对并建立新的明确连接', 403)
     current = next((item for item in json.loads(account['catalog']) if item['name'] == tool_name), None)
     if current is None or fingerprint(current) != fingerprint(tool):
         raise DevError('GATEWAY_SCHEMA_REVIEW_REQUIRED', '发现的工具定义已改变；请审核并重新发布', 409)
@@ -71,7 +83,8 @@ def visible_tools(store, principal):
         discovered = {tool['name']: fingerprint(tool) for tool in json.loads(account['catalog'])}
         for tool in json.loads(binding['tools']):
             key = (binding['id'], tool['name'])
-            if tool['name'] in rule.tools and key not in seen and discovered.get(tool['name']) == fingerprint(tool):
+            if (tool['name'] in rule.tools and key not in seen and discovered.get(tool['name']) == fingerprint(tool)
+                    and within_fixed_consent(store, principal, binding['id'], tool)):
                 seen.add(key); visible.append((binding, tool))
     return visible
 
@@ -82,14 +95,15 @@ def consent_grant(store, principal, grant_id, expected_role_version):
     store.require_transaction()
     grant = store.one('SELECT * FROM grants WHERE id=? AND user_id=? AND space_id=?',
                       (grant_id, principal.user_id, principal.space_id))
-    if not grant or grant['authorization_mode'] != 'role':
-        raise DevError('GATEWAY_ROLE_REQUIRED', '外部 MCP 委派要求动态 Role 授权', 403)
+    if not grant or (grant['authorization_mode'] != 'role' and not grant.get('resource_policy')):
+        raise DevError('GATEWAY_ROLE_REQUIRED', '外部 MCP 委派需要明确的角色资源同意', 403)
     iam.validate_grant(store, grant)
-    role, _, _ = role_binding(store, grant)
+    connection_policy(store, grant)
+    role = store.one('SELECT * FROM access_roles WHERE id=?', (grant['role_id'],))
     if not role['enabled'] or role['version'] != expected_role_version:
         raise DevError('ROLE_CHANGED', '角色政策已改变，请重新阅读再同意', 409)
     store.db.execute("""INSERT INTO gateway_consents(grant_id,user_id,space_id,profile_id,role_id,consent_version,created)
         VALUES(?,?,?,?,?,1,?) ON CONFLICT(grant_id) DO UPDATE SET consent_version=1,created=excluded.created""",
         (grant_id, principal.user_id, principal.space_id, grant['profile_id'], grant['role_id'], time.time()))
     store.audit(principal.actor, 'gateway.delegation_consented', grant_id,
-                detail={'role_id': role['id'], 'role_version': role['version'], 'future_reviewed_connector_rules': True}, commit=False)
+                detail={'role_id': role['id'], 'role_version': role['version'], 'future_reviewed_connector_rules': grant['authorization_mode'] == 'role'}, commit=False)

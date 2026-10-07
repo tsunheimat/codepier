@@ -111,7 +111,7 @@ window.CodePierProfiles = (() => {
     }
   }
   function selectorHTML(profiles) {
-    return `<div class="field"><label for="access-profile-selector">以哪个 Profile 连接</label><select id="access-profile-selector" name="access_profile"><option value="">传统逐次授权（不使用 Profile）</option>${profiles.map((p) => `<option value="${esc(p.id)}" ${p.enabled ? '' : 'disabled'}>${esc(p.label)}${p.enabled ? '' : ' · 已停用'}</option>`).join('')}</select><small>不同用途请连接不同 Profile。重新连接或增加权限时选择原 Profile，身份 ID 才会保持一致。</small><a href="/#profiles" target="_blank" rel="noopener noreferrer">在新标签页管理 Profiles</a></div>`;
+    return `<div class="field"><label for="access-profile-selector">连接角色 / 原有身份</label><select id="access-profile-selector" name="access_profile"><option value="">选择角色或原有身份</option>${profiles.map((p) => `<option value="${esc(p.id)}" ${p.enabled ? '' : 'disabled'}>${p.new_identity ? '角色 · ' : '原有身份 · '}${esc(p.label)}${p.new_identity ? ' · 新连接' : ''}${p.enabled ? '' : ' · 已停用'}</option>`).join('')}</select><small>选择角色可在本窗口自动建立连接身份；复用原有身份会保留稳定 ID，但每个 grant 的历史仍独立。</small><a href="/#access" target="_blank" rel="noopener noreferrer">高级：稳定身份设置</a></div>`;
   }
   function bindSelector(dialog, profiles, requested = allScopes, defaults = {}) {
     const select = $('#access-profile-selector', dialog),

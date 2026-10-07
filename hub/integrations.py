@@ -51,24 +51,14 @@ class HubIntegrations:
 
     def handoff(self,args,principal):
         row=self.runtime.workflows.get({'workflow_id':args['workflow_id'],'before_event_id':None,'event_limit':5},principal)
-        project=self.runtime.project(row['project_id'],principal)
-        recent=self.runtime.list_operations({'project':project['alias'],'state':'','tool':'','idempotency_key':'','limit':40,'before_created':None},principal)['operations']
-        unfinished=[];validations=[];changes=[]
-        for op in recent:
-            if op['created']<row['created']:continue
-            if op['state'] in {'queued','running','reconnecting','cancelling','unknown','needs_review','interrupted'}:
-                unfinished.append({'operation_id':op['id'],'tool':op['tool'],'state':op['state'],
-                    'next':{'tool':'operations_get','arguments':{'operation_id':op['id'],'output_limit':8000}}})
-            if op['tool']=='validation_run':validations.append({'operation_id':op['id'],'state':op['state'],'freshness':'not_checked'})
-            if op['tool']=='show_changes':changes.append({'operation_id':op['id'],'state':op['state']})
-        return {'workflow_id':row['workflow_id'],'version':row['version'],'project':project['alias'],
-            'original_goal':row['goal'],'state':row['state'],'summary':row.get('summary',''),
-            'completed':[{'id':s['id'],'title':s['title'],'summary':s.get('summary',''),'evidence':s.get('evidence',[])} for s in row['steps'] if s['state']=='completed'],
-            'remaining':[s for s in row['steps'] if s['state'] not in {'completed','skipped'}],
-            'pending_or_uncertain':unfinished,'recent_validation_operations':validations[:5],'recent_review_operations':changes[:5],
-            'mapping_changed':row['mapping_changed'],'next_step':row.get('next_step'),
-            'next':unfinished[0]['next'] if unfinished else {'tool':'workflows_get','arguments':{'workflow_id':row['workflow_id']}},
-            'execution_started':False,'trust':'摘要只是已保存的工作记录；重新读取当前代码核实，不得重放结果不明的写入。'}
+        return {'workflow_id': row['workflow_id'], 'version': row['version'], 'project': row['project_alias'],
+                'original_goal': row['goal'], 'state': row['state'], 'summary': row['summary'],
+                'completed': [s for s in row['steps'] if s['state'] == 'completed'],
+                'remaining': [s for s in row['steps'] if s['state'] not in {'completed','skipped'}],
+                'pending_or_uncertain': [], 'recent_validation_operations': [], 'recent_review_operations': [],
+                'mapping_changed': row['mapping_changed'], 'next_step': None, 'next': {},
+                'retired': True, 'execution_started': False,
+                'trust': '历史工作流仅供读取；保存的摘要不证明当前代码状态。Conversations 只关联资源和操作。'}
 
     def begin(self,principal,project,name,metadata):
         meaningful=name not in SAFE and name not in {'operations_get','operations_wait','operations_list','activity_list','diagnostics_get','operations_trace'}
@@ -137,11 +127,16 @@ class CallTimingMiddleware:
     def __init__(self,app,runtime):self.app,self.runtime=app,runtime
     async def __call__(self,scope,receive,send):
         if scope['type']!='http' or scope.get('path')!='/mcp':return await self.app(scope,receive,send)
+        from hub.conversations import current_conversation
+        context = current_conversation.set(None)
         async def observed(message):
             await send(message)
             if message['type']=='http.response.body' and not message.get('more_body',False):
                 await self.runtime.store.run(self.runtime.integrations.finish,scope.get('state',{}).get('codepier_call_trace'))
         try:await self.app(scope,receive,observed)
         finally:
-            trace=scope.get('state',{}).get('codepier_call_trace')
-            if trace and not trace['finished']:await self.runtime.store.run(self.runtime.integrations.finish,trace,status='interrupted')
+            try:
+                trace=scope.get('state',{}).get('codepier_call_trace')
+                if trace and not trace['finished']:await self.runtime.store.run(self.runtime.integrations.finish,trace,status='interrupted')
+            finally:
+                current_conversation.reset(context)

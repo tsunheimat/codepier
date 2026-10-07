@@ -2,11 +2,11 @@
 
 本项目的 Hub、Agent 和 stdio 桥接器不需要模型 API Key。原生 CLI 的账号，以及官方 Tunnel 的运行凭据，是各自独立的授权。本文不表示已访问你的账号、创建 Tunnel 或部署服务。
 
-工具目录统一为九个入口，浏览器和桌面包含在内；其他能力通过各工具的操作按需发现。旧工具名已移除，更新后需要刷新客户端工具目录。调用示例见 [九个 MCP 工具](CORE_TOOLS.md)。
+工具目录保留项目、文件、执行、浏览器与桌面入口，并增加 Conversations 关联工具。旧工作流写入已退役，历史读取继续支持。更新后需要刷新客户端工具目录。调用示例见 [九个 MCP 工具](CORE_TOOLS.md)。
 
 ## 两条接入路线
 
-公开接入使用可信 HTTPS，MCP URL 为 `https://你的域名/mcp`。私有接入可使用官方 Secure MCP Tunnel，由服务器上的 tunnel-client 出站连接 OpenAI，并访问本机桥接器；不要求家里的 Agent 开放入站端口。不要把裸公网 HTTP 或服务器的 `127.0.0.1` 当成 ChatGPT 能直接访问的公开地址。
+公开接入使用可信 HTTPS，正常角色 OAuth 连接 URL 为 `https://你的域名/mcp?authorization=role`（原固定接入 `/mcp` 仍可用）。私有接入可使用官方 Secure MCP Tunnel，由服务器上的 tunnel-client 出站连接 OpenAI，并访问本机桥接器；不要求家里的 Agent 开放入站端口。不要把裸公网 HTTP 或服务器的 `127.0.0.1` 当成 ChatGPT 能直接访问的公开地址。
 
 2026-09-24 核对的 [OpenAI 接入文档](https://developers.openai.com/plugins/deploy/connect-chatgpt) 说明：在 Settings → Security and login 打开 Developer mode；进入 Plugins，以加号创建连接，选择公开 MCP URL 或 Tunnel，并核对发现的工具。可用性受账号和工作区策略影响。私有 Tunnel 的开发者模式连接不能替代公开插件提交要求的 HTTPS 入口。
 
@@ -16,11 +16,11 @@
 
 在 `.env` 保留正确的 `COMPOSE_FILE` 组合，后续更新继续使用同一组合。在“系统设置 → 公开地址”填写 HTTPS 基地址，不加 `/mcp`；数据库中已保存的公开地址优先于环境变量。只信任真实代理来源，不用通配信任绕过同源检查。
 
-在客户端创建连接，选择 OAuth。CodePier 实现授权码、S256 PKCE、DCR 公共客户端 `token_endpoint_auth_method=none`，不实现 CIMD、private_key_jwt 或 client_secret_basic；采用服务实际支持的认证方式。跳转面板后登录、核对项目范围和工具权限，再明确确认。授权码及回调地址精确匹配；不要为解决回调失败放行任意域名。
+在客户端创建连接，选择 OAuth。CodePier 实现授权码、S256 PKCE、DCR 公共客户端 `token_endpoint_auth_method=none`，不实现 CIMD、private_key_jwt 或 client_secret_basic；采用服务实际支持的认证方式。跳转面板后登录，在同一窗口选择角色（可自动建立稳定身份或复用原身份）、核对资源规则，再明确同意动态政策。角色先在 Access → Roles 配置；原固定连接不会自动升级。授权码及回调地址精确匹配；不要为解决回调失败放行任意域名。
 
 ## 路线 B：官方 Tunnel 与本地 stdio 桥接器
 
-在面板“MCP 接入”创建限定范围 PAT，令牌仅显示一次。先给读取权限，确有需要再授予写入、执行或独立桌面权限。下面是在 Hub 所在服务器、原安装用户下准备桥接器的示例，路径按实际安装调整：
+在面板“Access → Client Connections”选择角色，创建固定或明确动态的限定范围 PAT，令牌仅显示一次。先给读取权限，确有需要再授予写入、执行或独立桌面权限。下面是在 Hub 所在服务器、原安装用户下准备桥接器的示例，路径按实际安装调整：
 
 ```bash
 cd /opt/codepier
@@ -60,3 +60,7 @@ chmod 600 private/bridge.env
 验收从只读开始：发现项目，读取 README，再对一个明确的测试文件做带 SHA 检查的修改，最后执行已授权任务。回到面板核对项目、操作编号、审计和真实退出码。使用本地测试客户端通过不等于真实 ChatGPT 账号验收，也不构成官方兼容性认证。
 
 收到 pending、queued 或 reconnecting 后继续查询原 operation_id；响应丢失按原幂等键查找。工具调用超时不能证明远端没有执行，不要生成新键盲目重做。更多恢复步骤见 [FAQ](FAQ.md) 和 [长操作](LONG_OPERATIONS.md)。
+
+## 返回对话与资源关联
+
+宿主提供 `openai/session` 时，Hub 可持久关联同一授权连接的资源调用；该匿名 ID 不是可见 ChatGPT 对话 URL 的 ID。真实对话网址须单独提供，不自动拼接，不用于获取聊天正文或最终回答。缺少元数据仍可正常调用工具；Conversations 只做索引。详见 [对话关联与模拟验证边界](CONVERSATIONS.md)。

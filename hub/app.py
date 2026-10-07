@@ -13,6 +13,9 @@ from hub.iam_api import make_iam_router
 from hub.oidc import OIDCService
 from hub.access_profiles import make_profiles_router
 from hub.roles import make_roles_router
+from hub.client_connections import make_connections_router
+from hub.conversations import make_conversations_router
+from hub.resources import make_resources_router
 from hub.gateway.service import Gateway
 from hub.gateway.registry import make_router as make_gateway_router
 from hub.auth import Auth
@@ -55,6 +58,7 @@ def create_app(data_dir: str | None = None):
         store = Store(directory)
         runtime, auth = Runtime(store), Auth(store)
         runtime.gateway = Gateway(store)
+        runtime.gateway.conversations = runtime.conversations
         def public_url():
             row = store.one("SELECT value FROM meta WHERE key='public_url'")
             return normalize_url(row["value"] if row else config.public_url)
@@ -103,7 +107,8 @@ def create_app(data_dir: str | None = None):
                      make_activity_router, make_settings_router, make_system_router):
             app.include_router(make(context))
         app.include_router(oidc.router)
-        for make in (make_iam_router, make_profiles_router, make_roles_router, make_gateway_router):
+        for make in (make_iam_router, make_profiles_router, make_roles_router, make_gateway_router,
+                     make_connections_router, make_conversations_router, make_resources_router):
             app.include_router(make(auth, runtime))
         app.include_router(runtime.oauth.router)
         app.include_router(make_router(auth, runtime, public_url))

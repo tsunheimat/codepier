@@ -1,6 +1,6 @@
-# 九个 MCP 工具
+# MCP 资源工具与对话关联
 
-CodePier 的九个核心开发工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`vps`、`browser`、`computer`。旧的独立 MCP 工具入口已移除，调用会返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
+CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`vps`、`browser`、`computer`。增加 `conversations`，用于持久对话、资源与操作引用索引，不保存正文或进度。旧工作流 read API 继续供历史读取，create/update 明确返回 `WORKFLOW_RETIRED`。其他旧独立 MCP 工具入口调用仍返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
 
 身份工具 `get_profile`、`get_access_context` 额外提供稳定身份和实时权限摘要。经明确同意的动态角色连接还可使用已审核的外部 MCP 工具及 `gateway_call_get` 回执查询，详见 [MCP 网关](MCP_GATEWAY.md)。
 
@@ -18,11 +18,11 @@ CodePier 的九个核心开发工具为 `workspace`、`read`、`write`、`edit`�
 
 ChatGPT 内的项目选择与任务看板已移除。`workbench` 不再出现在工具目录，旧调用按既有迁移约定返回 `TOOL_REMOVED`，提示改用 `project_query`。旧工作区资源仅返回无脚本、无工具调用的退役说明，不再列入资源目录。网页管理面板、项目上下文、工作流、原操作及证据存储不受影响。
 
-`project_query` 只允许 `list/open/help/tree/skills/skill/tasks/status/readiness/dashboard/workflow_list/workflow_get`；`open` 不允许捕获基线。项目和任务仍必须明确选择，所有调用复用实时授权。`task_query` 只允许 `list/get/wait/trace/diagnostics/activity`，读取原操作，不执行、取消或重跑。参数及返回结构与对应的 `workspace`、`process` 操作一致；任务查询指 CodePier 已有操作回执，并非 MCP 标准 Tasks 协议。
+`project_query` 只允许 `list/open/help/tree/skills/skill/tasks/status/readiness/dashboard`（旧 workflow 查询仅供兼容归档）；`open` 不允许捕获基线。项目和任务仍必须明确选择，所有调用复用实时授权。`task_query` 只允许 `list/get/wait/trace/diagnostics/activity`，读取原操作，不执行、取消或重跑。参数及返回结构与对应的 `workspace`、`process` 操作一致；任务查询指 CodePier 已有操作回执，并非 MCP 标准 Tasks 协议。
 
 只读发现从 `project_query` 开始，目录和技能读取无需调用混合工具。公开回执的等待、补读和追踪继续指向 `task_query`，保留原操作编号；捕获基线仍使用 `workspace`，显式取消仍使用 `process`。这些路由不改变实际授权，也不能保证宿主不再出现取消或拒绝提示。
 
-这两个专用入口标注为只读；混合读写的 `workspace/process/browser/computer` 保持保守的非只读注解。工具目录不注册 global/thread 工作台或自动展示模板。九个核心工具的 `outputSchema` 描述实际成功、错误、持久 pending 变体；错误/等待不是成功，仍须核对原操作编号、状态和退出码。
+这两个专用入口标注为只读；混合读写的 `workspace/process/browser/computer` 保持保守的非只读注解。工具目录不注册 global/thread 工作台或自动展示模板。核心资源工具的 `outputSchema` 描述实际成功、错误、持久 pending 变体；错误/等待不是成功，仍须核对原操作编号、状态和退出码。
 
 ## 标准 Tasks
 
@@ -66,7 +66,7 @@ Task 绑定原 operation、Space、用户和确切创建 grant，每次查询/�
 
 | 工具 | 操作 |
 | --- | --- |
-| `workspace` | `devices/project_create/list/open/skills/skill/tasks/status/readiness/tree/help`；`resolve/context/dashboard`；`worktree_create/worktree_list/worktree_remove`；`workflow_create/workflow_list/workflow_get/workflow_update/handoff`；`lsp_status` |
+| `workspace` | `devices/project_create/list/open/skills/skill/tasks/status/readiness/tree/help`；`resolve/context/dashboard`；`worktree_create/worktree_list/worktree_remove`；`lsp_status` |
 | `read` | 默认 `file`；`changes/artifact/artifacts/history/symbols/lsp` |
 | `write` | 默认 `file`；`import/artifact` |
 | `edit` | 默认 `file`；`restore/checkpoint` |
@@ -118,3 +118,5 @@ Task 绑定原 operation、Space、用户和确切创建 grant，每次查询/�
 ## 设计来源
 
 参考 [Pi 的工具实现](https://github.com/badlogic/pi-mono/tree/d5629e20489ccf770ed90b5a33941cb3b7ef24d0/packages/coding-agent/src/core/tools) 的少量通用原语、文本分页、输出截断、原文件多处编辑与按文件协调思路，以及 [pi-mcp](https://github.com/mofelee/pi-mcp/tree/ecf3000ea6979ec33383ddbcce45f69e8c57a70c) 的精简工具目录。实现继续使用 CodePier 的路径授权、SHA 校验、备份、加密传输和持久回执；没有引入 Pi 运行时依赖。
+
+`conversations(operation="list"/"get"/"associate")` 独立于项目选择，作用于当前认证连接的索引。缺少宿主元数据时正常调用其他工具；仅在获得真实客户端标识后显式关联。`openai/session` 不用于认证或生成对话 URL，原 URL 单独提供。见 [Conversations](CONVERSATIONS.md)。

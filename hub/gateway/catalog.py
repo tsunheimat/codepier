@@ -85,22 +85,22 @@ def public_name(alias, name):
     return full
 
 
-def definition(alias, tool):
+def definition(alias, tool, authorization='role'):
     value = dict(tool)
     value['name'] = public_name(alias, tool['name'])
     value['description'] = f'[{alias}] ' + tool['description']
-    schemes = [{'type': 'oauth2', 'scopes': [ROLE_SCOPE]}]
+    schemes = [{'type': 'oauth2', 'scopes': [ROLE_SCOPE if authorization == 'role' else 'read']}]
     value['securitySchemes'] = schemes
     value['_meta'] = {'securitySchemes': schemes}
     return value
 
 
-def status_definition():
+def status_definition(authorization='role'):
     return {'name': STATUS_TOOL, 'description': 'Read the receipt of a gateway call using its original call_id. Never executes or retries the backend operation. Results remain bound to the original grant and current permission.',
             'inputSchema': {'type': 'object', 'properties': {'call_id': {'type': 'string', 'maxLength': 64}},
                             'required': ['call_id'], 'additionalProperties': False},
             'annotations': {'readOnlyHint': True, 'destructiveHint': False, 'idempotentHint': True, 'openWorldHint': False},
-            '_meta': {'securitySchemes': [{'type': 'oauth2', 'scopes': [ROLE_SCOPE]}]}}
+            '_meta': {'securitySchemes': [{'type': 'oauth2', 'scopes': [ROLE_SCOPE if authorization == 'role' else 'read']}]}}
 
 
 def validate_arguments(tool, arguments, *, schema_check=True):

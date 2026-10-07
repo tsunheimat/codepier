@@ -103,7 +103,7 @@ class Auth:
         value = value.strip()
         if not value or len(value) > 500:
             raise DevError("INVALID_TOKEN", "无效的凭据", 401)
-        row = self.store.one("SELECT t.*,g.user_id,g.label,g.scopes,g.projects,g.revoked,g.resource,g.profile_id,g.authorization_mode,g.role_id,g.space_id,g.identity_id,g.user_epoch FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.hash=? AND t.kind IN ('access','pat') AND t.expires>? AND g.revoked=0", (digest(value), time.time()))
+        row = self.store.one("SELECT t.*,g.user_id,g.label,g.scopes,g.projects,g.revoked,g.resource,g.profile_id,g.authorization_mode,g.role_id,g.resource_policy,g.space_id,g.identity_id,g.user_epoch FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.hash=? AND t.kind IN ('access','pat') AND t.expires>? AND g.revoked=0", (digest(value), time.time()))
         if not row or (row["kind"] == "access" and self.resource and row["resource"] != self.resource()):
             raise DevError("INVALID_TOKEN", "凭据已过期或撤销", 401)
         scopes, projects, _ = effective_grant(self.store, row)
@@ -168,7 +168,7 @@ class Auth:
                 self.login_inflight -= 1
 
 
-    def issue_grant(self, principal: Principal, label: str, scopes: list[str], projects: list[str], days: int = 30, client_id=None, *, profile_id=None, profile_version=None, authorization_mode='fixed', role_version=None, confirm_dynamic_role=False, confirm_external_mcp=False):
+    def issue_grant(self, principal: Principal, label: str, scopes: list[str], projects: list[str], days: int = 30, client_id=None, *, profile_id=None, profile_version=None, authorization_mode='fixed', role_version=None, confirm_dynamic_role=False, confirm_external_mcp=False, resource_policy=None):
         principal = iam.live_principal(self.store, principal)
         if authorization_mode == 'role':
             if scopes != [ROLE_SCOPE] or projects:
@@ -177,7 +177,7 @@ class Auth:
             raise DevError('INVALID_SCOPE', '未知授权模式')
         elif "read" not in scopes or not set(scopes).issubset({"read", "write", "execute", "computer"}):
             raise DevError("INVALID_SCOPE", "权限必须包含 read，且只支持 read/write/execute/computer")
-        if not projects and authorization_mode != 'role':
+        if not projects and authorization_mode != 'role' and resource_policy is None:
             raise DevError("NO_PROJECTS", "至少选择一个项目")
         if "*" not in projects:
             found = {x["id"] for x in self.store.all("SELECT id FROM projects WHERE space_id=?", (principal.space_id,))}
@@ -187,23 +187,36 @@ class Auth:
             raise DevError('INVALID_CONSENT', '外部 MCP 同意必须为布尔值')
         gid, tid, secret = token(16), token(16), "rd_" + token()
         now = time.time()
-        with self.store.lock, self.store.db:
-            self.store.db.execute("BEGIN IMMEDIATE")
+        with self.store.transaction():
             principal = iam.live_principal(self.store, principal)
             role_id = None
             if authorization_mode == 'role':
                 role = validate_role_consent(self.store, principal.user_id, profile_id, profile_version, role_version, confirm_dynamic_role, space_id=principal.space_id)
                 role_id = role['id']
             else:
-                validate_profile_consent(self.store, principal.user_id, profile_id, scopes, projects, profile_version, space_id=principal.space_id)
+                profile = validate_profile_consent(self.store, principal.user_id, profile_id, scopes, projects, profile_version, space_id=principal.space_id)
+                if resource_policy is not None:
+                    from hub.roles import _policy, RolePolicy
+                    # Only the consolidated creation service passes a snapshot;
+                    # it is never accepted as an unvalidated HTTP policy.
+                    RolePolicy.model_validate(resource_policy)
+                    role = iam.role_eligible(self.store, principal.user_id, profile['role_id'], principal.space_id)
+                    if not role['enabled'] or role['version'] != role_version:
+                        raise DevError('ROLE_CHANGED', '角色已变化，请重新核对同意范围', 409)
+                    _policy(role)
+                    role_id = role['id']
             if authorization_mode == 'fixed' and not principal.admin:
                 if '*' in projects:
                     raise DevError('DYNAMIC_ROLE_REQUIRED', '未来项目委派请使用已分配的动态角色', 403)
                 permissions = iam.project_permissions(self.store, principal)
                 for project_id in projects:
-                    if not set(scopes) <= permissions.get(project_id, set()):
+                    from hub.roles import RolePolicy, project_actions
+                    actions = project_actions(RolePolicy.model_validate(resource_policy), project_id) if resource_policy is not None else set(scopes)
+                    if not actions <= permissions.get(project_id, set()):
                         raise DevError('INSUFFICIENT_SCOPE', '不能委派自己没有的项目权限', 403)
             self.store.db.execute("INSERT INTO grants(id,user_id,label,client_id,scopes,projects,revoked,created,profile_id,authorization_mode,role_id,space_id,owner_user_id,identity_id,user_epoch) VALUES (?,?,?,?,?,?,0,?,?,?,?,?,?,?,?)", (gid, principal.user_id, label, client_id, json.dumps(sorted(set(scopes))), json.dumps(projects), now, profile_id, authorization_mode, role_id, principal.space_id, principal.user_id, principal.identity_id, principal.user_epoch))
+            if resource_policy is not None:
+                self.store.db.execute('UPDATE grants SET resource_policy=? WHERE id=?', (json.dumps(resource_policy, sort_keys=True), gid))
             self.store.db.execute("INSERT INTO tokens VALUES (?,?,?,'pat',?,?)", (tid, digest(secret), gid, now + days * 86400, now))
             if confirm_external_mcp:
                 from hub.gateway.policy import consent_grant
@@ -212,5 +225,5 @@ class Auth:
                 iam.audit(self.store, principal, 'role.consent', gid, detail={
                         'source': 'pat', 'profile_id': profile_id, 'role_id': role_id,
                         'role_version': role['version'], 'policy': json.loads(role['policy']),
-                        'dynamic_resources_and_actions': True})
+                        'dynamic_resources_and_actions': authorization_mode == 'role'})
         return {"grant_id": gid, "token": secret, "expires": now + days * 86400}

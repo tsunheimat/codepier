@@ -129,10 +129,17 @@ def make_router(auth, runtime):
         accounts = [r for r in store.all('SELECT * FROM gateway_accounts WHERE space_id=? ORDER BY created,id', (principal.space_id,)) if policy.accessible(r, principal)]
         allowed = {r['id'] for r in accounts}
         bindings = [public_binding(r) for r in store.all('SELECT * FROM gateway_bindings WHERE space_id=? ORDER BY alias,id', (principal.space_id,)) if r['account_id'] in allowed]
-        grants = store.all('''SELECT g.id,g.label,g.role_id,r.version AS role_version,c.consent_version
+        grants = store.all('''SELECT g.id,g.label,g.role_id,g.authorization_mode,g.resource_policy,r.version AS role_version,c.consent_version
             FROM grants g JOIN access_roles r ON r.id=g.role_id
             LEFT JOIN gateway_consents c ON c.grant_id=g.id
-            WHERE g.space_id=? AND g.user_id=? AND g.authorization_mode='role' AND g.revoked=0 ORDER BY g.created DESC LIMIT 200''', (principal.space_id, principal.user_id))
+            WHERE g.space_id=? AND g.user_id=? AND (g.authorization_mode='role' OR g.resource_policy IS NOT NULL)
+            AND g.revoked=0 ORDER BY g.created DESC LIMIT 200''', (principal.space_id, principal.user_id))
+        for grant in grants:
+            snapshot = grant.pop('resource_policy')
+            try:
+                grant['fixed_tools'] = json.loads(snapshot).get('connector_rules', []) if snapshot else []
+            except (ValueError, TypeError, AttributeError):
+                grant['fixed_tools'] = []
         calls = store.all('''SELECT id,binding_id,tool,state,error_code,created,updated FROM gateway_calls
             WHERE space_id=? AND user_id=? ORDER BY created DESC,id DESC LIMIT 50''', (principal.space_id, principal.user_id))
         return {'enabled': True, 'instance_admin': principal.instance_admin, 'space_admin': principal.admin,

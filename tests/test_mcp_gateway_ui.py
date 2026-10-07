@@ -21,7 +21,7 @@ def gateway_browser(request):
 @pytest.mark.parametrize('width', [1280, 390])
 def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path):
     app, b, backend = gw
-    r = role(b['owner'], label='UI secretary', project_rules=[])
+    r = role(b['owner'], label='UI generic worker', project_rules=[])
     page = gateway_browser.new_page(viewport={'width': width, 'height': 900})
     errors = []; page.on('pageerror', lambda error: errors.append(str(error)))
     page.add_init_script("""
@@ -76,6 +76,7 @@ def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path):
         page.check('#gw-form [name="tool"][value="echo"]')
         page.check('#gw-form [name="confirmed"]')
         page.click('button[form="gw-form"]'); expect(page.locator('#gw-form')).to_have_count(0)
+        page.click('#section-tab-tools')
         page.click('[data-gw-role]')
         page.check('#gw-form [name="tool"][value="echo"]')
         page.click('button[form="gw-form"]'); expect(page.locator('#gw-form')).to_have_count(0)
@@ -85,13 +86,11 @@ def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path):
         r = must(b['owner'].get('/api/access-roles/' + r['id']))
         assert r['connector_rules'][0]['tools'] == ['echo']
         p = profile(b['owner'], r, 'UI profile'); g = must(credential(b['owner'], r, p))
-        page.reload(); expect(page.locator('#gateway-page')).to_be_visible()
-        page.get_by_role('tab', name='我的委派', exact=True).click()
-        expect(page.locator('[data-gw-consent]')).to_be_visible()
-        page.click('[data-gw-consent]')
-        expect(page.locator('#gw-form [name="confirmed"]')).not_to_be_checked()
-        page.check('#gw-form [name="confirmed"]')
-        page.click('button[form="gw-form"]'); expect(page.locator('#gw-form')).to_have_count(0)
+        page.evaluate("navigate('connect')"); expect(page.locator('#access-page')).to_be_visible()
+        expect(page.locator('[data-connection-consent]')).to_be_visible()
+        page.click('[data-connection-consent]')
+        expect(page.locator('.modal')).to_contain_text('此动态连接将使用角色明确配置')
+        page.click('#connection-consent-save');expect(page.locator('#connection-consent-save')).to_have_count(0)
         assert app.state.store.one('SELECT consent_version FROM gateway_consents WHERE grant_id=?', (g['grant_id'],))['consent_version'] == 1
         assert 'PRIVATE_UI_TOKEN' not in page.locator('body').inner_text()
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')

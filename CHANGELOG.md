@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — resource and access restructure
+
+- Resources unifies Projects, MCP Services and VPS settings, availability, role access and permitted history. Associations grant no access; VPS read/execute rules and a validated project/Agent route replace project-derived SSH permission.
+- Access exposes Roles and Client Connections. Stable identities remain, fixed connection snapshots never expand, and dynamic/future-role and external MCP consent remain explicit and private per grant.
+- Conversations durably associates client identifiers, optional supplied HTTPS URLs, resources and original receipts. It stores no transcript or progress state. Old workflows become read-only archives with explicit retirement errors and compatible old bookmarks/read tools.
+- Local isolated migration, authorization, host-metadata simulation and browser checks cover the new behavior. This entry does not indicate publication, deployment or live ChatGPT/VPS acceptance.
+
+
 ## 1.17.0 · 2026-10-06 · 面板统一设计与工作区隐私
 
 - 统一全部 Web 面板的布局、字段、菜单与状态样式；重组账号、成员、身份管理、OIDC、Profile、角色规则和 MCP 网关。网关使用服务与账号、已发布工具、我的委派及调用记录分区，工具审核支持搜索和已选摘要，默认不选择任何工具。

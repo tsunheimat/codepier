@@ -27,7 +27,7 @@ class ProjectArgs(Strict):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 class WorkspaceStatus(ProjectArgs):
-    workflow_id: str = Field(default='', pattern=OPTIONAL_ID, description='Explicit task selection; empty never guesses the current conversation task.')
+    workflow_id: str = Field(default='', pattern=OPTIONAL_ID, description='Legacy historical workflow selection only; no active task or progress tracking.')
     workflow_cursor: str = Field(default='', max_length=512)
     evidence_offset: int = Field(default=0, ge=0, le=4096)
     limit: int = Field(default=12, ge=1, le=20)
@@ -141,7 +141,7 @@ class BrowserClose(Mutation):
     lease_id: str = Field(pattern=ID)
 
 SPECS = {
-    'workspace_status': (WorkspaceStatus, 'read', 'Read a bounded project dashboard: explicitly selected workflow, authorized evidence references and separately labelled recent operations. No logs, model runs, filesystem scan or implicit acceptance. Historical validation is not current verification.', False, True),
+    'workspace_status': (WorkspaceStatus, 'read', 'Read a bounded project dashboard of authorized existing operations. Legacy workflow selection reads historical archives only. No logs, model runs, filesystem scan or implicit acceptance. Historical validation is not current verification.', False, True),
     'download_artifact': (DownloadArtifact, 'write', 'Save a native host file into an unused project-relative path. Streamed with size/SHA checks, trusted HTTPS sources and anchored destination directories. No automatic extraction or execution. Pass the host file object directly.', False, False),
     'lsp_status': (ProjectArgs, 'read', 'Inspect locally configured language servers without starting them. Availability is not a successful semantic query.', False, False),
     'lsp_query': (LspQuery, 'execute', 'Query a configured, owner-approved language server for real definitions/references/types/diagnostics/call hierarchy. Starts a bounded process, no arbitrary server command or workspace edits. Explicit execute permission and local project opt-in required.', False, False),
@@ -152,7 +152,7 @@ SPECS = {
     'validations_get': (ValidationGet, 'read', 'Read one bound verification receipt and freshly compare its source fingerprint. Distinguishes passed, failed, stale and unverified. Does not rerun the command.', False, False),
     'validations_list': (ProjectArgs, 'read', 'List recent verification receipts; historical passes are not current validation. Use validations_get for a fresh check.', False, False),
     'validations_accept': (ValidationAccept, 'write', 'Panel-owner-only acceptance or rejection of an exact verification after a fresh source check. MCP callers cannot accept their own work.', True, False),
-    'workflows_handoff': (Handoff, 'read', 'Recover a compact task handoff with original goal, unresolved steps, evidence and pending/uncertain operations. Never automatically reruns writes or launches a model.', False, True),
+    'workflows_handoff': (Handoff, 'read', 'Read a retired workflow archive in the legacy response shape. No continuation, progress update, replay or model run is started.', False, True),
     'activity_list': (Activity, 'read', 'Read authorized MCP request timing and explicit continuity gaps. Response-to-next-call gap is not model thinking time. Arguments and outputs are not recorded here.', False, True),
     'readiness_get': (ProjectArgs, 'read', 'Inspect Agent readiness, effective execution policy, source/runtime drift, language and browser capabilities. Unperformed end-to-end checks stay unverified; never starts a model.', False, False),
     'integration_control': (Control, 'execute', 'Panel-owner-only project admission pause/resume and verified cancellation of owned processes. Status and receipt recovery remain available. Does not disable the Agent connection.', True, False),

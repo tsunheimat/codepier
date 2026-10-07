@@ -37,16 +37,33 @@ def inventory(tmp_path):
 
 
 def body(projects, **changes):
-    return VPSInput(name='广州 VPS', host='vps.example.invalid', password=PASSWORD, project_ids=projects, **changes)
+    return VPSInput(name='广州 VPS', host='vps.example.invalid', password=PASSWORD, project_ids=projects, execution_project_id=projects[0] if projects else None, **changes)
 
 
 def edit_body(v, **changes):
-    keys = ('name', 'host', 'port', 'username', 'host_key_policy', 'provider', 'region', 'system', 'notes', 'enabled', 'project_ids')
+    keys = ('name', 'host', 'port', 'username', 'host_key_policy', 'provider', 'region', 'system', 'notes', 'enabled', 'project_ids', 'execution_project_id')
     return VPSInput(**{**{k: v[k] for k in keys}, 'expected_version': v['version'], **changes})
 
 
 def execute_args(project, vps='0'*32, **changes):
     return {'project': project, 'target': 'vps:'+vps, 'yield_seconds': 0, 'command': 'printf fixture-ok', 'idempotency_key': uuid.uuid4().hex, **changes}
+
+
+def explicit_caller(runtime, projects, vps, actions=('read',)):
+    from shared.role_contracts import ROLE_SCOPE
+    suffix=uuid.uuid4().hex
+    rid,pid,gid='rol_'+suffix,'prf_'+suffix,suffix
+    with runtime.store.transaction():
+        now=time.time()
+        policy=json.dumps({'project_rules':[{'projects':projects,'actions':list(actions)}],
+                           'vps_rules':[{'vps':vps,'actions':list(actions)}]})
+        runtime.store.db.execute('INSERT INTO access_roles(id,user_id,label,label_key,policy,enabled,version,created,updated,create_key,create_fingerprint,space_id,owner_user_id) VALUES(?,?,?,?,?,1,1,?,?,?,?,?,?)',
+            (rid,'owner','fixture',rid,policy,now,now,rid,rid,'legacy','owner'))
+        runtime.store.db.execute('INSERT INTO access_profiles(id,user_id,label,label_key,scopes,projects,enabled,version,created,updated,create_key,create_fingerprint,role_id,space_id,owner_user_id) VALUES(?,?,?,?,?,?,1,1,?,?,?,?,?,?,?)',
+            (pid,'owner','fixture',pid,'["read"]','[]',now,now,pid,pid,rid,'legacy','owner'))
+        runtime.store.db.execute('INSERT INTO grants(id,user_id,label,scopes,projects,created,profile_id,authorization_mode,role_id,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            (gid,'owner','fixture',json.dumps([ROLE_SCOPE]),'[]',now,pid,'role',rid,'legacy','owner'))
+    return runtime.grant_principal(runtime.store.one('SELECT * FROM grants WHERE id=?',(gid,)))
 
 
 def test_saved_credential_encryption_many_to_many_and_visibility(inventory):
@@ -58,7 +75,9 @@ def test_saved_credential_encryption_many_to_many_and_visibility(inventory):
     assert raw['secret'] != PASSWORD and r.store.decrypt(raw['secret']) == PASSWORD
     from tests.legacy_iam_fixture import seed_grant
     seed_grant(r.store,'one','owner',['read'],[projects[0]])
-    caller = Principal('mcp:one', 'owner', {'read'}, [projects[0]],grant_id='one')
+    legacy = Principal('mcp:one','owner',{'read'},[projects[0]],grant_id='one')
+    assert r.vps.list({'project':'','query':'','offset':0,'limit':50},legacy)['vps']==[]
+    caller = explicit_caller(r,projects[:1],[v['id']])
     result = r.vps.list({'project': '', 'query': '', 'offset': 0, 'limit': 50}, caller)
     assert len(result['vps']) == 1 and result['vps'][0]['project_ids'] == [projects[0]]
     assert projects[1] not in json.dumps(result) and other['id'] not in json.dumps(result)
@@ -107,16 +126,16 @@ def test_ip_port_username_ambiguity_and_single_default(inventory):
     r, owner, projects = inventory
     v = r.vps.save(body(projects[:1]), owner)
     p = r.project(projects[0], owner)
-    assert r.vps.reference(execute_args(projects[0]), p)['id'] == v['id']
-    v2 = r.vps.save(VPSInput(name='Same host 2222', host=v['host'], port=2222, password=PASSWORD, project_ids=projects[:1]), owner)
+    assert r.vps.reference(execute_args(projects[0]), p, owner)['id'] == v['id']
+    v2 = r.vps.save(VPSInput(name='Same host 2222', host=v['host'], port=2222, password=PASSWORD, project_ids=projects[:1], execution_project_id=projects[0]), owner)
     with pytest.raises(DevError) as caught:
-        r.vps.reference(execute_args(projects[0], v['host']), p)
+        r.vps.reference(execute_args(projects[0], v['host']), p, owner)
     assert caught.value.code == 'VPS_AMBIGUOUS'
-    assert r.vps.reference(execute_args(projects[0], v['host'], port=2222), p)['id'] == v2['id']
+    assert r.vps.reference(execute_args(projects[0], v['host'], port=2222), p, owner)['id'] == v2['id']
     with pytest.raises(DevError):
-        r.vps.reference(execute_args(projects[0], v['host'], port=22, username='other'), p)
+        r.vps.reference(execute_args(projects[0], v['host'], port=22, username='other'), p, owner)
     with pytest.raises(DevError):
-        r.vps.reference(execute_args(projects[1], v['id']), r.project(projects[1], owner))
+        r.vps.reference(execute_args(projects[1], v['id']), r.project(projects[1], owner), owner)
 
 
 def test_ipv6_and_pagination(inventory):
@@ -143,7 +162,7 @@ def test_project_side_assignment_preserves_other_projects(inventory):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['unassign', 'remove_reassign', 'disable', 'password', 'endpoint', 'delete'])
+@pytest.mark.parametrize('change', ['route_remove', 'route_restore', 'disable', 'password', 'endpoint', 'delete'])
 async def test_queued_reference_revocation_blocks_before_connection(inventory, change):
     r, owner, projects = inventory
     v = r.vps.save(body(projects[:1]), owner)
@@ -152,10 +171,10 @@ async def test_queued_reference_revocation_blocks_before_connection(inventory, c
     op = r.store.one('SELECT * FROM operations WHERE id=?', (receipt['operation_id'],))
     request = json.loads(r.store.decrypt(op['payload']))
     assert 'password' not in json.dumps(request) and PASSWORD not in json.dumps(request)
-    if change in {'unassign', 'remove_reassign'}:
-        updated = r.vps.assign(v['id'], VPSAssignments(project_ids=[], expected_version=v['version']), owner)
-        if change == 'remove_reassign':
-            r.vps.assign(v['id'], VPSAssignments(project_ids=projects[:1], expected_version=updated['version']), owner)
+    if change in {'route_remove', 'route_restore'}:
+        updated = r.vps.save(edit_body(v,execution_project_id=None),owner,v['id'])
+        if change == 'route_restore':
+            r.vps.save(edit_body(updated,execution_project_id=projects[0]),owner,v['id'])
     elif change == 'disable': r.vps.save(edit_body(v, enabled=False), owner, v['id'])
     elif change == 'password': r.vps.save(edit_body(v, password='rotated-fixture'), owner, v['id'])
     elif change == 'endpoint': r.vps.save(edit_body(v, host='new.invalid'), owner, v['id'])
@@ -186,7 +205,7 @@ def test_transport_credential_not_in_saved_payload_and_delete_cascades(inventory
     r, owner, projects = inventory
     v = r.vps.save(body(projects[:2]), owner)
     args = Exec(**execute_args(projects[0], v['id'])).model_dump()
-    request = {'tool': 'exec', 'args': args, 'project': {'root': '/fixture'}, 'vps_ref': r.vps.reference({**args, 'vps': v['id']}, r.project(projects[0], owner))}
+    request = {'tool': 'exec', 'args': args, 'project': {'root': '/fixture'}, 'vps_ref': r.vps.reference({**args, 'vps': v['id']}, r.project(projects[0], owner), owner)}
     packet = r.vps.transport(request, projects[0])
     assert packet['tool'] == 'exec' and packet['core_ssh']['password'] == PASSWORD
     assert 'vps_ref' not in packet and PASSWORD not in json.dumps(request)
@@ -225,12 +244,24 @@ def vps_stack(stack):
     stack.config['shell'] = {'enabled': True, 'projects': ['Imago','Nexus','Lumen'], 'command': ['/bin/sh','-c'], 'env': {'PATH': fake_transport(stack.directory / 'vps-bin')}}
     atomic_json(stack.config_path, stack.config)
     stack.start_agent()
-    return stack
+    from tests.test_roles import role,profile,credential,must
+    stack.vps_role=role(stack.client,label='VPS fixture role',project_rules=[{'actions':['read','write','execute'],'projects':[p['id'] for p in stack.projects]}])
+    identity=profile(stack.client,stack.vps_role,'VPS fixture identity')
+    grant=must(credential(stack.client,stack.vps_role,identity))
+    original=stack.mcp
+    stack.vps_token=grant['token']
+    stack.mcp=lambda name,args=None,token_value=None:original(name,args,token_value or stack.vps_token)
+    yield stack
+    stack.mcp=original
 
 
 def create_remote(stack, **changes):
-    payload = {'name': 'Fixture-'+uuid.uuid4().hex[:8], 'host': 'vps.example.invalid', 'port': 10000+int(uuid.uuid4().hex[:3],16), 'password': PASSWORD, 'project_ids': [stack.project['id']], **changes}
-    return stack.must(stack.client.post('/api/vps', json=payload))
+    payload = {'name': 'Fixture-'+uuid.uuid4().hex[:8], 'host': 'vps.example.invalid', 'port': 10000+int(uuid.uuid4().hex[:3],16), 'password': PASSWORD, 'project_ids': [stack.project['id']], 'execution_project_id':stack.project['id'], **changes}
+    saved=stack.must(stack.client.post('/api/vps', json=payload))
+    from tests.test_roles import update_role,must
+    rules=stack.vps_role.get('vps_rules',[])+[{'actions':['read','execute'],'vps':[saved['id']]}]
+    stack.vps_role=must(update_role(stack.client,stack.vps_role,vps_rules=rules))
+    return saved
 
 
 def test_http_admin_csrf_validation_no_secret_echo(vps_stack):
@@ -279,13 +310,19 @@ def test_mcp_scope_and_assignments(vps_stack):
     grant = s.must(s.client.post('/api/grants',json={'label':'vps-read','scopes':['read'],'projects':[s.project['id']],'days':1}))
     listed = s.mcp('vps', {'query':v['name']}, token_value=grant['token'])
     assert not listed.get('isError'),listed
-    row = listed['structuredContent']['vps'][0]
-    assert row['project_ids'] == [s.project['id']]
+    assert listed['structuredContent']['vps']==[]
+    from tests.test_roles import role,profile,credential,must
+    readrole=role(s.client,label='VPS metadata '+uuid.uuid4().hex[:8],project_rules=[{'actions':['read'],'projects':[s.project['id']]}],vps_rules=[{'actions':['read'],'vps':[v['id']]}])
+    identity=profile(s.client,readrole,'Metadata '+uuid.uuid4().hex[:8])
+    scoped=must(credential(s.client,readrole,identity))
+    listed=s.mcp('vps',{'query':v['name']},token_value=scoped['token'])
+    row=listed['structuredContent']['vps'][0]
+    assert row['project_ids']==[s.project['id']]
     assert s.projects[1]['id'] not in json.dumps(listed)
     denied = s.mcp('exec',execute_args('Imago',v['id']),token_value=grant['token'])
     assert denied['isError'] and denied['structuredContent']['error']['code'] == 'INSUFFICIENT_SCOPE'
     denied = s.mcp('exec',execute_args('Lumen',v['id']))
-    assert denied['isError'] and denied['structuredContent']['error']['code'] == 'VPS_NOT_FOUND'
+    assert denied['isError'] and denied['structuredContent']['error']['code'] == 'VPS_ROUTE_REQUIRED'
 
 
 def test_saved_ssh_remote_failure_and_timeout(vps_stack):
@@ -306,7 +343,7 @@ def test_offline_queue_unassign_before_delivery(vps_stack):
         result = s.mcp('exec',call)
         assert not result.get('isError'),result
         opid = result['structuredContent']['operation_id']
-        s.must(s.client.put('/api/vps/'+v['id']+'/projects',json={'project_ids':[],'expected_version':v['version']}))
+        s.must(s.client.put('/api/vps/'+v['id'],json={**{k:v[k] for k in ('name','host','port','username','project_ids')},'execution_project_id':None,'expected_version':v['version']}))
         op = s.poll(opid,timeout=15)
         assert op['state'] == 'failed' and op['attempts'] == 0
     finally:s.start_agent()
@@ -324,7 +361,7 @@ def test_coding_profile_actual_rpc_catalog_and_call(vps_stack):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('accepted', [False, True])
-@pytest.mark.parametrize('change', ['disable', 'remove_reassign', 'delete'])
+@pytest.mark.parametrize('change', ['disable', 'route_restore', 'delete'])
 async def test_dispatched_revoked_request_only_probes_original_receipt(inventory, monkeypatch, accepted, change):
     """A send or ACK is not proof of no remote execution; never reconnect/replay."""
     r, owner, projects = inventory
@@ -335,9 +372,9 @@ async def test_dispatched_revoked_request_only_probes_original_receipt(inventory
                     (time.time() if accepted else None, operation))
     if change == 'disable':
         r.vps.save(edit_body(v, enabled=False), owner, v['id'])
-    elif change == 'remove_reassign':
-        updated = r.vps.assign(v['id'], VPSAssignments(project_ids=[], expected_version=v['version']), owner)
-        r.vps.assign(v['id'], VPSAssignments(project_ids=projects[:1], expected_version=updated['version']), owner)
+    elif change == 'route_restore':
+        updated = r.vps.save(edit_body(v,execution_project_id=None),owner,v['id'])
+        r.vps.save(edit_body(updated,execution_project_id=projects[0]),owner,v['id'])
     else:
         r.vps.delete(v['id'], v['version'], owner)
     packets = []

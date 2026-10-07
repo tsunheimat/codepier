@@ -1,21 +1,11 @@
-"""Durable, scoped development checklists layered above existing operations.
-
-This module stores progress; it never executes commands or asks a model to run.
-Mutations, replay receipts and audit events commit in one SQLite transaction.
-"""
+"""Read-only archive of retired workflows. Existing data and event history stay intact."""
 from __future__ import annotations
-from hub.access_profiles import effective_grant
-from hub.roles import role_project_scopes
 from hub import iam
 
 import base64
 import json
-import time
-import uuid
 
-from shared.crypto import digest
 from shared.util import DevError
-from shared.workflow_templates import TEMPLATES
 
 
 def encode_cursor(created, identifier):
@@ -57,7 +47,8 @@ class Workflows:
         row["steps"] = json.loads(row["steps"])
         row["project_alias"] = project["alias"]
         row["mapping_changed"] = changed
-        row["can_update"] = (principal.instance_admin or (row['grant_id'] == principal.grant_id if principal.grant_id else row['owner_user_id'] == principal.user_id)) and not changed and project["mode"] == "write" and "write" in role_project_scopes(self.store, principal, project["id"])
+        row["can_update"] = False
+        row["retired"] = True
         row["assigned_to_mcp"] = row["grant_id"] is not None
         return row
 
@@ -68,13 +59,10 @@ class Workflows:
         steps = row["steps"]
         data["progress"] = {"completed": sum(s["state"] == "completed" for s in steps),
                             "skipped": sum(s["state"] == "skipped" for s in steps), "total": len(steps)}
-        data["next_step"] = next((s["id"] for s in steps if s["state"] == "running"), None) or next(
-            (s["id"] for s in steps if s["state"] == "pending"), None)
-        if row["state"] != "active":
-            data["next_step"] = None
-        data["next_action"] = "resume" if row["state"] == "blocked" else "checkpoint" if row["state"] == "active" else None
-        data["execution_policy"] = "仅保存进度，不自动执行。取消工作流不会停止本机操作；需单独 operations_cancel。"
-        data["evidence_policy"] = "操作成功是完成步骤的必要条件，不证明验收语义；仍须检查输出与实际行为。"
+        data["next_step"] = None
+        data["next_action"] = None
+        data["retired"] = True
+        data["execution_policy"] = "历史记录只供读取；进度更新已退役。请在原聊天客户端继续发出指令，使用 Conversations 关联资源与已有操作。"
         return data
 
     def get(self, args, principal):
@@ -123,132 +111,11 @@ class Workflows:
             row["progress"] = {"completed": sum(s["state"] == "completed" for s in steps),
                                "skipped": sum(s["state"] == "skipped" for s in steps), "total": len(steps)}
         return {"workflows": rows, "next_cursor": encode_cursor(rows[-1]["created"], rows[-1]["id"]) if more else None,
-                "templates": [{"id": k, **v} for k, v in TEMPLATES.items()]}
-
-    def replay(self, args, principal, fingerprint):
-        old = self.store.one("SELECT * FROM workflow_replays WHERE space_id=? AND actor=? AND idem=?", (principal.space_id, principal.actor, args["idempotency_key"]))
-        if old:
-            self.load(old["workflow_id"], principal, write=True)
-            if old["fingerprint"] != fingerprint:
-                raise DevError("IDEMPOTENCY_CONFLICT", "工作流幂等键已经用于不同请求", 409)
-            return {**json.loads(old["receipt"]), "replayed": True}
-        return None
-
-    def record(self, row, args, principal, fingerprint, action, summary, evidence):
-        self.store.require_transaction()
-        receipt = {"workflow_id": row["id"], "version": row["version"], "state": row["state"], "replayed": False, "next": "workflows_get"}
-        self.store.db.execute("INSERT INTO workflow_replays(actor,idem,fingerprint,workflow_id,receipt,space_id) VALUES (?,?,?,?,?,?)",
-                              (principal.actor, args["idempotency_key"], fingerprint, row["id"], json.dumps(receipt), principal.space_id))
-        self.store.db.execute("INSERT INTO workflow_events(workflow_id,action,summary,evidence,at,version) VALUES (?,?,?,?,?,?)",
-                              (row["id"], action, summary, json.dumps(evidence, ensure_ascii=False), row["updated"], row["version"]))
-        iam.audit(self.store, principal, 'workflows.' + action, row['id'], status=row['state'],
-                  detail={'workflow_id': row['id'], 'version': row['version'], 'evidence_count': len(evidence)})
-        return receipt
-
-    def evidence(self, identifiers, row, principal, *, must_succeed=False):
-        evidence = []
-        for identifier in dict.fromkeys(identifiers):
-            op = self.runtime.operation(identifier, principal)
-            if (op["project_id"] != row["project_id"] or op["device_id"] != row["device_id"] or
-                    row["grant_id"] is not None and op["grant_id"] != row["grant_id"]):
-                raise DevError("EVIDENCE_SCOPE", "证据必须来自同一项目、设备和工作流授权", 403)
-            if op["created"] < row["created"]:
-                raise DevError("EVIDENCE_STALE", "请使用工作流建立后执行的操作，不能用历史成功冒充本轮验收", 409)
-            result = op.get("result") or {}
-            if must_succeed and (op["state"] != "succeeded" or not result.get("ok")):
-                raise DevError("EVIDENCE_NOT_SUCCESSFUL", "步骤未完成：证据操作尚未成功；请先等待或修复失败", 409)
-            data = result.get("data") or {}
-            if must_succeed and (data.get("timed_out") or data.get("cancelled") or
-                    "exit_code" in data and (type(data["exit_code"]) is not int or data["exit_code"] != 0)):
-                raise DevError("EVIDENCE_NOT_SUCCESSFUL", "命令未成功执行；不能作为步骤完成证据", 409)
-            evidence.append({"operation_id": identifier, "tool": op["tool"], "state": op["state"],
-                             "exit_code": data.get("exit_code"), "updated": op["updated"]})
-        if must_succeed and not evidence:
-            raise DevError("EVIDENCE_REQUIRED", "完成步骤必须关联至少一个本轮成功操作，并说明验收结论", 409)
-        return evidence
+                "templates": [], "retired": True}
 
     def create(self, args, principal):
-        with self.store.lock, self.store.db:
-            self.store.db.execute("BEGIN IMMEDIATE")
-            project = self.runtime.project(args["project"], principal)
-            self.runtime.authorize(principal, 'write', project_id=project['id'])
-            if project["mode"] != "write":
-                raise DevError("READ_ONLY", "只读项目不能建立工作流", 403)
-            requested = args["assignee_grant_id"]
-            if not principal.admin and requested is not None and requested != principal.grant_id:
-                raise DevError("ASSIGNEE_FORBIDDEN", "MCP 调用不能为其他授权建立任务", 403)
-            assignee = requested if principal.admin else principal.grant_id
-            if principal.admin and assignee is not None:
-                grant = self.store.one("SELECT * FROM grants WHERE id=? AND user_id=? AND space_id=?", (assignee, principal.user_id, principal.space_id))
-                if not grant:
-                    raise DevError('INVALID_ASSIGNEE', '只能委派给自己在当前空间中的连接', 403)
-                try:
-                    scopes, allowed, _ = effective_grant(self.store, grant)
-                    self.runtime.authorize(self.runtime.grant_principal(grant), 'write', project_id=project['id'])
-                except DevError as exc:
-                    raise DevError("INVALID_ASSIGNEE", "该授权或访问 Profile 已停用", 403) from exc
-                if not {"read", "write"}.issubset(scopes):
-                    raise DevError("INVALID_ASSIGNEE", "请选择未撤销且具有读取、写入权限的 MCP 授权", 403)
-                if not self.store.one("SELECT 1 AS active FROM tokens WHERE grant_id=? AND expires>? LIMIT 1", (assignee, time.time())):
-                    raise DevError("INVALID_ASSIGNEE", "该授权已无有效令牌，请先重新建立可用的 MCP 连接", 403)
-                if "*" not in allowed and project["id"] not in allowed:
-                    raise DevError("INVALID_ASSIGNEE", "该 MCP 授权不能访问此项目", 403)
-            fingerprint = digest(json.dumps({"action": "create", "args": args, "project_id": project["id"]}, sort_keys=True))
-            old = self.replay(args, principal, fingerprint)
-            if old:
-                return old
-            source = args["steps"] if args["template"] == "custom" else TEMPLATES[args["template"]]["steps"]
-            steps = [{"id": f"s{i+1}", **s, "state": "pending", "summary": "", "evidence": []} for i, s in enumerate(source)]
-            now, identifier = time.time(), uuid.uuid4().hex
-            self.store.db.execute("INSERT INTO workflows(id,project_id,device_id,root,actor,grant_id,title,goal,template,state,steps,summary,version,created,updated,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,'active',?,'',1,?,?,?,?)",
-                                  (identifier, project["id"], project["device_id"], project["root"], principal.actor, assignee,
-                                   args["title"], args["goal"], args["template"], json.dumps(steps, ensure_ascii=False), now, now, principal.space_id, principal.user_id))
-            return self.record({"id": identifier, "version": 1, "state": "active", "updated": now}, args, principal, fingerprint, "create", args["goal"], [])
+        raise DevError('WORKFLOW_RETIRED', '工作流创建已退役。使用 conversations 关联对话与资源；在原客户端继续指令。旧记录仍可读取。', 410)
 
     def update(self, args, principal):
-        with self.store.lock, self.store.db:
-            self.store.db.execute("BEGIN IMMEDIATE")
-            row = self.load(args["workflow_id"], principal, write=True)
-            fingerprint = digest(json.dumps({"action": "update", "args": args}, sort_keys=True))
-            old = self.replay(args, principal, fingerprint)
-            if old:
-                return old
-            if row["version"] != args["expected_version"]:
-                raise DevError("VERSION_CONFLICT", "工作流已更新；先 workflows_get 获取当前版本再合并进度", 409, current_version=row["version"])
-            if row["state"] in {"completed", "cancelled"}:
-                raise DevError("WORKFLOW_CLOSED", "工作流已结束；请为新的工作建立任务", 409)
-            action = args["action"]
-            evidence = self.evidence(args["evidence"], row, principal)
-            if action == "checkpoint":
-                if row["state"] != "active":
-                    raise DevError("WORKFLOW_BLOCKED", "请先记录解除阻碍的原因并 resume", 409)
-                if args["step_id"]:
-                    step = next((s for s in row["steps"] if s["id"] == args["step_id"]), None)
-                    if step is None:
-                        raise DevError("STEP_NOT_FOUND", "步骤不存在", 404)
-                    state = args["step_state"]
-                    if state == "running" and any(s["state"] == "running" and s["id"] != step["id"] for s in row["steps"]):
-                        raise DevError("STEP_ALREADY_RUNNING", "先更新当前步骤，不能同时标记多个当前步骤", 409)
-                    if state == "completed":
-                        evidence = self.evidence(args["evidence"], row, principal, must_succeed=True)
-                    step.update(state=state, summary=args["summary"], evidence=evidence)
-            elif action == "block":
-                row["state"] = "blocked"
-            elif action == "resume":
-                if row["state"] != "blocked":
-                    raise DevError("WORKFLOW_NOT_BLOCKED", "只有受阻工作流需要 resume", 409)
-                row["state"] = "active"
-            elif action == "cancel":
-                row["state"] = "cancelled"
-            elif action == "complete":
-                if row["state"] != "active" or not any(s["state"] == "completed" for s in row["steps"]) or any(s["state"] not in {"completed", "skipped"} for s in row["steps"]):
-                    raise DevError("INCOMPLETE_STEPS", "必须完成验收或说明跳过原因；不能将全部跳过当作完成", 409)
-                for step in row["steps"]:
-                    if step["state"] == "completed":
-                        step["evidence"] = self.evidence([e["operation_id"] for e in step["evidence"]], row, principal, must_succeed=True)
-                row["state"] = "completed"
-            row["version"] += 1
-            row["updated"] = time.time()
-            self.store.db.execute("UPDATE workflows SET state=?,steps=?,summary=?,version=?,updated=? WHERE id=?",
-                                  (row["state"], json.dumps(row["steps"], ensure_ascii=False), args["summary"], row["version"], row["updated"], row["id"]))
-            return self.record(row, args, principal, fingerprint, action, args["summary"], evidence)
+        self.load(args['workflow_id'], principal)
+        raise DevError('WORKFLOW_RETIRED', '工作流进度更新已退役。旧记录、事件与操作回执保持可读；取消执行请使用 process。', 410)

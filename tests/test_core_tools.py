@@ -228,7 +228,7 @@ async def test_facades_enforce_action_scopes_and_process_waits_are_parallel(runt
 @pytest.mark.asyncio
 async def test_saved_vps_target_keeps_credentials_private_and_binding_pinned(runtime):
     instance, principal = runtime
-    connection = instance.vps.save(VPSInput(name='Test', host='vps.example.invalid', password='fixture-password', project_ids=['proj']), principal)
+    connection = instance.vps.save(VPSInput(name='Test', host='vps.example.invalid', password='fixture-password', project_ids=['proj'], execution_project_id='proj'), principal)
     args = {'project': 'Fixture', 'target': connection['target'], 'command': 'true', 'yield_seconds': 0, 'idempotency_key': 'saved-connection'}
     receipt = await instance.invoke('exec', args, principal)
     row = instance.store.one('SELECT * FROM operations WHERE id=?', (receipt['operation_id'],))
@@ -240,7 +240,8 @@ async def test_saved_vps_target_keeps_credentials_private_and_binding_pinned(run
     assert transport['args'] == request_data['args']
     retry = await instance.invoke('exec', args, principal)
     assert retry['operation_id'] == receipt['operation_id']
-    instance.vps.assign(connection['id'], VPSAssignments(project_ids=[], expected_version=connection['version']), principal)
+    saved=instance.vps.get(connection['id'],principal)
+    instance.vps.save(VPSInput(**{k:saved[k] for k in ('name','host','port','username','project_ids')},execution_project_id=None,expected_version=saved['version']),principal,connection['id'])
     assert instance.permission_error(row, request_data)
     with pytest.raises(DevError):
         instance.vps.transport(request_data, 'proj')
@@ -321,3 +322,9 @@ def test_help_describes_public_batch_ids_and_skill_options():
     skills = help_result('workspace', 'skills')['inputSchema']
     Draft202012Validator(skills).validate({'operation': 'skills', 'project': 'Fixture', 'options': {'include_disabled': True}})
     assert 'include_disabled' not in skills['properties']
+    conversations = help_result('conversations', 'associate')['inputSchema']
+    Draft202012Validator(conversations).validate({'operation': 'associate',
+        'identity': {'platform': 'custom-client', 'conversation_identifier': 'provided-id'}})
+    assert help_result()['tools']['conversations']['operations'] == ['associate', 'get', 'list']
+    assert not any(op.startswith('workflow_') or op == 'handoff'
+        for entry in help_result()['tools'].values() for op in entry['operations'])

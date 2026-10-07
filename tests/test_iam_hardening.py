@@ -47,10 +47,12 @@ def test_operation_request_key_is_scoped_to_space_and_replay_stays_stable(team):
 def test_workflow_request_key_is_scoped_to_space_and_survives_restart(team):
     app,b=team
     args={'project':'same-alias','title':'Review','goal':'Test only','idempotency_key':'shared-tab-workflow-key'}
-    left=must(tool(b['owner'],'workflows_create',args));right=must(tool(b['legacy'],'workflows_create',args))
+    from tests.historical_workflows import seed_workflow
+    left=seed_workflow(app.state.store,project_id='project-team',user_id='owner',space_id='team',actor='panel:owner',key=args['idempotency_key'])
+    right=seed_workflow(app.state.store,project_id='project-legacy',user_id='owner',space_id='legacy',actor='panel:owner',key=args['idempotency_key'])
     assert left['workflow_id']!=right['workflow_id']
-    assert must(tool(b['owner'],'workflows_create',args))['replayed']
-    assert must(tool(b['legacy'],'workflows_create',args))['replayed']
+    assert must(tool(b['owner'],'workflows_get',{'workflow_id':left['workflow_id']}))['retired']
+    assert must(tool(b['legacy'],'workflows_get',{'workflow_id':right['workflow_id']}))['retired']
     # Opening the migrated DB again must NOT recreate the obsolete global index.
     second=Store(app.state.store.directory)
     try:

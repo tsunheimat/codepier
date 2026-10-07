@@ -84,12 +84,12 @@ class Gateway:
     def tools(self, principal):
         if not self.enabled:
             return []
-        result = [catalog.definition(binding['alias'], tool) for binding, tool in policy.visible_tools(self.store, principal)]
+        result = [catalog.definition(binding['alias'], tool, principal.authorization_mode) for binding, tool in policy.visible_tools(self.store, principal)]
         try:
             policy.grant_context(self.store, principal)
         except DevError:
             return result
-        return result + [catalog.status_definition()]
+        return result + [catalog.status_definition(principal.authorization_mode)]
 
     def list_tools(self, principal, native, cursor=None):
         return catalog.page(native + self.tools(principal), cursor,
@@ -102,7 +102,7 @@ class Gateway:
                 item = groups.setdefault(binding['id'], {'binding_id': binding['id'], 'alias': binding['alias'], 'tools': []})
                 item['tools'].append(catalog.public_name(binding['alias'], tool['name']))
         return {'enabled': self.enabled, 'bindings': list(groups.values()),
-                'authorization': 'role + explicit gateway consent', 'resource_isolation': 'backend account and reviewed tool; no generic project sandbox'}
+                'authorization': 'resource policy + explicit gateway consent', 'resource_isolation': 'backend account and reviewed tool; no generic project sandbox'}
 
     def resolve(self, principal, name):
         self.require_enabled()
@@ -236,6 +236,8 @@ class Gateway:
                         if old['fingerprint'] != fingerprint:
                             raise DevError('GATEWAY_IDEMPOTENCY_CONFLICT', '同一幂等键已用于另一请求；未重发', 409)
                         receipt = self.receipt(principal, old['id'])
+                        if getattr(self, 'conversations', None):
+                            self.conversations.admitted(principal, old['id'], [{'type': 'mcp', 'id': binding['id']}], 'mcp')
                         if receipt['result'] is not None:
                             return old['id'], self._with_receipt(receipt['result'], old['id'])
                         raise DevError('GATEWAY_ORIGINAL_CALL', '原调用仍在执行或结果未知；请读取原 call_id，未重发', 409, call_id=old['id'])
@@ -248,6 +250,8 @@ class Gateway:
                 self.store.db.execute("""INSERT INTO gateway_calls(id,space_id,user_id,grant_id,binding_id,tool,tool_hash,state,created,updated,request_key,fingerprint)
                     VALUES(?,?,?,?,?,?,?,'running',?,?,?,?)""",
                     (call_id, principal.space_id, principal.user_id, principal.grant_id, binding['id'], tool['name'], catalog.fingerprint(tool), now, now, request_hash, fingerprint))
+                if getattr(self, 'conversations', None):
+                    self.conversations.admitted(principal, call_id, [{'type': 'mcp', 'id': binding['id']}], 'mcp')
                 return call_id, None
 
         async def before_send():

@@ -20,6 +20,7 @@ PENDING = {'operation_id': OP, 'pending': True, 'state': 'queued', 'next': 'proc
            'retry_after_seconds': 2, 'deadline': None,
            'next_call': {'name': 'process', 'arguments': {'operation': 'wait', 'operation_ids': [OP]}}}
 SAMPLES = {
+    'conversations': {'conversations': [], 'next_offset': None},
     'workspace': {'projects': [{'id': 'project', 'alias': 'Fixture', 'online': True}]},
     'read': {'operation_id': OP, 'path': 'file.txt', 'sha256': SHA, 'bytes': 5,
              'content': 'hello', 'offset': 1, 'end_line': 1, 'total_lines': 1,
@@ -61,7 +62,7 @@ def test_core_results_are_typed_and_allow_diagnostic_extensions(name):
             validate(name, invalid)
 
 
-@pytest.mark.parametrize('name', sorted(CORE_TOOLS - {'vps'}))
+@pytest.mark.parametrize('name', sorted(CORE_TOOLS - {'vps', 'conversations'}))
 @pytest.mark.parametrize('state', ['queued', 'running', 'reconnecting', 'cancelling', 'unknown'])
 def test_remote_and_local_facades_preserve_pending_receipts(name, state):
     validate(name, {**PENDING, 'state': state})
@@ -69,7 +70,7 @@ def test_remote_and_local_facades_preserve_pending_receipts(name, state):
         validate(name, {**PENDING, 'operation_id': 123})
 
 
-@pytest.mark.parametrize('name', sorted(CORE_TOOLS - {'vps'}))
+@pytest.mark.parametrize('name', sorted(CORE_TOOLS - {'vps', 'conversations'}))
 def test_terminal_receipts_without_materialized_result_are_preserved(name):
     validate(name, {**PENDING, 'pending': False, 'state': 'interrupted',
                     'next': None, 'next_call': None, 'retry_after_seconds': None})

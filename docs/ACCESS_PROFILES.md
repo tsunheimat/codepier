@@ -1,18 +1,17 @@
-# Access Profiles：一个 ChatGPT 账号的多种连接身份
+# 高级稳定身份与原固定授权兼容
 
 本功能是 Hub 源码变更，不代表线上服务或 ChatGPT 工具目录已更新。保持现有 Agent 的项目、本机目录、Shell、浏览器与桌面权限检查，不自动部署或重启 Agent。
 
 ## 两种明确的授权模式
 
-**秘书等自用场景请选择动态角色授权**：Profile 关联角色，连线明确同意 `codepier.role_access` 后，角色的能力和项目清单可以持续增减（含新增项目），不再与首次项目清单取交集。入口及委派创建见 [动态角色授权](DYNAMIC_ROLES.md)。以下交集说明只针对固定授权。
-
+正常配置从 **Resources → Access（Roles / Client Connections）** 开始。角色是通用权限集合，不绑定 persona。新固定连接冻结具体资源 / 操作；动态连接需明确同意未来角色变更。稳定 Profile 可在连接或 OAuth 同意窗口自动建立，其技术配置移到 **Access → 高级身份与兼容接入**。见 [当前资源与访问模型](RESOURCE_MODEL.md)。本文的原 scope/project 交集说明仍适用于既有固定 grant。
 旧固定 grant 不自动升级；关联角色也不改变它原来的同意范围。
 
 ## 固定授权使用流程
 
-1. 登录管理面板，进入侧栏 **访问 Profiles**。
+1. 登录管理面板，进入**Access → 高级身份与兼容接入 → 稳定身份**。
 2. 建立有明确用途的身份，例如 `NewAPI Dev`（指定项目 + read/write/execute）、`Codex Review`（指定项目 + read）。`computer` 必须按需明确选择。
-3. 在 ChatGPT 的 CodePier 应用连接设置增加另一个连接；OAuth 确认页面选择 **以哪个 Profile 连接**。下面只显示 Profile 与客户端申请范围共同允许的权限和项目，仍可进一步缩小。
+3. 在 ChatGPT 的 CodePier 应用连接设置增加另一个连接；OAuth 确认页面选择 **连接角色 / 原有身份**。下面只显示 Profile 与客户端申请范围共同允许的权限和项目，仍可进一步缩小。
 4. 重新连接、刷新凭据或升级同意范围时选择原 Profile，不要新建一个同名身份。Profile 的不透明 ID 保持不变，显示名称可以修改。
 5. 可以要求读取 `get_profile()` 确认当前身份；完整和编码 MCP 目录均提供 `get_access_context()`，显示当前有效 scopes 和可见项目别名，不返回密码、Token、主机根路径或其他连接。
 
@@ -51,7 +50,7 @@ OAuth/PAT 的 `grants.profile_id` 绑定身份；固定模式使用 Profile 上�
 
 ## 旧数据兼容与升级
 
-Hub 数据库增量迁移到 schema 7，包含 `access_profiles`、`access_roles` 及可空身份/角色绑定。旧 grant 默认保留 fixed 模式，不修改已有 grant 的 scopes、projects、Token、操作或 owner。迁移可以重复运行，不更换 `master.key`。
+早期 Profile 功能曾增量迁移到 schema 7；当前升级另有资源模型标记（详见 RESOURCE_MODEL.md），包含 `access_profiles`、`access_roles` 及可空身份/角色绑定。旧 grant 默认保留 fixed 模式，不修改已有 grant 的 scopes、projects、Token、操作或 owner。迁移可以重复运行，不更换 `master.key`。
 
 旧连接继续原样工作；其 `get_profile` 返回原 owner 的持久不透明账号 ID，不把每个旧 Token 伪装成不同的新 Profile。需要多个可辨识用途时，新建 Profile 并重新授权；不会静默将旧连接合并或重绑定。传统连接仍可使用原 PAT/OAuth 确认流程。
 

@@ -73,6 +73,10 @@ def effective_grant(store, grant):
             raise ValueError('Invalid stored permission')
         if any(not isinstance(item, str) or not item for item in projects):
             raise ValueError('Invalid stored projects')
+        from hub.roles import connection_policy, project_actions
+        policy = connection_policy(store, grant)
+        if policy is not None:
+            projects = [pid for pid in projects if 'read' in project_actions(policy, pid)]
         if iam.installed(store):
             allowed = {row['id'] for row in store.all('SELECT id FROM projects WHERE space_id=?', (grant.get('space_id','legacy'),))}
             projects = sorted(allowed if '*' in projects else allowed & set(projects))

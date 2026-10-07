@@ -254,19 +254,19 @@ further administrators in **身份管理**. Keep a local recovery administrator:
 hub init` adds one whenever no local-login account exists (see Recovery), so an IdP
 outage cannot lock the instance.
 
-## Team Spaces, invitations and shared secretary Roles
+## Team Spaces, invitations and shared configurable Roles
 
 1. Under **我的账号**, create a team Space. Select it in **当前空间**.
 2. Under **空间成员**, issue a one-time invitation to an already signed-in human,
    or configure a verified provider group mapping. The invitation secret is shown
    only once; accepting it does not share the inviter's session or credentials.
-3. Create the Space's `secretary` Role under **访问角色**. Keep operation/resource
+3. Create the Space's `worker` Role under **Access → Roles**. Keep operation/resource
    pairs explicit. An all-project read rule does not make a separate execute-on-A
    rule apply to every project.
 4. Assign the Role to the human. Enable **允许通过 Profile 委派给 ChatGPT / MCP**
    (`may_delegate`) only when that human may create downstream role connections.
    Permission to use a Role is distinct from assigning or editing it.
-5. Each human creates their own stable secretary Profile under **访问 Profiles**.
+5. Each human creates their own stable client identity in **Access → Client Connections**, with Profile details under advanced identity settings.
 6. Connect ChatGPT to the role endpoint, select the intended Space/Profile in the
    authorization page, and explicitly accept current and future role policy.
 
@@ -284,7 +284,7 @@ Use `get_profile()` to confirm stable identity and `get_access_context()` for
 current role version, projects and **per-project** actions. The aggregate scopes
 are a summary; they do not give every listed project all summarized capabilities.
 
-Add another project or enable a capability in the secretary Role. Existing valid
+Add another project or enable a capability in the worker Role. Existing valid
 role connections use the new policy on subsequent requests. Remove a project,
 assignment or membership and new calls/results/queued delivery must be denied.
 Old fixed-mode grants retain their fixed consent semantics and cannot silently

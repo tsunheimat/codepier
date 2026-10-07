@@ -101,6 +101,8 @@ class Runtime:
         self.integrations = HubIntegrations(self)
         from hub.vps import VPSService
         self.vps = VPSService(self)
+        from hub.conversations import ConversationRegistry
+        self.conversations = ConversationRegistry(self)
         self.diagnostics = Diagnostics(self)
         self.artifacts = ArtifactService(self)
         self.native = NativeService(self)
@@ -262,6 +264,11 @@ class Runtime:
         principal = iam.require_record(self.store, principal, row)
         if row['project_id']:
             self.authorize(principal, TOOLS[row['tool']].scope, project_id=row['project_id'])
+        if row['tool'] == 'exec':
+            summary = self.store.one('SELECT args_summary FROM operations WHERE id=?', (id,))
+            target = json.loads(summary['args_summary']).get('target', '')
+            if target.startswith('vps:'):
+                self.vps.require(target[4:], principal, 'execute')
         elif row['tool'] == 'system_validate':
             self.authorize(principal, 'projects.create', device_id=row['device_id'])
         if row['tool'] in (COMPUTER_TOOLS - {'computer_status'}) | {'browser_open', 'browser_snapshot', 'browser_action', 'browser_close'} and 'computer' not in principal.scopes:
@@ -469,10 +476,15 @@ class Runtime:
             result = current_profile(self.store, principal)[0]
         elif name == "get_access_context":
             result = access_context(self.store, principal)
+            from hub.client_connections import effective_access
+            result['resource_permissions'] = ({'projects': [], 'vps': [], 'mcp': []}
+                if result.get('role', {}).get('enabled') is False else effective_access(self, principal))
         elif name == "projects_list":
             result = {"projects": self.list_projects(principal)}
         elif name == "vps":
             result = self.vps.list(args, principal)
+        elif name == 'conversations':
+            result = self.conversations.invoke(args, principal)
         elif name == "projects_resolve":
             result = self.project_public(self.project(args["project"], principal))
         elif name == 'workspace_status':
@@ -707,7 +719,7 @@ class Runtime:
                            "user_epoch": principal.user_epoch, "identity_id": principal.identity_id}}
                 if name == "exec" and args["target"].startswith("vps:"):
                     vps_args = {**args, "vps": args["target"][4:]}
-                    request["vps_ref"] = self.vps.reference(vps_args, project)
+                    request["vps_ref"] = self.vps.reference(vps_args, project, principal)
                 payload = self.store.encrypt(json.dumps(request, ensure_ascii=False))
                 lifecycle_ttl = 900 if name == "agent_update" else 120
                 deadline_seconds = (min(self.queue_seconds, 15) if name in {"computer_action", "browser_action"} else
@@ -719,6 +731,10 @@ class Runtime:
                 self.store.audit(principal.actor, name, project.get("alias", ""), "queued", {"operation_id": id, "args": operation_summary(args)})
                 self.diagnostics.record(id, "hub_received")
                 self.publish("operation", {"id": id, "state": "queued", "tool": name})
+        resources = [{'type': 'project', 'id': project['id']}] if project.get('id') else []
+        if name == 'exec' and args.get('target', '').startswith('vps:'):
+            resources.append({'type': 'vps', 'id': args['target'][4:]})
+        self.conversations.admitted(principal, id, resources)
         return id, None
 
     def authorized_result(self, identifier, result, principal):
@@ -785,7 +801,7 @@ class Runtime:
         if not project or project["root"] != request["project"]["root"] or project["device_id"] != op["device_id"] or project["alias"] != request["project"].get("alias"):
             return "项目映射在排队期间被删除或修改，未在新的路径执行"
         if "vps_ref" in request:
-            denied = self.vps.permission_error(request, op["project_id"])
+            denied = self.vps.permission_error(request, op["project_id"], caller)
             if denied:
                 return denied
         scope = TOOLS[op["tool"]].scope

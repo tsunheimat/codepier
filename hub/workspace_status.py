@@ -69,7 +69,7 @@ def workspace_status(runtime, args, principal):
     workspace_id = args.get('workspace_id', '')
     limit = args['limit']
     listing = runtime.workflows.list({'project': project['id'], 'state': '',
-                                      'cursor': args['workflow_cursor'], 'limit': limit}, principal)
+                                      'cursor': args['workflow_cursor'], 'limit': limit}, principal) if args['workflow_id'] else {'workflows': [], 'next_cursor': None}
     # Workflow records are project-level. workspace_id only filters receipts; it
     # is not proof of filesystem ownership and is never used to grant access.
     workflow = None
@@ -126,4 +126,5 @@ def workspace_status(runtime, args, principal):
             'history_truncated': history_truncated, 'recent_operations': recent_items,
             'recent_window_limited': recent['next_before_created'] is not None or len(recent_items) >= limit,
             'execution_started': False,
-            'scope_note': '任务步骤是项目级保存记录；操作按当前目录编号筛选。近期操作未自动归属任务；历史通过未核对源码新鲜度；任务完成、验证通过与部署成功是不同状态。'}
+            'workflows_retired': True,
+            'scope_note': '操作按当前目录编号筛选。旧工作流仅供历史读取；Conversations 关联对话与资源，不保存进度。历史通过未核对源码新鲜度；验证通过与部署成功是不同状态。'}

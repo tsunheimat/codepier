@@ -37,7 +37,7 @@ def test_all_nineteen_routes_reflow_in_each_theme(stack, chat_browser_pool, tmp_
                 expect(page.locator('#chat-root')).to_be_visible()
                 expect(page.locator('#chat-compose')).to_be_visible()
             else:
-                title=page.evaluate('route=>nav.find(item=>item[0]===route)[2]',route)
+                title=page.evaluate('route=>nav.find(item=>item[0]===canonicalPage(route))[2]',route)
                 expect(page.locator('#page h1')).to_have_text(title)
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),route
             assert page.evaluate('document.documentElement.dataset.appearance')==scheme
@@ -74,7 +74,7 @@ def test_editor_back_after_resize_keeps_dirty_input_until_confirmed(stack,chat_b
         page.go_back()
         expect(page.locator('#role-form')).to_have_count(0)
         assert not page.evaluate("document.querySelector('#app').inert")
-        expect(page.locator('#page h1')).to_have_text('访问角色')
+        expect(page.locator('#page h1')).to_have_text('访问')
     finally:
         page.close()
 

@@ -47,7 +47,7 @@
   window.CodePierBrand = Object.freeze({
     name: 'CodePier',
     title: 'CodePier · 码头',
-    tagline: 'AI 与本地代码对接、任务停靠的地方',
+    tagline: 'MCP 资源与客户端连接',
     storageMigration: storage,
     migrateStorage: migrate,
   });

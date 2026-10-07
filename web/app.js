@@ -9,15 +9,11 @@ const nav = [
   ['native', 'terminal', 'CLI 会话', '11'],
   ['overview', 'dashboard', '控制总览', '01'],
   ['devices', 'device', '设备节点', '02'],
-  ['projects', 'folder', '项目映射', '03'],
-  ['vps', 'cloud', 'VPS 管理', '13'],
+  ['resources', 'folder', '资源', '03'],
+  ['access', 'shield', '访问', '07'],
+  ['conversations', 'history', '对话关联', '05'],
   ['workbench', 'code', '远程工作台', '04'],
-  ['workflows', 'history', '开发任务', '05'],
   ['audit', 'audit', '操作审计', '06'],
-  ['connect', 'plug', 'MCP 接入', '07'],
-  ['profiles', 'shield', '访问 Profiles', '14'],
-  ['roles', 'shield', '访问角色', '15'],
-  ['mcp-gateway', 'network', 'MCP 网关', '19'],
   ['diagnostics', 'activity', '运行诊断', '08'],
   ['integrations', 'network', '开发工具', '12'],
   ['artifacts', 'download', '产物交付', '09'],
@@ -30,7 +26,7 @@ const S = {
   space_id: null,
   identity: null,
   session: null,
-  page: 'overview',
+  page: 'resources',
   overview: null,
   projects: [],
   devices: [],
@@ -151,6 +147,12 @@ function clearSpaceSnapshots() {
     grants: [],
     integrations: null,
     workflow: null,
+    resourceTab: null,
+    accessTab: null,
+    conversationTab: null,
+    conversationOffset: 0,
+    conversationFilter: null,
+    archiveCursor: '',
     delivery: null,
     vps: [],
     vpsQuery: '',
@@ -291,6 +293,7 @@ const tool = (name, args = {}) => {
     !name.startsWith('operations_') &&
     !name.startsWith('projects_') &&
     ![
+      'conversations',
       'workflows_get',
       'workflows_list',
       'diagnostics_get',
@@ -391,7 +394,7 @@ function empty(...args) {
 function heading(...args) {
   return CP.ui.heading(...args);
 }
-const brand = `<div class="brand"><span class="brand-mark" aria-hidden="true">C</span><div><div class="brand-name">CodePier · 码头</div><span class="brand-sub">AI 与本地代码对接</span></div></div>`;
+const brand = `<div class="brand"><span class="brand-mark" aria-hidden="true">C</span><div><div class="brand-name">CodePier · 码头</div><span class="brand-sub">MCP 资源与客户端连接</span></div></div>`;
 function appearanceControl() {
   const preference = window.CodePierAppearance?.getPreference() || 'auto';
   const options = [
@@ -436,21 +439,11 @@ function renderLogin(configured = true) {
 function renderShell() {
   const chosen = nav.find((x) => x[0] === S.page);
   const groups = [
-    ['工作区', ['overview', 'devices', 'projects', 'vps']],
-    ['开发', ['native', 'workbench', 'integrations', 'workflows', 'artifacts', 'audit']],
+    ['CodePier', ['resources', 'access', 'conversations']],
+    ['工具与记录', ['native', 'workbench', 'integrations', 'artifacts', 'audit']],
     [
-      '系统',
-      [
-        'connect',
-        'profiles',
-        'roles',
-        'mcp-gateway',
-        'identity',
-        'members',
-        'identity-admin',
-        'diagnostics',
-        'settings',
-      ],
+      '管理',
+      ['overview', 'devices', 'identity', 'members', 'identity-admin', 'diagnostics', 'settings'],
     ],
   ];
   const navigation = groups
@@ -465,10 +458,10 @@ function renderShell() {
     )
     .join('');
   const dock = [
-    ['overview', 'dashboard', '总览'],
-    ['projects', 'folder', '项目'],
+    ['access', 'shield', '访问'],
+    ['resources', 'folder', '资源'],
     ['native', 'terminal', 'CLI'],
-    ['workflows', 'history', '任务'],
+    ['conversations', 'history', '对话'],
   ]
     .map(
       ([id, ico, label]) =>
@@ -689,7 +682,9 @@ function connectEvents() {
       loadBasics()
         .then(() => current() && CodePierCallLog.refresh(true))
         .catch(() => {});
-    else if (['overview', 'devices', 'projects', 'audit', 'workflows', 'vps'].includes(S.page))
+    else if (
+      ['overview', 'devices', 'resources', 'access', 'conversations', 'audit'].includes(S.page)
+    )
       refreshPanel();
     else loadBasics().catch(() => {});
   };
@@ -767,6 +762,9 @@ function connectEvents() {
     // change project/device mappings; rebuilding them on every operation makes
     // ordinary navigation compete with the live audit stream.
     const dependencies = {
+      resources: ['vps', 'device', 'project', 'iam'],
+      access: ['iam', 'vps', 'project', 'device'],
+      conversations: ['operation', 'project', 'vps'],
       overview: ['operation', 'device', 'project'],
       devices: ['device', 'project'],
       projects: ['device', 'project'],
@@ -783,9 +781,52 @@ function connectEvents() {
     }
   };
 }
+function productHash(page) {
+  return page === 'resources'
+    ? 'resources/' + (S.resourceTab || 'projects')
+    : page === 'access'
+      ? 'access/' + (S.accessTab || 'roles')
+      : page === 'conversations' && S.conversationTab === 'archive'
+        ? 'conversations/archive'
+        : page;
+}
+function canonicalPage(page) {
+  const [area, tab] = page.split('/');
+  const allowed = {
+    resources: ['projects', 'vps', 'mcp'],
+    access: ['roles', 'connections', 'advanced'],
+    conversations: ['index', 'archive'],
+  };
+  if (tab && allowed[area]?.includes(tab)) {
+    S[area === 'resources' ? 'resourceTab' : area === 'access' ? 'accessTab' : 'conversationTab'] =
+      tab;
+    return area;
+  }
+  const aliases = {
+    projects: ['resources', 'projects'],
+    vps: ['resources', 'vps'],
+    'mcp-gateway': ['resources', 'mcp'],
+    roles: ['access', 'roles'],
+    connect: ['access', 'connections'],
+    profiles: ['access', 'advanced'],
+    workflows: ['conversations', 'archive'],
+    terminal: ['native', ''],
+  };
+  const route = aliases[page];
+  if (!route) return page;
+  if (route[1])
+    S[
+      route[0] === 'resources'
+        ? 'resourceTab'
+        : route[0] === 'access'
+          ? 'accessTab'
+          : 'conversationTab'
+    ] = route[1];
+  return route[0];
+}
 async function navigate(page) {
   S.vpsIntent = (S.vpsIntent || 0) + 1;
-  if (page === 'terminal') page = 'native';
+  page = canonicalPage(page);
   if (!S.session || !$('#page') || !nav.some((x) => x[0] === page)) return;
   if (page !== S.page && $('.modal') && !panelDialogs.requestClose(null, { navigation: true }))
     return;
@@ -800,7 +841,7 @@ async function navigate(page) {
   if (page === 'integrations' && S.page !== page) window.CodePierIntegrations?.inherit(S.page);
   const changed = page !== S.page;
   S.page = page;
-  location.hash = page;
+  location.hash = productHash(page);
   $('#breadcrumb-page').textContent = nav.find((x) => x[0] === page)[2];
   uiSetMenu(false, false);
   uiSyncNavigation();
@@ -838,6 +879,12 @@ async function renderPage(showLoading = true) {
     let html = '';
     if (['identity', 'members', 'identity-admin'].includes(page)) {
       html = await CodePierIdentity.html(page);
+    } else if (page === 'resources') {
+      html = await CodePierProduct.resources(seq);
+    } else if (page === 'access') {
+      html = await CodePierProduct.access();
+    } else if (page === 'conversations') {
+      html = await CodePierProduct.conversations();
     } else if (page === 'overview') {
       S.overview = await api('/api/overview');
       S.projects = S.overview.projects;
@@ -892,7 +939,7 @@ async function renderPage(showLoading = true) {
     if (page === 'vps' && !showLoading) vpsReplacePage(html);
     else if (
       !showLoading &&
-      ['overview', 'devices', 'projects', 'audit'].includes(page) &&
+      ['overview', 'devices', 'projects', 'resources', 'audit'].includes(page) &&
       !(page === 'audit' && S.auditMode === 'operations' && window.CodePierCallLog)
     )
       CP.dom.replacePage($('#page'), html);
@@ -902,6 +949,7 @@ async function renderPage(showLoading = true) {
     if (page === 'mcp-gateway') CodePierGateway.bind();
     if (page === 'roles') CodePierRoles.bind();
     if (page === 'profiles') CodePierProfiles.bind();
+    if (['resources', 'access', 'conversations'].includes(page)) CodePierProduct.bind();
     if (page === 'vps') bindVps();
     if (page === 'workbench') bindWorkbench();
     if (page === 'workflows') bindWorkflows();
@@ -1018,7 +1066,7 @@ function projectsHTML() {
   const rows = S.projects
     .map(
       (p, index) =>
-        `<article class="panel workspace-project-row" data-cp-key="project:${esc(p.id)}" data-project-row data-project-search="${esc((p.alias + ' ' + p.root + ' ' + p.device_name + ' ' + (p.description || '')).toLocaleLowerCase())}"><header class="workspace-project-head"><span class="project-index" aria-hidden="true">${icon('folder')}</span><div><span class="project-cover-label">PROJECT</span><h2>${esc(p.alias)}</h2>${p.description ? `<p>${esc(p.description)}</p>` : ''}</div>${onlineBadge(p.online)}</header><div class="workspace-project-path"><span>本机路径</span><code title="${esc(p.root)}">${esc(p.root)}</code></div><dl class="workspace-project-facts"><div><dt>设备</dt><dd>${esc(p.device_name)}</dd></div><div><dt>文件权限</dt><dd><span class="badge ${p.mode === 'write' ? 'purple' : 'neutral'}">${p.mode === 'write' ? '可编辑' : '只读'}</span></dd></div><div><dt>任务执行</dt><dd><span class="badge neutral">${p.allow_tasks ? '已授权' : '未授权'}</span></dd></div></dl><footer class="workspace-project-actions"><div class="actions">${typeof chatProjectButtons === 'function' ? chatProjectButtons(p.id) : ''}<button class="btn primary small" data-action="open-project" data-id="${esc(p.id)}">工作台 ${icon('arrow')}</button></div><button class="btn ghost small" data-vps-action="project" data-project="${esc(p.id)}">${icon('cloud')}VPS 分配</button><button class="icon-btn" data-action="edit-project" data-id="${esc(p.id)}" aria-label="编辑 ${esc(p.alias)} 项目映射">${icon('edit')}</button></footer></article>`,
+        `<article class="panel workspace-project-row" data-cp-key="project:${esc(p.id)}" data-project-row data-project-search="${esc((p.alias + ' ' + p.root + ' ' + p.device_name + ' ' + (p.description || '')).toLocaleLowerCase())}"><header class="workspace-project-head"><span class="project-index" aria-hidden="true">${icon('folder')}</span><div><span class="project-cover-label">PROJECT</span><h2>${esc(p.alias)}</h2>${p.description ? `<p>${esc(p.description)}</p>` : ''}</div>${onlineBadge(p.online)}</header><div class="workspace-project-path"><span>本机路径</span><code title="${esc(p.root)}">${esc(p.root)}</code></div><dl class="workspace-project-facts"><div><dt>设备</dt><dd>${esc(p.device_name)}</dd></div><div><dt>文件权限</dt><dd><span class="badge ${p.mode === 'write' ? 'purple' : 'neutral'}">${p.mode === 'write' ? '可编辑' : '只读'}</span></dd></div><div><dt>任务执行</dt><dd><span class="badge neutral">${p.allow_tasks ? '已授权' : '未授权'}</span></dd></div></dl><footer class="workspace-project-actions"><div class="actions">${typeof chatProjectButtons === 'function' ? chatProjectButtons(p.id) : ''}<button class="btn small" data-resource-detail="${esc(p.id)}" data-resource-type="project">资源详情</button><button class="btn primary small" data-action="open-project" data-id="${esc(p.id)}">工作台 ${icon('arrow')}</button></div><button class="btn ghost small" data-vps-action="project" data-project="${esc(p.id)}">${icon('cloud')}VPS 关联</button><button class="icon-btn" data-action="edit-project" data-id="${esc(p.id)}" aria-label="编辑 ${esc(p.alias)} 项目映射">${icon('edit')}</button></footer></article>`,
     )
     .join('');
   return (
@@ -2053,6 +2101,9 @@ function checked(name) {
   return $$(`.modal input[name="${name}"]:checked`).map((x) => x.value);
 }
 async function newGrant() {
+  return CodePierProduct.newConnection();
+}
+async function newLegacyGrant() {
   await loadBasics();
   const profiles = (await api('/api/access-profiles')).profiles;
   modal(
@@ -2090,6 +2141,23 @@ async function consentModal(id) {
   try {
     const r = await api('/api/oauth/requests/' + encodeURIComponent(id));
     const profiles = (await api('/api/access-profiles')).profiles;
+    if (r.scopes.includes('codepier.role_access')) {
+      const roles = (await api('/api/access-roles')).roles.filter((role) => role.enabled);
+      profiles.unshift(
+        ...roles.map((role) => ({
+          id: 'new:' + role.id,
+          label: role.label,
+          enabled: true,
+          role_id: role.id,
+          role,
+          version: 0,
+          new_identity: true,
+          scopes: ['read'],
+          projects: [],
+          all_projects: false,
+        })),
+      );
+    }
     modal(
       '确认 MCP 应用授权',
       `<p class="form-note"><strong>${esc(r.client_name)}</strong> 正在申请访问你的本机项目。</p><dl class="kv"><dt>客户端</dt><dd><code>${esc(r.client_id)}</code></dd><dt>回调地址</dt><dd>${esc(r.redirect_uri)}</dd><dt>资源</dt><dd>${esc(r.resource)}</dd></dl>${CodePierProfiles.selectorHTML(profiles)}<div data-profile-permissions></div>${notice('固定授权按本次同意限制；动态角色授权会跟随之后的角色能力和项目变更。请核对身份、角色、应用及回调地址。')}`,
@@ -2105,6 +2173,24 @@ async function consentModal(id) {
     );
     const decide = (allow) =>
       busy(allow ? $('#allow-consent') : $('#deny-consent'), async () => {
+        if (allow) {
+          const selector = $('#access-profile-selector');
+          const selected = profiles.find((p) => p.id === selector.value);
+          // Consent is checked before creating a stable identity. A version
+          // change still fails inside the original OAuth issuance transaction.
+          profileBinding();
+          if (selected?.new_identity) {
+            const created = await post('/api/access-profiles', {
+              label: (r.client_name + ' · ' + selected.label + ' · ' + r.id.slice(-8)).slice(0, 80),
+              role_id: selected.role_id,
+              idempotency_key: 'oauth-identity-' + r.id,
+            });
+            const option = selector.selectedOptions[0];
+            Object.assign(selected, created, { new_identity: false });
+            option.value = created.id;
+            selector.value = created.id;
+          }
+        }
         const out = await post(`/api/oauth/requests/${encodeURIComponent(id)}/decide`, {
           allow,
           scopes: checked('scope'),
@@ -2464,16 +2550,22 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 window.addEventListener('hashchange', () => {
-  const page = location.hash.slice(1) === 'terminal' ? 'native' : location.hash.slice(1);
-  if (page !== S.page && nav.some((n) => n[0] === page)) navigate(page);
+  const before = JSON.stringify([S.resourceTab, S.accessTab, S.conversationTab]);
+  const page = canonicalPage(location.hash.slice(1));
+  if (
+    (page !== S.page ||
+      before !== JSON.stringify([S.resourceTab, S.accessTab, S.conversationTab])) &&
+    nav.some((n) => n[0] === page)
+  )
+    navigate(page);
 });
 setInterval(updateClock, 1000);
 (async () => {
   try {
-    const page = location.hash.slice(1) === 'terminal' ? 'native' : location.hash.slice(1);
+    const page = canonicalPage(location.hash.slice(1));
     if (nav.some((n) => n[0] === page)) S.page = page;
-    if (location.hash === '#terminal')
-      history.replaceState(null, '', location.pathname + location.search + '#native');
+    if (page && nav.some((n) => n[0] === page))
+      history.replaceState(null, '', location.pathname + location.search + '#' + productHash(page));
     const s = await api('/api/session');
     if (s.authenticated) {
       S.session = s;

@@ -58,7 +58,7 @@ def test_default_catalog_and_removed_aliases(core_stack):
     full = stack.client.post('/mcp?profile=full', headers={'Accept': 'application/json, text/event-stream',
         'Authorization': 'Bearer ' + stack.pat}, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
     names = {t['name'] for t in full.json()['result']['tools']}
-    assert len(names) == 13 and 'edit' in names and 'apply_patch' not in names and 'computer' in names and 'computer_action' not in names
+    assert len(names) == 14 and 'edit' in names and 'apply_patch' not in names and 'computer' in names and 'computer_action' not in names
 
 
 def test_short_exec_and_files_during_another_command(core_stack):
@@ -78,8 +78,8 @@ def test_short_exec_and_files_during_another_command(core_stack):
             live, _ = finish(stack, live)
         assert live['build']['runtime']['version'] and live['running_jobs'] >= 1
         diagnostics, _ = call(stack, 'process', {'operation': 'diagnostics', 'project': 'Imago'})
-        assert diagnostics['tool_count'] == 13
-        assert diagnostics['native_core_tool_count'] == 9
+        assert diagnostics['tool_count'] == 14
+        assert diagnostics['native_core_tool_count'] == 10
         created, _ = call(stack, 'write', {'path': 'nested/new.txt', 'content': 'alpha\nbeta\n', 'expected_sha256': 'new', 'idempotency_key': uuid.uuid4().hex})
         read, _ = call(stack, 'read', {'path': 'nested/new.txt'})
         edited, _ = call(stack, 'edit', {'path': 'nested/new.txt', 'expected_sha256': read['sha256'],
@@ -159,9 +159,8 @@ def test_advanced_workflow_review_backup_search_and_validation(core_stack):
     assert any(item['path'] == 'core-batch.txt' for item in changes['files'])
     history, _ = call(stack, 'read', {'operation': 'history', 'options': {'path': 'core-batch.txt'}})
     assert history
-    workflow, _ = call(stack, 'workspace', {'operation': 'workflow_create', 'options': {'title': 'Core workflow', 'goal': 'Validate the fixture'}, 'idempotency_key': uuid.uuid4().hex})
-    detail, _ = call(stack, 'workspace', {'operation': 'workflow_get', 'options': {'workflow_id': workflow['workflow_id']}})
-    assert detail['workflow_id'] == workflow['workflow_id']
+    retired=stack.mcp('workspace',{'project':'Imago','operation':'workflow_create','options':{'title':'Retired','goal':'No tracking'},'idempotency_key':uuid.uuid4().hex})
+    assert retired['isError'] and retired['structuredContent']['error']['code']=='WORKFLOW_RETIRED'
     artifact, _ = call(stack, 'write', {'operation': 'artifact', 'options': {'path': 'core-batch.txt'}, 'idempotency_key': uuid.uuid4().hex})
     listed, _ = call(stack, 'read', {'operation': 'artifacts'})
     assert artifact['artifact_id'] in json.dumps(listed)

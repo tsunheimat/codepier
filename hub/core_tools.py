@@ -35,8 +35,9 @@ def help_result(tool='', action=''):
             'diagnostics': 'diagnostics_get', 'activity': 'activity_list'},
         'browser': {op: 'browser_' + op for op in ('status', 'open', 'snapshot', 'action', 'close')},
         'computer': COMPUTER}
+    catalogs['conversations'] = {op: 'conversations' for op in ('list', 'get', 'associate')}
     if not tool or not action:
-        return {'tools': {name: {'operations': sorted(actions),
+        return {'tools': {name: {'operations': sorted(op for op in actions if not op.startswith('workflow_') and op != 'handoff'),
             'help': {'tool': 'project_query', 'arguments': {'operation': 'help', 'tool': name, 'action': '<operation>'}}}
             for name, actions in catalogs.items() if not tool or name == tool},
             'note': 'Specialized operations use options. Common operations use top-level arguments, with additional filters in options as shown by each help schema. All scopes and node opt-ins are checked on every call.'}

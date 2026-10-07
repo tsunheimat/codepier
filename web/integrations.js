@@ -6,7 +6,6 @@ window.CodePierIntegrations = (() => {
   const tabs = [
     ['overview', '开始工作'],
     ['validation', '测试验收'],
-    ['handoff', '任务衔接'],
     ['navigation', '代码导航'],
     ['worktrees', '隔离目录'],
     ['browser', '网页验证'],
@@ -756,68 +755,6 @@ window.CodePierIntegrations = (() => {
       );
       U().details(box, '授权、源码与运行环境', r);
     }
-    function taskRow(w) {
-      const id = w.workflow_id || w.id;
-      return `<article class="integration-row"><div><strong>${esc(w.title)}</strong><small>${esc(U().label(w.state))} · ${esc(timeText(w.updated || w.created))}</small><p class="integration-help">${esc(w.goal || '')}</p>${w.progress ? `<small>${w.progress.completed} / ${w.progress.total} 步已完成</small>` : ''}</div><div class="actions">${action('handoff', '查看并衔接', `data-id="${esc(id)}"`)}<button class="btn ghost small" data-wf-action="detail" data-id="${esc(id)}">任务详情</button></div></article>`;
-    }
-    async function showHandoff(id) {
-      const token = (handoffEpoch = uid());
-      info('正在读取原任务与断点…');
-      const [r, w] = await Promise.all([
-        request('workflows_handoff', { workflow_id: id }),
-        request('workflows_get', { workflow_id: id }),
-      ]);
-      if (!r || !w || !current() || token !== handoffEpoch) return;
-      if (w.project_id && w.project_id !== project)
-        throw new Error('任务不属于当前项目，请重新选择。');
-      const box = $('#i-result', body);
-      box.replaceChildren();
-      const section = document.createElement('section');
-      section.className = 'panel integration-section';
-      const uncertain = r.pending_or_uncertain || [],
-        changed = r.mapping_changed || w.mapping_changed,
-        otherWorkspace = !!w.workspace_id && w.workspace_id !== workspace_id;
-      section.innerHTML = `<div class="integration-section-head"><h2>${esc(w.title || '任务交接')}</h2>${U().badge(r.state)}</div><h3>原目标</h3><p class="integration-prose">${esc(r.original_goal || '未记录')}</p>${r.summary ? `<h3>最近断点</h3><p class="integration-prose">${esc(r.summary)}</p>` : ''}${changed ? U().note('项目映射已经变化', '只能核对历史记录，请先为当前设备或目录建立新的任务。', '', 'warning') : ''}${otherWorkspace ? U().note('此任务绑定了另一隔离目录', '以下仅供读取交接；先核对任务目录，不会把隔离任务投递到原目录。', '', 'warning') : ''}<div class="integration-grid"><div><h3>已完成的记录</h3>${(r.completed || []).map((s) => `<article class="integration-step"><strong>${esc(s.title)}</strong><p>${esc(s.summary || '无额外摘要')}</p></article>`).join('') || '<p class="integration-help">尚无已完成步骤。</p>'}</div><div><h3>接下来需要处理</h3>${(r.remaining || []).map((s) => `<article class="integration-step"><strong>${esc(s.title)}</strong><p>${esc(s.acceptance || s.summary || '请先核对原任务要求')}</p></article>`).join('') || '<p class="integration-help">没有未完成步骤；这不代表已经部署。</p>'}</div></div>${uncertain.length ? `<h3>需核查的项目近期操作</h3><p class="integration-help">这些操作来自项目近期记录，不代表全部属于这项任务。请先查询原回执，不要重复执行。</p>${uncertain.map((o) => `<article class="integration-row"><div><strong>${esc(o.tool)}</strong><small>${esc(U().label(o.state))}</small><code>${esc(o.operation_id)}</code></div><button class="btn ghost small" data-action="operation-detail" data-id="${esc(o.operation_id)}">查询原操作</button></article>`).join('')}` : ''}<div class="actions">${action('handoff-copy', '复制交接说明')}${action('handoff-chat', '带到 CLI 草稿', `${changed || otherWorkspace || workspace_id ? 'disabled' : ''} title="只填写草稿，确认发送后才开始执行"`)}<button class="btn ghost small" data-wf-action="detail" data-id="${esc(id)}">打开完整任务</button>${jump('validation', '核对当前验收')}</div><p class="integration-help">不猜测它对应哪条 CLI 会话，不自动运行模型或重放命令。隔离任务请在相应工作目录处理。</p>`;
-      box.append(section);
-      const text = U().handoffText(r, w.title);
-      $('[data-i-action=handoff-copy]', section).onclick = wire(() => copy(text));
-      $('[data-i-action=handoff-chat]', section).onclick = wire(() => toChat(text));
-      U().details(section, '交接来源与原始记录', r);
-      section.tabIndex = -1;
-      section.focus({ preventScroll: true });
-      info('任务交接已读取 · 未启动执行');
-    }
-    let handoffEpoch = '';
-    async function workflowList(selector, limit = 20) {
-      let cursor = '',
-        history = [];
-      const load = async (box, valid) => {
-        const r = await request('workflows_list', { limit, cursor });
-        if (!r || !valid()) return;
-        box.innerHTML =
-          (r.workflows || []).map(taskRow).join('') || empty('这个项目还没有开发任务。');
-        box.insertAdjacentHTML(
-          'beforeend',
-          `<div class="integration-list-footer">${action('new-workflow', '建立开发任务', p.mode === 'write' ? '' : 'disabled title="当前项目为只读"')}<span class="integration-help">每页最多 ${limit} 项 · 只读取进度，不自动执行</span><div class="actions">${action('workflow-prev', '上一页', history.length ? '' : 'disabled')}${action('workflow-next', '下一页', r.next_cursor ? '' : 'disabled')}</div></div>`,
-        );
-        $('[data-i-action=new-workflow]', box).onclick = wire(async () => {
-          workflowState().project = project;
-          await workflowCreate();
-        });
-        for (const b of $$('[data-i-action=handoff]', box))
-          b.onclick = wire(() => showHandoff(b.dataset.id));
-        $('[data-i-action=workflow-prev]', box).onclick = wire(async () => {
-          cursor = history.pop() || '';
-          await section(selector, load);
-        });
-        $('[data-i-action=workflow-next]', box).onclick = wire(async () => {
-          history.push(cursor);
-          cursor = r.next_cursor;
-          await section(selector, load);
-        });
-      };
-      await section(selector, load);
-    }
     async function validationList(selector) {
       await section(selector, async (box, valid) => {
         const r = await request('validations_list');
@@ -937,7 +874,6 @@ window.CodePierIntegrations = (() => {
           offline +
           `<div class="integration-hero"><div><span class="eyebrow">当前工作项目</span><h2>${esc(p.alias)}</h2><p>选择下一步，工具会沿用上方的项目与操作目录。</p></div><div class="actions">${action('start-chat', '进入 CLI 草稿', workspace_id ? 'disabled title="原生 CLI 不支持受管隔离目录编号"' : '')}${action('edit', '打开工作台')}</div></div><div class="integration-action-grid">${[
             ['validation', '检查这次修改', '运行测试或构建，核对当前版本'],
-            ['handoff', '继续已有任务', '读取目标、断点与原操作证据'],
             ['browser', '验证网页效果', '连接授权页面，观察后确认动作'],
             ['navigation', '理解代码关系', '查定义、引用与调用关系'],
           ]
@@ -947,10 +883,10 @@ window.CodePierIntegrations = (() => {
             )
             .join(
               '',
-            )}</div><div class="integration-grid"><section class="panel integration-section"><div class="integration-section-head"><h2>项目就绪状态</h2>${jump('status', '详细诊断')}</div><div id="i-checks">正在核对当前环境…</div></section><section class="panel integration-section"><div class="integration-section-head"><h2>项目开发任务</h2>${jump('handoff', '全部任务')}</div><div id="i-workflows">正在读取任务…</div></section></div><div id="i-result"></div>`;
+            )}</div><div class="integration-grid"><section class="panel integration-section"><div class="integration-section-head"><h2>项目就绪状态</h2>${jump('status', '详细诊断')}</div><div id="i-checks">正在核对当前环境…</div></section><section class="panel integration-section"><div class="integration-section-head"><h2>相关对话与操作</h2></div><p>在 Conversations 查看资源关联和原操作回执；继续在所选客户端发出指令。</p><button class="btn" data-nav="conversations">打开对话关联</button></section></div><div id="i-result"></div>`;
         $('[data-i-action=start-chat]', body).onclick = wire(() => toChat());
         $('[data-i-action=edit]', body).onclick = wire(() => openEditor());
-        await Promise.all([section('#i-checks', checks), workflowList('#i-workflows', 5)]);
+        await section('#i-checks', checks);
       } else if (tab === 'status') {
         body.innerHTML =
           offline +
@@ -1075,10 +1011,6 @@ window.CodePierIntegrations = (() => {
           validationList('#i-validations'),
         );
         await validationList('#i-validations');
-      } else if (tab === 'handoff') {
-        body.innerHTML = `<section class="panel integration-section"><h2>继续已有任务</h2><p class="integration-help">先读取原目标和断点，再选择复制说明、放入 CLI 草稿或打开完整任务。不会自动重新执行结果不明的命令。</p><div id="i-workflows">正在读取任务…</div></section><div id="i-result"></div>`;
-        await workflowList('#i-workflows');
-        if (v.workflow_id && current()) await showHandoff(v.workflow_id);
       } else if (tab === 'worktrees') {
         body.innerHTML =
           offline +

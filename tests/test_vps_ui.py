@@ -37,10 +37,11 @@ def open_page(browser, stack, width=1440):
     expect(page.locator('#page h1')).to_have_text('控制总览',timeout=15000)
     if width <= 500:
         page.locator('.mobile-menu').click()
-    entry=page.locator('.sidebar [data-nav="vps"]')
+    entry=page.locator('.sidebar [data-nav="resources"]')
     expect(entry).to_be_visible()
     entry.click()
-    expect(page.locator('#page h1')).to_have_text('VPS 管理')
+    page.locator('[data-product-area="resources"][data-product-tab="vps"]').click()
+    expect(page.locator('#page h1')).to_have_text('资源')
     expect(entry).to_have_attribute('aria-current','page')
     if width <= 500:
         expect(page.locator('.sidebar')).not_to_have_class(re.compile(r'\bopen\b'))
@@ -51,7 +52,7 @@ def create_vps(stack, **changes):
     return stack.must(stack.client.post('/api/vps',json={
         'name':'VPS-'+uuid.uuid4().hex[:8], 'host':'vps.example.invalid',
         'port':10000+int(uuid.uuid4().hex[:4],16)%40000,'password':PASSWORD,
-        'project_ids':[stack.project['id']],**changes}))
+        'project_ids':[stack.project['id']], 'execution_project_id': stack.project['id'], **changes}))
 
 
 def update_data(v, **changes):
@@ -64,7 +65,7 @@ def test_create_edit_search_and_responsive_layout(browser,ui_stack,width):
     engine,kind=browser;s=ui_stack;page=open_page(engine,s,width)
     errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     try:
-        page.locator('.page-head [data-vps-action="add"]').click()
+        page.locator('[data-vps-action="add"]').first.click()
         form=page.locator('#vps-form')
         name='面板测试-'+uuid.uuid4().hex[:8]
         form.locator('[name="name"]').fill(name)
@@ -116,8 +117,8 @@ def test_project_and_vps_assignment_both_directions(browser,ui_stack):
         expect(page.locator('#vps-assign-save')).to_have_count(0)
         current=s.must(s.client.get('/api/vps/'+v['id']))
         assert set(current['project_ids'])=={s.projects[0]['id'],s.projects[2]['id']}
-        page.locator('[data-nav="projects"]').first.click()
-        expect(page.locator('#page h1')).to_have_text('项目映射')
+        page.locator('[data-product-area="resources"][data-product-tab="projects"]').click()
+        expect(page.locator('#page h1')).to_have_text('资源')
         page.locator(f'#page [data-vps-action="project"][data-project="{s.projects[0]["id"]}"]').click()
         page.locator(f'.modal [name="vps_ids"][value="{v["id"]}"]').uncheck()
         page.click('#project-vps-save')

@@ -128,12 +128,13 @@ def _set_scheme(page: Page, scheme: str) -> None:
 
 
 def _navigate(page: Page, route: str) -> None:
+    expected=page.evaluate('route=>canonicalPage(route)',route)
     page.evaluate("route => navigate(route)", route)
     expect(page.locator(".skeleton")).to_have_count(0, timeout=15_000)
     if route == "native":
         expect(page.locator("#chat-root")).to_be_visible()
     else:
-        expect(page.locator(f'.nav [data-nav="{route}"]')).to_have_attribute(
+        expect(page.locator(f'.nav [data-nav="{expected}"]')).to_have_attribute(
             "aria-current", "page"
         )
 

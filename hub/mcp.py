@@ -23,6 +23,7 @@ from hub.mcp_tasks import TaskService, CreatedTask, METHODS as TASK_METHODS, EXT
 from shared.contracts import tool_definitions,TOOLS
 from shared.core_contracts import CORE_INSTRUCTIONS, CORE_TOOLS, REPLACED_MCP_TOOLS
 from hub.core_tools import result as core_result
+from hub.conversations import current_conversation
 from shared.mcp_presentation import present, error_view
 from shared.integration_contracts import ADMIN_TOOLS,APP_ONLY_TOOLS
 from shared.util import DevError,VERSION,valid_json_value
@@ -147,6 +148,13 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                 try:
                     route=await runtime.store.run(tools.resolve, principal, name)
                     mark('route_resolved',tool=name)
+                    conversation_id = None
+                    try:
+                        conversation_id = await runtime.store.run(runtime.conversations.begin, metadata, principal)
+                    except Exception:
+                        runtime.conversations.write_errors += 1
+                    if conversation_id:
+                        current_conversation.set((runtime.store, conversation_id))
                     if route.backend == 'remote':
                         mark('invoke_started')
                         result=await runtime.gateway.call(principal,name,arguments,lambda:auth.bearer(request),
@@ -161,6 +169,11 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                         mark('invoke_started')
                         value=await runtime.invoke(name,arguments,principal)
                         principal=await runtime.store.run(auth.bearer,request)
+                        if conversation_id:
+                            try:
+                                await runtime.store.run(runtime.conversations.observe, conversation_id, principal, arguments)
+                            except Exception:
+                                runtime.conversations.write_errors += 1
                         if name == 'get_access_context':
                             value={**value,'gateway':await runtime.store.run(runtime.gateway.context,principal)}
                         result=await runtime.store.run(mcp_apps.attach,core_result(name,arguments,value),name,arguments,value,request_public_url)
@@ -187,14 +200,14 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                         result['_meta']={'mcp/www_authenticate':[challenge]}
             elif method=='resources/list':
                 result={'resources':[{'uri':'rd://projects','name':'Mapped projects','mimeType':'application/json'},
-                    {'uri':'rd://workflow','name':'Remote development workflow','mimeType':'text/plain'},*mcp_apps.list_resources()]}
+                    {'uri':'rd://conversations','name':'Conversation associations','mimeType':'text/plain'},*mcp_apps.list_resources()]}
             elif method=='resources/templates/list':result={'resourceTemplates':[]}
             elif method=='resources/read':
                 uri=params.get('uri')
                 if 'read' not in principal.scopes:raise DevError('INSUFFICIENT_SCOPE','缺少读取权限',403)
                 if uri in mcp_apps.RESOURCES or uri in mcp_apps.LEGACY_RESOURCES:item=await runtime.store.run(mcp_apps.read_resource,uri,request_public_url)
                 elif uri=='rd://projects':item={'uri':uri,'mimeType':'application/json','text':json.dumps(await runtime.store.run(project_resources,principal),ensure_ascii=False)}
-                elif uri=='rd://workflow':item={'uri':uri,'mimeType':'text/plain','text':instructions}
+                elif uri in {'rd://conversations', 'rd://workflow'}:item={'uri':uri,'mimeType':'text/plain','text':instructions}
                 else:return failure(identifier,-32602 if modern else -32002,'Resource not found',404 if modern else 200)
                 await runtime.store.run(auth.store.audit,principal.actor,'resources.read',uri);result={'contents':[item]}
             elif method=='prompts/list':
