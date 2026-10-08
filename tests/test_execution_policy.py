@@ -192,8 +192,8 @@ async def test_computer_probe_blocked_before_provider(shell_agent, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_queue_is_rechecked_after_policy_tightens(runtime, monkeypatch):
-    r, _, _ = runtime
-    p = Principal('mcp:test:ChatGPT', 'owner', {'read','write','execute'}, ['*'])
+    r, owner, _ = runtime
+    p = Principal('mcp:test:ChatGPT', 'owner', {'read','write','execute'}, ['*'],space_id=owner.space_id)
     monkeypatch.delenv('MCP_BLOCK_LOCAL_CODEX', raising=False)
     receipt = await r.invoke('shell_exec', {'project':'Project', 'command':'codex exec never-run', 'idempotency_key':'queued-policy-test'}, p)
     monkeypatch.setenv('MCP_BLOCK_LOCAL_CODEX', '1')
@@ -207,7 +207,7 @@ async def test_queue_is_rechecked_after_policy_tightens(runtime, monkeypatch):
 @pytest.mark.parametrize('panel', [True, False])
 async def test_trusted_metadata_injected_outside_idempotency_payload(runtime, monkeypatch, panel):
     r, admin, secret = runtime
-    p = admin if panel else Principal('mcp:test:ChatGPT', 'owner', {'read','write','execute'}, ['*'])
+    p = admin if panel else Principal('mcp:test:ChatGPT', 'owner', {'read','write','execute'}, ['*'],space_id=admin.space_id)
     monkeypatch.setenv('MCP_BLOCK_LOCAL_CODEX', '1')
     args = {'project':'Project', 'command':'echo normal', 'idempotency_key':'metadata-receipt-test'}
     receipt = await r.invoke('shell_exec', args, p)

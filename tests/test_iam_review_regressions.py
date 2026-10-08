@@ -173,7 +173,7 @@ def test_freeform_failed_login_target_cannot_select_a_space(team,target):
     response=b['bob'].post('/api/login',json={'username':target,'password':'not-a-real-password'})
     assert response.status_code==401
     event=app.state.store.one("SELECT * FROM audit WHERE action='auth.login' AND actor='anonymous' ORDER BY id DESC LIMIT 1")
-    assert event['target']==target and event['space_id']=='legacy' and event['owner_user_id'] is None
+    assert event['target']==target and event['space_id'] is None and event['owner_user_id'] is None
     team_log=b['owner'].get('/api/audit').json()['events']
     assert not any(row['id']==event['id'] for row in team_log)
 
