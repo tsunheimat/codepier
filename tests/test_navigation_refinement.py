@@ -100,6 +100,32 @@ def test_inaccessible_project_deep_link_does_not_select_another_project(stack,ch
     finally:page.close()
 
 
+def test_tools_refresh_after_real_project_unmapping_keeps_context_and_draft(stack,chat_browser_pool):
+    page=chat_browser_pool('chromium').new_page();calls=[]
+    # Simulate an unavailable event stream: all HTTP permission checks remain
+    # real. An actual entitlement-invalidating SSE reconnect may end the session.
+    page.add_init_script('window.EventSource=class extends EventTarget{close(){}};')
+    def route(request_route):
+        calls.append(request_route.request.post_data_json)
+        request_route.continue_()
+    try:
+        page.route('**/api/tools/call',route)
+        page.goto(stack.url+'/#project/'+stack.project['id']+'/tools?tab=validation')
+        page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
+        expect(page.locator('#i-project')).to_have_value(stack.project['id'])
+        page.locator('[name=command]').fill('printf keep-original-project-draft')
+        assert stack.client.delete('/api/projects/'+stack.project['id']).status_code==200
+        page.locator('.topbar [data-action=refresh]').click()
+        expect(page.locator('#page')).to_contain_text('无权访问')
+        expect(page.locator('#integration-center')).to_have_count(0)
+        assert page.evaluate('S.integrations.project')==stack.project['id']
+        assert 'keep-original-project-draft' in page.evaluate('JSON.stringify(S.integrations.drafts)')
+        assert stack.project['id'] in page.url
+        assert len(stack.client.get('/api/projects').json()['projects'])==2
+        assert not any(c['tool'] in {'validation_run','shell_exec'} for c in calls)
+    finally:page.unroute_all(behavior='wait');page.close()
+
+
 def test_artifact_unknown_reply_recovers_original_receipt_after_navigation_and_reload(integrated_stack,chat_browser_pool):
     s=integrated_stack;page=chat_browser_pool('chromium').new_page()
     filename='recover-'+uuid.uuid4().hex[:8]+'.txt';(s.imago/filename).write_text('Original snapshot')

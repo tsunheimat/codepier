@@ -146,7 +146,12 @@ window.CodePierIntegrations = (() => {
       v.tab = tabs.some((t) => t[0] === route.tab) ? route.tab : 'overview';
       S.projectToolsRoute = null;
     }
-    if (!S.projects.some((p) => p.id === v.project)) {
+    if (v.project && !S.projects.some((p) => p.id === v.project))
+      return (
+        notice('所选项目不存在或当前身份无权访问。') +
+        '<button class="btn" data-nav="resources/projects">返回 Projects</button>'
+      );
+    if (!v.project) {
       v.project = S.projects[0]?.id || '';
       v.workspace_id = '';
       v.trees = [];
