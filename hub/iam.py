@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 from contextvars import ContextVar
 
 audit_context = ContextVar("codepier_audit_context", default=None)
@@ -30,6 +29,17 @@ def user_security(store, user_id):
     if not row or not row['active']:
         raise DevError('ACCOUNT_DISABLED', '账号不存在或已停用', 401)
     return row
+
+
+def default_space(store, user_id):
+    """Choose an authorized normal Space; Legacy requires explicit selection."""
+    rows = store.all('''SELECT DISTINCT s.id FROM spaces s JOIN memberships m ON m.space_id=s.id
+        JOIN iam_users u ON u.user_id=m.user_id WHERE m.user_id=? AND s.active=1 AND s.kind<>'legacy'
+        AND m.active=1 AND (m.expires IS NULL OR m.expires>?)
+        AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=s.id AND b.user_id=m.user_id AND b.blocked=1)
+        ORDER BY CASE WHEN s.id=u.personal_space_id AND m.level='owner' THEN 0
+                      WHEN s.kind='personal' AND m.level='owner' THEN 1 ELSE 2 END,s.created,s.id''', (user_id, time.time()))
+    return rows[0]['id'] if rows else None
 
 
 def check_identity(store, identity_id, *, require_fresh=True):
@@ -85,18 +95,27 @@ def validate_grant(store, grant):
     user = user_security(store, grant['user_id'])
     if user['epoch'] != grant.get('user_epoch', 1):
         raise DevError('INVALID_TOKEN', '用户授权版本已改变', 401)
-    membership(store, grant['user_id'], grant.get('space_id', 'legacy'))
+    membership(store, grant['user_id'], grant.get('space_id'))
     identity = check_identity(store, grant.get('identity_id'))
     if identity and identity['user_id'] != grant['user_id']:
         raise DevError('INVALID_TOKEN', '身份绑定不匹配', 401)
     if grant.get('authorization_mode') == 'role':
-        role_eligible(store, grant['user_id'], grant['role_id'], grant.get('space_id', 'legacy'))
+        role_eligible(store, grant['user_id'], grant['role_id'], grant.get('space_id'))
 
 
 @read_decision
 def live_principal(store, principal):
     if not installed(store):
         return principal
+    if not principal.space_id:
+        if principal.grant_id:
+            grant = store.one('SELECT space_id,user_id FROM grants WHERE id=?', (principal.grant_id,))
+            sid = grant['space_id'] if grant and grant['user_id'] == principal.user_id else None
+        else:
+            sid = default_space(store, principal.user_id)
+        if not sid:
+            raise DevError('SPACE_FORBIDDEN', '请选择有权使用的空间', 403)
+        principal = replace(principal, space_id=sid)
     cache = memo(store)
     key = principal_key(principal)
     if key in cache:
@@ -330,10 +349,8 @@ def audit(store, principal, action, target='', status='ok', detail=None):
 
 
 def create_personal_space(store, user_id, label):
-    space_id = 'sp_' + uuid.uuid4().hex
-    store.db.execute('INSERT INTO spaces(id,label,kind,created) VALUES(?,?,?,?)', (space_id, label[:100], 'personal', time.time()))
-    store.db.execute('INSERT INTO memberships(space_id,user_id,level) VALUES(?,?,?)', (space_id, user_id, 'owner'))
-    return space_id
+    from hub.space_bootstrap import ensure_personal_space
+    return ensure_personal_space(store.db, user_id, label)
 
 
 class AuditContextMiddleware:

@@ -153,8 +153,9 @@ def test_conversations_survive_actual_hub_close_reopen_and_preserve_receipt(tmp_
     monkeypatch.setenv('HUB_PUBLIC_URL','http://testserver');monkeypatch.setenv('MCP_PUBLIC_URL','')
     directory=tmp_path/'hub';app=create_app(str(directory));store=app.state.store
     store.execute('INSERT INTO users VALUES (?,?,?,?)',('owner','admin',password_hash('fixture-only'),time.time()))
-    store.execute('INSERT INTO devices(id,name,secret,created) VALUES (?,?,?,?)',('d','Fixture',store.encrypt('fixture'),time.time()))
-    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created) VALUES (?,?,?,?,?,?,?,?)',('p','P','p','d',str(tmp_path/'p'),'write',1,time.time()))
+    space=store.one('SELECT personal_space_id FROM iam_users WHERE user_id=?',('owner',))['personal_space_id']
+    store.execute('INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)',('d','Fixture',store.encrypt('fixture'),time.time(),space,'owner'))
+    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?)',('p','P','p','d',str(tmp_path/'p'),'write',1,time.time(),space,'owner'))
     from hub.principal import Principal
     grant=app.state.auth.issue_grant(Principal('panel:admin','owner',{'read','execute'},[],admin=True),'client',['read','execute'],['p'])
     key=uuid.uuid4().hex

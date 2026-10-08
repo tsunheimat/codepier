@@ -19,8 +19,8 @@
       "bytes": 27864
     },
     "app.js": {
-      "sha256": "cba229efdb25aad1c618120625425c390aee80312c6f6fc61364a3d5e8806236",
-      "bytes": 122497
+      "sha256": "12e0e8c9349241bc9cf165a99796448f5f1a17e65d673b512464895059b36980",
+      "bytes": 124019
     },
     "appearance.js": {
       "sha256": "7fc8e8ffa85a4bb5836b8919cdf6ff12813cfb4a9e4736709f5858e5d8782bb1",
@@ -87,12 +87,12 @@
       "bytes": 446
     },
     "identity.js": {
-      "sha256": "1bba08a4da0a6f677082a298252cadcf4d9d7a3503d81c2b3a7f689a757f7a81",
-      "bytes": 32384
+      "sha256": "7694f27a670e6112a52c346d958ba8d0e02965f52538af25fefcaa7896b6918d",
+      "bytes": 33290
     },
     "insights.js": {
-      "sha256": "48a848f7c7d41ffdf04201db41063e46f022ca5a5dc22d1f268f9b2144471e22",
-      "bytes": 18190
+      "sha256": "fc4d93433ebd2e9160016c251a1dea0482f9603faf8e9805cf1bc4700b5f3ffd",
+      "bytes": 20922
     },
     "integration-flow.css": {
       "sha256": "8ae0f94010da2e15da3f46882e2b1e5e361a1342322f6ffc20c630d748ca9d95",
@@ -107,8 +107,8 @@
       "bytes": 6622
     },
     "integrations.js": {
-      "sha256": "3ef6cf9133283bc54ee7b95381d93cd5a65cfce35d9c1b5df133c2ecb0b3c3cf",
-      "bytes": 79757
+      "sha256": "1a8e17fe319fa76afd86e5aea1d3121cad402a6e62d9847cb9da37fba452c4c4",
+      "bytes": 81892
     },
     "mcp-gateway.css": {
       "sha256": "7836668107f99f817b0b4391a604638760cc80292510ee3104cb6ac688a85b83",
@@ -121,6 +121,10 @@
     "native-hash.js": {
       "sha256": "6f324844279a6dff5f75fda7b284b05319a70a3142f95d253a5e91dae9ddfbb3",
       "bytes": 583
+    },
+    "operation-submit.js": {
+      "sha256": "acae21fad73824269d19a528d85195d69e80bba37433c633f2f74382ab4b3545",
+      "bytes": 2249
     },
     "panel-update.css": {
       "sha256": "0bebae5bca73d7f5b5a31fe0fbe2e0c382b5b56d358eeb2a91ef545db09b5991",
@@ -135,8 +139,8 @@
       "bytes": 939
     },
     "product.js": {
-      "sha256": "817c18cb1afd8373a3c2dc53c30209f033579e80cc530e3eca6707a2815f3053",
-      "bytes": 32078
+      "sha256": "a2eb5d55904bf29caf6ac44272ce74ae4ca0be25d813e97c27e7227009b725d7",
+      "bytes": 33315
     },
     "roles.js": {
       "sha256": "c353042387b3b5c3a2c34072e29b85c11b0abf81c6127b4b2cd2b087021529c4",
@@ -155,8 +159,8 @@
       "bytes": 7583
     },
     "ui.js": {
-      "sha256": "2a96aabcde74f0d19858e11fd9e7e6590efcafcb2d23a1380550e92b98256944",
-      "bytes": 29373
+      "sha256": "f8ec3523401ecf87812fa9d122a0f87489bc8ae49303de9f6a45c2e67a95bea6",
+      "bytes": 29480
     },
     "vendor/js-sha256-1.0.0/sha256.min.js": {
       "sha256": "a050d794e170699bd1a69d33908d0942c68901cb88347016064b60b240f0067e",
@@ -175,5 +179,5 @@
       "bytes": 24897
     }
   },
-  "template_sha256": "aa3f56f1bc3cfae9345db9b656d8a706add268e8c709727c609cecf08fa3cd52"
+  "template_sha256": "64a8d338450af8eec26ebf8d43ed5a5b8287fdf5e18f0080775b3b2ba48b1a3d"
 }

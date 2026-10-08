@@ -129,6 +129,7 @@ def _set_scheme(page: Page, scheme: str) -> None:
 
 def _navigate(page: Page, route: str) -> None:
     expected=page.evaluate('route=>canonicalPage(route)',route)
+    if expected in ('integrations','artifacts'): expected='resources'
     page.evaluate("route => navigate(route)", route)
     expect(page.locator(".skeleton")).to_have_count(0, timeout=15_000)
     if route == "native":

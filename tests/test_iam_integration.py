@@ -46,13 +46,14 @@ def team(tmp_path,monkeypatch):
     with store.transaction():
         for uid in ('owner','alice','bob'):
             store.db.execute('INSERT INTO users VALUES(?,?,?,?)',(uid,uid,hashed,time.time()))
-            if uid!='owner':
-                store.db.execute('DELETE FROM memberships WHERE user_id=?',(uid,))
-                iam.create_personal_space(store,uid,uid+' personal')
+            iam.create_personal_space(store,uid,uid+' personal')
             sessions[uid]=app.state.auth.new_session(uid)
         store.db.execute("INSERT INTO spaces(id,label,kind,created) VALUES('team','Development','team',?)",(time.time(),))
         for uid in sessions:
             store.db.execute('INSERT INTO memberships(space_id,user_id,level) VALUES(?,?,?)',('team',uid,'owner' if uid=='owner' else 'member'))
+        # This fixture intentionally exercises a populated historical Space.
+        store.db.execute("INSERT INTO spaces(id,label,kind,created) VALUES('legacy','Historical fixture','legacy',?)",(time.time(),))
+        store.db.execute("INSERT INTO memberships(space_id,user_id,level) VALUES('legacy','owner','owner')")
         for sid,uid in [('team','owner'),('legacy','owner')]:
             device='device-'+sid
             store.db.execute('INSERT INTO devices(id,name,secret,space_id,owner_user_id,created) VALUES(?,?,?,?,?,?)',(device,device,store.encrypt('x'*43),sid,uid,time.time()))

@@ -43,11 +43,11 @@ def runtime(tmp_path):
     store = Store(tmp_path / 'hub')
     from tests.legacy_iam_fixture import seed_owner
     seed_owner(store,'owner','admin')
-    store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('dev','home',?,?)", (store.encrypt(token()), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES ('proj','Fixture','fixture','dev','/tmp/fixture','','write',1,?)", (time.time(),))
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')", (store.encrypt(token()), time.time()))
+    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev','/tmp/fixture','','write',1,?,'legacy','owner')", (time.time(),))
     instance = Runtime(store)
     instance.wait_seconds = 0
-    principal = Principal('panel:admin', 'owner', {'read', 'write', 'execute', 'computer'}, ['*'], admin=True)
+    principal = Principal('panel:admin', 'owner', {'read', 'write', 'execute', 'computer'}, ['*'], admin=True, space_id='legacy')
     yield instance, principal
     store.close()
 

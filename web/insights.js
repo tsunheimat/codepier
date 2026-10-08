@@ -55,6 +55,17 @@ async function insightTrace(id) {
   }
 }
 async function artifactsHTML(seq) {
+  if (S.artifactRoute) {
+    const p = S.projects.find((p) => p.id === S.artifactRoute);
+    if (!p)
+      return (
+        notice('所选项目不存在或当前身份无权访问。') +
+        '<button class="btn" data-nav="resources/projects">返回 Projects</button>'
+      );
+    if (deliveryState().project !== p.id)
+      Object.assign(deliveryState(), { project: p.id, cursor: '', history: [] });
+    S.artifactRoute = null;
+  }
   const session = S.session,
     w = { ...deliveryState() },
     r = await tool('artifacts_list', { project: w.project, cursor: w.cursor, limit: 20 });
@@ -64,11 +75,13 @@ async function artifactsHTML(seq) {
     heading(
       '产物交付',
       'ARTIFACTS / VERIFIED DELIVERY',
-      '',
-      `<button class="btn ghost" data-action="refresh">${icon('refresh')}刷新</button><button class="btn primary" data-insight="register">${icon('plus')}登记产物</button>`,
+      w.project
+        ? '当前项目：' + (S.projects.find((p) => p.id === w.project)?.alias || w.project)
+        : '已授权项目的文件快照总览',
+      `<button class="btn ghost" data-action="refresh">${icon('refresh')}刷新</button><button class="btn primary" data-insight="register">${icon('plus')}登记产物</button><button class="btn ghost" data-artifact-overview>已授权项目总览</button>${w.project ? `<button class="btn ghost" data-resource-detail="${esc(w.project)}" data-resource-type="project">项目详情</button>` : ''}`,
     ) +
     `<div class="filters"><select id="artifact-project" aria-label="筛选产物项目"><option value="">全部项目</option>${S.projects.map((p) => `<option value="${esc(p.id)}" ${w.project === p.id ? 'selected' : ''}>${esc(p.alias)}</option>`).join('')}</select></div>` +
-    `<div class="insight-grid">${r.artifacts.map((a) => `<article class="panel insight-card artifact-card"><div class="card-top"><span class="eyebrow">${esc(S.projects.find((p) => p.id === a.project_id)?.alias || a.project_id)}</span>${a.expired ? '<span class="badge neutral">已过期</span>' : onlineBadge(a.device_online)}</div><h2>${esc(a.name)}</h2><div class="artifact-size">${humanBytes(a.bytes)}</div><p class="muted tiny">到期 ${esc(timeText(a.expires))}</p><div class="artifact-hash"><span>SHA-256</span><code>${esc(a.sha256)}</code></div><div class="actions">${!a.expired ? `<a class="btn primary" href="/api/artifacts/${encodeURIComponent(a.artifact_id)}/download" download>${icon('download')}下载文件</a>` : ''}<button class="btn ghost" data-insight="artifact" data-id="${esc(a.artifact_id)}">详情与续传</button></div></article>`).join('') || empty('还没有交付产物。')}</div>` +
+    `<div class="insight-grid">${r.artifacts.map((a) => `<article class="panel insight-card artifact-card"><div class="card-top"><span class="eyebrow">${esc(S.projects.find((p) => p.id === a.project_id)?.alias || a.project_id)}</span>${a.expired ? '<span class="badge neutral">已过期</span>' : onlineBadge(a.device_online)}</div><h2>${esc(a.name)}</h2><div class="artifact-size">${humanBytes(a.bytes)}</div><p class="muted tiny">到期 ${esc(timeText(a.expires))}</p><div class="artifact-hash"><span>SHA-256</span><code>${esc(a.sha256)}</code></div><div class="actions">${!a.expired ? `<a class="btn primary" href="${esc(a.download_path)}" download>${icon('download')}下载文件</a>` : ''}<button class="btn ghost" data-insight="artifact" data-id="${esc(a.artifact_id)}">详情与续传</button></div></article>`).join('') || empty('还没有交付产物。')}</div>` +
     `<div class="pagination"><span>每页最多 20 项</span><div class="actions"><button class="btn ghost small" data-insight="artifact-prev" ${w.history.length ? '' : 'disabled'}>上一页</button><button class="btn ghost small" data-insight="artifact-next" ${r.next_cursor ? '' : 'disabled'}>下一页</button></div></div>` +
     uiHelp(
       '下载与保留规则',
@@ -81,8 +94,21 @@ function bindArtifacts() {
   if (s)
     s.onchange = (e) => {
       Object.assign(deliveryState(), { project: e.target.value, cursor: '', history: [] });
+      history.replaceState(
+        null,
+        '',
+        location.pathname + location.search + '#' + productHash('artifacts'),
+      );
       renderPage(false).catch((err) => toast(err.message, true));
     };
+}
+async function openProjectArtifacts(project = '') {
+  await loadBasics();
+  if (project && !S.projects.some((p) => p.id === project))
+    throw new Error('所选项目不存在或当前身份无权访问。');
+  S.artifactRoute = null;
+  Object.assign(deliveryState(), { project, cursor: '', history: [], next: null });
+  await navigate('artifacts');
 }
 function registerArtifact() {
   const projects = S.projects.filter((p) => p.mode === 'write');
@@ -92,10 +118,10 @@ function registerArtifact() {
   }
   const dialog = modal(
     '登记交付产物',
-    `<form id="artifact-form"><div class="field"><label for="artifact-register-project">项目</label><select name="project" id="artifact-register-project">${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === (deliveryState().project || S.work.project) ? 'selected' : ''}>${esc(p.alias)}</option>`).join('')}</select></div><div class="field"><label for="artifact-path">项目内文件路径</label><input id="artifact-path" name="path" required maxlength="1024" placeholder="dist/release.zip"><small>只登记已生成的普通文件；不会自动压缩文件夹或执行构建。</small></div><div class="field"><label for="artifact-name">下载名称（可选）</label><input id="artifact-name" name="name" maxlength="180" placeholder="默认使用原文件名"></div><div class="field"><label for="artifact-source">来源操作编号（可选）</label><input id="artifact-source" name="source_operation_id" maxlength="100"></div><p class="form-note" data-workflow-hint>归档内部是否含凭据需自行检查。文件将复制到独立快照，不会因为原文件后来改变而混用内容。</p></form>`,
+    `<form id="artifact-form"><div class="field"><label for="artifact-register-project">项目</label><select name="project" id="artifact-register-project">${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === (deliveryState().project || S.work.project) ? 'selected' : ''}>${esc(p.alias)}</option>`).join('')}</select></div><div class="field"><label for="artifact-path">项目内文件路径</label><input id="artifact-path" name="path" required maxlength="1024" placeholder="dist/release.zip"><small>只登记已生成的普通文件；不会自动压缩文件夹或执行构建。</small></div><div class="field"><label for="artifact-name">下载名称（可选）</label><input id="artifact-name" name="name" maxlength="180" placeholder="默认使用原文件名"></div><div class="field"><label for="artifact-source">来源操作编号（可选）</label><input id="artifact-source" name="source_operation_id" maxlength="100"></div><p class="form-note" data-operation-hint>归档内部是否含凭据需自行检查。文件将复制到独立快照，不会因为原文件后来改变而混用内容。</p></form>`,
     buttons('artifact-save', '生成固定快照'),
   );
-  bindWorkflowSubmit(
+  bindOperationSubmit(
     dialog,
     $('#artifact-form'),
     $('#artifact-save'),
@@ -120,10 +146,10 @@ async function artifactDetail(id) {
     const command = `python -m scripts.download_artifact --hub ${location.origin} --artifact-id ${id} --token-file /path/to/private-token.txt --output /path/to/output-file`;
     modal(
       a.name,
-      `<dl class="kv"><dt>大小</dt><dd>${humanBytes(a.bytes)}</dd><dt>状态</dt><dd>${a.expired ? '已过期' : a.device_online ? '设备在线' : '设备离线，联网后续传'}</dd><dt>SHA-256</dt><dd><code>${esc(a.sha256)}</code></dd><dt>到期时间</dt><dd>${esc(timeText(a.expires))}</dd><dt>产物编号</dt><dd><code>${esc(a.artifact_id)}</code></dd></dl><h3>可靠续传</h3><p class="form-note">命令行下载器会保留 .part 文件、使用 Range 续传并验证完整 SHA-256。令牌必须是对此产物有读取权限的授权；面板自己的产物不会自动交给其他授权。</p><div class="code-box"><pre>${esc(command)}</pre></div><p class="form-note">上面的路径需要替换为实际私有令牌和保存位置。浏览器支持普通下载；是否自动续传取决于浏览器。</p>`,
+      `<dl class="kv"><dt>大小</dt><dd>${humanBytes(a.bytes)}</dd><dt>状态</dt><dd>${a.expired ? '已过期' : a.device_online ? '设备在线' : '设备离线，联网后续传'}</dd><dt>SHA-256</dt><dd><code>${esc(a.sha256)}</code></dd><dt>到期时间</dt><dd>${esc(timeText(a.expires))}</dd><dt>产物编号</dt><dd><code>${esc(a.artifact_id)}</code></dd><dt>来源操作</dt><dd>${a.source_operation_id ? `<button class="btn ghost small" data-action="operation-detail" data-id="${esc(a.source_operation_id)}">${esc(a.source_operation_id)}</button>` : '未提供'}</dd></dl><h3>可靠续传</h3><p class="form-note">命令行下载器会保留 .part 文件、使用 Range 续传并验证完整 SHA-256。令牌必须是对此产物有读取权限的授权；面板自己的产物不会自动交给其他授权。</p><div class="code-box"><pre>${esc(command)}</pre></div><p class="form-note">上面的路径需要替换为实际私有令牌和保存位置。浏览器支持普通下载；是否自动续传取决于浏览器。</p>`,
       a.expired
         ? ''
-        : `<a class="btn primary" href="/api/artifacts/${encodeURIComponent(id)}/download" download>${icon('download')}下载文件</a>`,
+        : `<a class="btn primary" href="${esc(a.download_path)}" download>${icon('download')}下载文件</a>`,
       true,
     );
   } catch (error) {
@@ -140,10 +166,10 @@ function openSearchSession() {
   }
   const dialog = modal(
     '项目检索',
-    `<form id="session-search-form"><div class="field"><label for="session-query">查找内容</label><input id="session-query" name="query" required maxlength="200"></div><div class="form-row"><div class="field"><label for="session-mode">查找方式</label><select id="session-mode" name="mode"><option value="text">文本</option><option value="symbols">函数、类与方法定义</option><option value="references">引用候选（非类型解析）</option></select></div><div class="field"><label for="session-path">范围</label><input id="session-path" name="path" value="." required></div></div><div class="field"><label for="session-glob">文件模式</label><input id="session-glob" name="file_glob" value="*" required></div><p class="form-note" data-workflow-hint>保存文件清单和扫描位置，按页推进。默认累计扫描预算 60 秒，最多 5000 个结果；会明确标记跳过与截断。</p></form>`,
+    `<form id="session-search-form"><div class="field"><label for="session-query">查找内容</label><input id="session-query" name="query" required maxlength="200"></div><div class="form-row"><div class="field"><label for="session-mode">查找方式</label><select id="session-mode" name="mode"><option value="text">文本</option><option value="symbols">函数、类与方法定义</option><option value="references">引用候选（非类型解析）</option></select></div><div class="field"><label for="session-path">范围</label><input id="session-path" name="path" value="." required></div></div><div class="field"><label for="session-glob">文件模式</label><input id="session-glob" name="file_glob" value="*" required></div><p class="form-note" data-operation-hint>保存文件清单和扫描位置，按页推进。默认累计扫描预算 60 秒，最多 5000 个结果；会明确标记跳过与截断。</p></form>`,
     buttons('session-search-start', '开始检索'),
   );
-  bindWorkflowSubmit(
+  bindOperationSubmit(
     dialog,
     $('#session-search-form'),
     $('#session-search-start'),
@@ -206,6 +232,29 @@ async function currentSymbols() {
     throw error;
   }
 }
+async function readSourceDocument(project, path, start = 1, workspace_id = '') {
+  const session = S.session,
+    space = S.space_id,
+    loading = modal(path, '<p class="muted">读取当前源码…</p>');
+  try {
+    const r = await settled(
+      tool('fs_read', { project, workspace_id, path, start_line: start, max_lines: 400 }),
+    );
+    if (session !== S.session || space !== S.space_id || !loading.isConnected) return;
+    modal(
+      path,
+      `<p class="muted tiny">第 ${r.start_line}–${r.end_line} 行 / 共 ${r.total_lines} 行 · SHA ${esc(r.sha256.slice(0, 16))}</p><div class="code-box"><pre>${esc(r.content)}</pre></div>`,
+      r.next_start_line
+        ? `<button class="btn primary" data-insight="source" data-project="${esc(project)}" data-workspace="${esc(workspace_id)}" data-path="${esc(path)}" data-line="${r.next_start_line}">继续读取</button>`
+        : '',
+      true,
+    );
+  } catch (error) {
+    if (session === S.session && space === S.space_id && loading.isConnected)
+      $('.modal-body', loading).innerHTML = notice(esc(error.message));
+    throw error;
+  }
+}
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-insight]');
   if (!b || b.disabled || !S.session) return;
@@ -259,7 +308,7 @@ document.addEventListener('click', async (e) => {
         await searchSessionPage(b.dataset.project, b.dataset.id, 0, b.dataset.workspace || '');
         break;
       case 'source':
-        await workflowReadDocument(
+        await readSourceDocument(
           b.dataset.project,
           b.dataset.path,
           Number(b.dataset.line || 1),
@@ -270,4 +319,9 @@ document.addEventListener('click', async (e) => {
   } catch (error) {
     toast(error.message, true);
   }
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-artifact-overview]'))
+    openProjectArtifacts().catch((err) => toast(err.message, true));
 });

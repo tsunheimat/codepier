@@ -65,10 +65,9 @@ class Auth:
         # is checked below; a supplied Space ID is not authority.
         space_id = request.headers.get('x-codepier-space') or (request.query_params.get('space_id') if 'query_string' in request.scope else None)
         if not space_id:
-            row = self.store.one("SELECT m.space_id FROM memberships m JOIN spaces s ON s.id=m.space_id WHERE m.user_id=? AND m.active=1 AND s.active=1 AND (m.expires IS NULL OR m.expires>?) AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=m.space_id AND b.user_id=m.user_id AND b.blocked=1) ORDER BY CASE WHEN m.space_id='legacy' THEN 0 ELSE 1 END,m.space_id LIMIT 1", (session['user_id'], time.time()))
-            if not row:
+            space_id = iam.default_space(self.store, session['user_id'])
+            if not space_id:
                 raise DevError('SPACE_FORBIDDEN', '账号没有已启用的空间', 403)
-            space_id = row['space_id']
         principal = Principal('panel:' + session['username'], session['user_id'], {'read'}, [],
                               space_id=space_id, identity_id=session['identity_id'], user_epoch=session['user_epoch'], session_hash=session['id_hash'])
         principal = iam.live_principal(self.store, principal)

@@ -64,7 +64,7 @@ def effective_grant(store, grant):
         profile = None
         if grant.get('profile_id'):
             profile = store.one('SELECT * FROM access_profiles WHERE id=?', (grant['profile_id'],))
-            if not profile or profile['user_id'] != grant['user_id'] or not profile['enabled'] or profile.get('space_id','legacy') != grant.get('space_id','legacy'):
+            if not profile or profile['user_id'] != grant['user_id'] or not profile['enabled'] or profile.get('space_id') != grant.get('space_id'):
                 raise DevError('INVALID_TOKEN', '访问 Profile 已停用或不再属于此授权', 401)
             cap_scopes, cap_projects = stored_permissions(profile)
             scopes &= cap_scopes
@@ -78,10 +78,10 @@ def effective_grant(store, grant):
         if policy is not None:
             projects = [pid for pid in projects if 'read' in project_actions(policy, pid)]
         if iam.installed(store):
-            allowed = {row['id'] for row in store.all('SELECT id FROM projects WHERE space_id=?', (grant.get('space_id','legacy'),))}
+            allowed = {row['id'] for row in store.all('SELECT id FROM projects WHERE space_id=?', (grant.get('space_id'),))}
             projects = sorted(allowed if '*' in projects else allowed & set(projects))
             from hub.principal import Principal
-            owner = Principal('', grant['user_id'], set(), [], space_id=grant.get('space_id','legacy'))
+            owner = Principal('', grant['user_id'], set(), [], space_id=grant.get('space_id'))
             permissions = iam.project_permissions(store, owner)
             projects = [pid for pid in projects if 'read' in permissions.get(pid, ())]
         return scopes, projects, profile
@@ -100,20 +100,21 @@ def refresh_profile_principal(store, principal):
     if cache is not None and key in cache:
         return cache[key]
     row = store.one('SELECT * FROM grants WHERE id=?', (principal.grant_id,))
-    if not row or row['user_id'] != principal.user_id or row['profile_id'] != principal.profile_id or row.get('space_id','legacy') != principal.space_id:
+    if not row or row['user_id'] != principal.user_id or row['profile_id'] != principal.profile_id or row.get('space_id') != principal.space_id:
         raise DevError('INVALID_TOKEN', '访问 Profile 的授权绑定已变化', 401)
     scopes, projects, _ = effective_grant(store, row)
     result = replace(principal, scopes=scopes, projects=projects,
                      authorization_mode=row.get('authorization_mode', 'fixed'), role_id=row.get('role_id'),
-                     space_id=row.get('space_id','legacy'), user_epoch=row.get('user_epoch',1), identity_id=row.get('identity_id'))
+                     space_id=row.get('space_id'), user_epoch=row.get('user_epoch',1), identity_id=row.get('identity_id'))
     if cache is not None:
         cache[key] = result
         cache[('refreshed_profile', iam.principal_key(result))] = result
     return result
 
 
-def validate_profile_consent(store, user_id, profile_id, scopes, projects, version, *, space_id="legacy"):
+def validate_profile_consent(store, user_id, profile_id, scopes, projects, version, *, space_id=None):
     """Called inside the same transaction that creates the grant."""
+    space_id = space_id or iam.default_space(store, user_id)
     if profile_id is None:
         if version is not None:
             raise DevError('INVALID_PROFILE', 'profile_version 需要 profile_id')
@@ -192,7 +193,8 @@ class ProfileUpdate(ProfileFields):
     expected_version: int = Field(ge=1)
 
 
-def profile_values(store, body, user_id, space_id="legacy"):
+def profile_values(store, body, user_id, space_id=None):
+    space_id = space_id or iam.default_space(store, user_id)
     label = body.label.strip()
     if not label or any(ord(char) < 32 or ord(char) == 127 for char in label):
         raise DevError('INVALID_PROFILE', '名称不能为空或包含控制字符')

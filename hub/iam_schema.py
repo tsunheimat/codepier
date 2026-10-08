@@ -136,11 +136,15 @@ def _migrate(db):
     for statement in DDL.split(';'):
         if statement.strip():
             db.execute(statement)
-    db.execute("INSERT OR IGNORE INTO spaces(id,label,kind,created) VALUES('legacy','Personal / Legacy','legacy',strftime('%s','now'))")
     tables = ('devices', 'projects', 'vps_connections', 'access_roles', 'access_profiles',
               'grants', 'operations', 'artifacts', 'workflows', 'audit')
+    legacy_needed = any(db.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() for table in ('users', *tables))
+    if legacy_needed:
+        db.execute("INSERT OR IGNORE INTO spaces(id,label,kind,created) VALUES('legacy','Personal / Legacy','legacy',strftime('%s','now'))")
     for table in tables:
-        _add(db, table, {'space_id': "TEXT NOT NULL DEFAULT 'legacy' REFERENCES spaces(id)",
+        default = " DEFAULT 'legacy'" if legacy_needed else ''
+        nullable = '' if table == 'audit' else ' NOT NULL'
+        _add(db, table, {'space_id': f'TEXT{nullable}{default} REFERENCES spaces(id)',
                          'owner_user_id': 'TEXT REFERENCES users(id)'})
         db.execute(f'CREATE INDEX IF NOT EXISTS {table}_space ON {table}(space_id)')
     _add(db, 'grants', {'identity_id': 'TEXT REFERENCES external_identities(id)',
@@ -214,7 +218,8 @@ def migrate_v9(db):
     """Scope replay identity and freeze resource boundaries, preserving receipts."""
     db.execute('DROP INDEX IF EXISTS op_idem')
     db.execute('CREATE UNIQUE INDEX op_idem ON operations(space_id,actor,idem) WHERE idem IS NOT NULL')
-    _add(db, 'workflow_replays', {'space_id': "TEXT NOT NULL DEFAULT 'legacy' REFERENCES spaces(id)"})
+    default = " DEFAULT 'legacy'" if db.execute("SELECT 1 FROM spaces WHERE id='legacy'").fetchone() else ''
+    _add(db, 'workflow_replays', {'space_id': f'TEXT NOT NULL{default} REFERENCES spaces(id)'})
     db.execute('UPDATE workflow_replays SET space_id=(SELECT space_id FROM workflows WHERE id=workflow_replays.workflow_id)')
     _rebuild(db, 'workflow_replays', [('PRIMARY KEY(actor,idem)', 'PRIMARY KEY(space_id,actor,idem)')])
     for event in ('INSERT', 'UPDATE'):

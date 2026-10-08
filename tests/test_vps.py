@@ -24,14 +24,14 @@ def inventory(tmp_path):
     from tests.legacy_iam_fixture import seed_owner
     seed_owner(store,'owner','fixture')
     device = uuid.uuid4().hex
-    store.execute('INSERT INTO devices(id,name,secret,created) VALUES (?,?,?,?)', (device, 'Fixture Agent', store.encrypt('fixture-device'), time.time()))
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,'legacy','owner')", (device, 'Fixture Agent', store.encrypt('fixture-device'), time.time()))
     projects = []
     for alias in ('Alpha', 'Beta', 'Gamma'):
         identifier = uuid.uuid4().hex
-        store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES (?,?,?,?,?,?,?,?,?)', (identifier, alias, alias.lower(), device, str(tmp_path / alias), '', 'write', 1, time.time()))
+        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,'legacy','owner')", (identifier, alias, alias.lower(), device, str(tmp_path / alias), '', 'write', 1, time.time()))
         projects.append(identifier)
     runtime = Runtime(store)
-    owner = Principal('panel:fixture', 'owner', {'read', 'write', 'execute'}, [], admin=True)
+    owner = Principal('panel:fixture', 'owner', {'read', 'write', 'execute'}, [], admin=True, space_id='legacy')
     yield runtime, owner, projects
     store.close()
 

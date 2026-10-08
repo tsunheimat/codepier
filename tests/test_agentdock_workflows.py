@@ -22,16 +22,16 @@ def env(tmp_path):
     from tests.legacy_iam_fixture import seed_owner
     seed_owner(store,'u','fixture')
     seed_owner(store,'viewer','other')
-    store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('d','fixture','fixture',?)", (time.time(),))
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('d','fixture','fixture',?,'legacy','u')", (time.time(),))
     for id in ("p", "p2"):
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,allow_tasks,created) VALUES (?,?,?,'d',?,1,?)",
+        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,'d',?,1,?,'legacy','u')",
                       (id, id.upper(), id, str(tmp_path / id), time.time()))
     from tests.legacy_iam_fixture import seed_grant
     seed_grant(store,'g')
     seed_grant(store,'other')
     seed_grant(store,'g2')
     runtime = Runtime(store)
-    principal = Principal("mcp:g:fixture", "u", {"read", "write", "execute"}, ["p", "p2"], "g")
+    principal = Principal("mcp:g:fixture", "u", {"read", "write", "execute"}, ["p", "p2"], "g", space_id='legacy')
     yield runtime, principal
     store.close()
 
@@ -85,8 +85,8 @@ def operation(env, *, project="p", grant="g", created=None, exit_code=0, output=
     runtime, principal = env
     identifier = uuid.uuid4().hex
     now = time.time() if created is None else created
-    runtime.store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,state,created,updated) VALUES (?,'d',?,?,?,'tasks_run','{}','fixture','running',?,?)",
-                          (identifier, project, principal.actor, grant, now, now))
+    runtime.store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,state,created,updated,space_id,owner_user_id) VALUES (?,'d',?,?,?,'tasks_run','{}','fixture','running',?,?,'legacy',?)",
+                          (identifier, project, principal.actor, grant, now, now, principal.user_id))
     if finish:
         runtime.complete({"id": identifier}, {"ok": True, "data": {"exit_code": exit_code, "output": output, **data}})
     return identifier

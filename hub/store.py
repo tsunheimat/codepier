@@ -169,6 +169,8 @@ class Store:
         migrate_tasks(self.db)
         from hub.resource_schema import migrate as migrate_resources
         migrate_resources(self.db)
+        from hub.space_bootstrap import migrate as migrate_spaces
+        migrate_spaces(self.db)
 
     @contextmanager
     def transaction(self, *, immediate=True):
@@ -204,13 +206,17 @@ class Store:
         # Context is trusted only for its originating Store AND actor. A task
         # can outlive the HTTP request, and direct callers may use another Store.
         scoped = bool(context and context[0] is self and context[1] == actor)
-        sid, uid = context[2:] if scoped else ('legacy', None)
+        sid, uid = context[2:] if scoped else (None, None)
         if not scoped and actor.startswith('mcp:'):
             grant = self.one('SELECT space_id,user_id FROM grants WHERE id=?', (actor.split(':', 2)[1],))
             if grant: sid, uid = grant['space_id'], grant['user_id']
         elif actor.startswith('panel:') and uid is None:
             user = self.one('SELECT id FROM users WHERE username=?', (actor[6:],))
-            if user: uid = user['id']
+            if user:
+                uid = user['id']
+                if sid is None:
+                    from hub.iam import default_space
+                    sid = default_space(self, uid)
         # Do not retarget a scoped caller's audit entry using an untrusted ID
         # from a denied cross-Space request. Also avoid loading operation bodies
         # just to audit a thin status read.

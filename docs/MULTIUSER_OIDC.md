@@ -83,8 +83,9 @@ Reference: https://learn.microsoft.com/en-us/entra/identity-platform/userinfo
    native-session caches, plus the Agent configuration/state needed for recovery.
 3. Install the reviewed branch version and its pinned requirements. Restart the
    single Hub process normally; do not run two Hubs against the same data directory.
-4. Sign in with the existing local administrator and verify the Legacy Space,
-   projects, original Profiles and existing MCP grants before configuring OIDC.
+4. Sign in with the existing administrator and verify the user's Personal Space,
+   explicit populated Legacy compatibility view (if present), projects, original
+   Profiles and existing MCP grants before configuring OIDC.
 5. Update Agents before ordinary users use native sessions. The new ownership
    capability is checked; an older Agent must not serve shared native transcripts
    as if it supported per-user ownership.
@@ -103,6 +104,11 @@ and do not automatically become members of Legacy. Project aliases become unique
 per Space. Operation/workflow request keys are also Space-scoped, including after
 reopening the database. Cross-Space references and in-place resource Space changes
 are rejected; renaming a resource is not a way to move it across a security boundary.
+
+Fresh installations create no Legacy. The additional scoped Personal bootstrap
+prefers existing valid personal ownership and retires unused Legacy containers
+without discarding audit provenance. Populated or unrecognized dependencies keep
+their original compatibility boundary. See [Personal Spaces](PERSONAL_SPACES.md).
 
 **Rollback:** stop the new Hub, restore the previous application version and its
 matching complete pre-upgrade data backup. Do not point old code at schema 10 or
@@ -241,7 +247,7 @@ Removing the variables keeps the provider and makes it editable in the panel aga
 
 With `CODEPIER_OIDC_BOOTSTRAP_ADMIN=first-login`, and only while no active instance
 administrator exists, the first identity admitted through any enabled provider is
-created as the instance administrator and owner of the Legacy Space, audited as
+created as the instance administrator and owner of a normal Personal Space, audited as
 `oidc.bootstrap_admin`. Every later login is an ordinary user with a personal Space.
 Admission itself is unchanged: `required_group` still decides who may log in at all, so
 set it before the first login when the IdP has other users. Concurrent first logins are

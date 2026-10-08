@@ -36,13 +36,14 @@ def test_space_creation_and_two_tab_selection_are_independent(iam_page,stack):
     expect(page.locator('#iam-form')).to_have_count(0)
     expect(page.locator('.grant-row').filter(has_text=label)).to_be_visible()
     spaces=stack.client.get('/api/iam/me').json()['spaces'];sid=next(s['id'] for s in spaces if s['label']==label)
-    second=page.context.new_page();second.goto(stack.url+'/#identity');expect(second.locator('#iam-active-space')).to_have_value('legacy')
+    personal=stack.client.get('/api/iam/me').json()['default_space_id']
+    second=page.context.new_page();second.goto(stack.url+'/#identity');expect(second.locator('#iam-active-space')).to_have_value(personal)
     page.locator('[data-iam-space="'+sid+'"]').click()
     expect(page.locator('#iam-active-space')).to_have_value(sid)
-    expect(page.locator('#page h1')).to_have_text('控制总览')
+    expect(page.locator('#page h1')).to_have_text('资源')
     assert page.evaluate("S.projects.length")==0
-    assert second.locator('#iam-active-space').input_value()=='legacy'
-    # The original tab re-reads legacy resources using the same cookie.
+    assert second.locator('#iam-active-space').input_value()==personal
+    # The original tab keeps its Personal resources using the same cookie.
     assert second.evaluate("async()=> (await api('/api/projects')).projects.length")==3
     assert page.evaluate("async()=> (await api('/api/projects')).projects.length")==0
     second.close()
@@ -78,7 +79,8 @@ def test_user_invitation_lifecycle_and_shared_role_assignment_ui(iam_page,stack)
     page.locator('[data-iam-space="'+space['id']+'"]').click()
     expect(page.locator('#iam-active-space')).to_have_value(space['id'])
     page.evaluate("navigate('members')")
-    expect(page.locator('#page h1')).to_have_text('空间成员')
+    expect(page.locator('#page h1')).to_have_text('访问')
+    expect(page.locator('[data-product-tab=members]')).to_have_attribute('aria-pressed','true')
     page.locator('[data-iam="invite"]').click()
     expect(page.locator('#iam-form [name="level"]')).to_have_value('member')
     page.locator('button[form="iam-form"]').click()

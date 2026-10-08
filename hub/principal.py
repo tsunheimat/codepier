@@ -13,7 +13,7 @@ class Principal:
     profile_id: str | None = None
     authorization_mode: str = "fixed"
     role_id: str | None = None
-    space_id: str = "legacy"
+    space_id: str | None = None
     instance_admin: bool = False
     user_epoch: int | None = None
     identity_id: str | None = None

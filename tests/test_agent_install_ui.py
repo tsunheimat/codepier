@@ -59,7 +59,8 @@ def install_page(browser, stack):
     page.goto(stack.url + '/#devices')
     page.fill('#username', 'admin');page.fill('#password', stack.password)
     page.click('#login-form button')
-    expect(page.locator('#page h1')).to_have_text('设备节点')
+    expect(page.locator('#page h1')).to_have_text('资源')
+    expect(page.locator('[data-product-tab=devices]')).to_have_attribute('aria-pressed','true')
     assert page.evaluate('typeof agentInstallSetup==="function"'), 'agent-install.js must be loaded by index.html'
     try:
         yield page, state
@@ -71,7 +72,7 @@ def install_page(browser, stack):
 
 
 def open_form(page):
-    page.locator('.page-head [data-action="add-device"]').click()
+    page.locator('#resource-content [data-action="add-device"]').click()
     expect(page.locator('#device-form')).to_be_visible()
 
 

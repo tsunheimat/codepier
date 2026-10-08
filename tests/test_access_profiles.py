@@ -147,7 +147,7 @@ def test_refresh_reconnect_and_scope_upgrade_keep_profile_id_but_not_grant_owner
     runtime = app.state.runtime
     now = time.time()
     app.state.store.execute('''INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,
-        fingerprint,state,created,updated) VALUES (?,?,?,?,?,?,'{}','','succeeded',?,?)''',
+        fingerprint,state,created,updated,space_id,owner_user_id) VALUES (?,?,?,?,?,?,'{}','','succeeded',?,?,'legacy','owner')''',
         ('op-private', 'device', 'project', 'mcp:' + first_grant['id'], first_grant['id'], 'fs_read', now, now))
     refused = call(client, second['access_token'], 'operations_get', {'operation_id': 'op-private'}).json()['result']
     assert refused['isError'] and refused['structuredContent']['operations'][0]['error']['code'] == 'OPERATION_NOT_FOUND'
@@ -362,7 +362,7 @@ def test_narrowing_computer_scope_blocks_original_operation_media(api, tool):
     credential = pat(client, profile)
     now = time.time()
     app.state.store.execute('''INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,
-        fingerprint,state,result,created,updated) VALUES (?,?,?,?,?,?,'{}','','succeeded',?,?,?)''',
+        fingerprint,state,result,created,updated,space_id,owner_user_id) VALUES (?,?,?,?,?,?,'{}','','succeeded',?,?,?,'legacy','owner')''',
         ('media-private', 'device', 'project', 'mcp:' + credential['grant_id'], credential['grant_id'], tool,
          json.dumps({'ok': True, 'data': {'text': 'PRIVATE_BROWSER_MEDIA'}}), now, now))
     assert change(client, profile, scopes=['read']).status_code == 200

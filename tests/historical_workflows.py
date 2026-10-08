@@ -4,9 +4,10 @@ import time
 import uuid
 
 
-def seed_workflow(store, *, project_id, user_id, grant_id=None, actor=None, space_id='legacy',
+def seed_workflow(store, *, project_id, user_id, grant_id=None, actor=None, space_id=None,
                   title='Historical review', goal='Original recorded goal', steps=None, state='blocked', key=None):
     project=store.one('SELECT * FROM projects WHERE id=?',(project_id,))
+    space_id=space_id or project['space_id']
     identifier,now=uuid.uuid4().hex,time.time()
     actor=actor or ('mcp:'+grant_id+':fixture' if grant_id else 'panel:fixture')
     steps=steps or [{'id':'s1','title':'Read source','acceptance':'Inspect files','state':'pending','summary':'','evidence':[]}]

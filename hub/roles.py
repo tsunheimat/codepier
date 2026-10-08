@@ -141,8 +141,8 @@ def role_binding(store, grant):
         role = store.one('SELECT * FROM access_roles WHERE id=?', (grant['role_id'],))
         if (not profile or not profile['enabled'] or profile['user_id'] != grant['user_id']
                 or profile.get('role_id') != grant['role_id'] or not role
-                or profile.get('space_id','legacy') != grant.get('space_id','legacy')
-                or role.get('space_id','legacy') != grant.get('space_id','legacy')):
+                or profile.get('space_id') != grant.get('space_id')
+                or role.get('space_id') != grant.get('space_id')):
             raise ValueError('role/profile binding changed')
         return role, _policy(role), profile
     except (ValueError, TypeError, KeyError) as exc:
@@ -223,7 +223,7 @@ def effective_role(store, grant):
     scopes, projects = {'read'}, []
     if role['enabled']:
         created = created_ids(store, role['id'])
-        for row in store.all('SELECT id FROM projects WHERE space_id=?', (grant.get('space_id','legacy'),)):
+        for row in store.all('SELECT id FROM projects WHERE space_id=?', (grant.get('space_id'),)):
             actions = project_actions(policy, row['id'], created)
             if actions:
                 projects.append(row['id'])
@@ -340,7 +340,7 @@ def role_project_scopes(store, principal, project_id):
 def role_context(store, grant):
     role, policy, _ = role_binding(store, grant)
     created = created_ids(store, role['id'])
-    rows = store.all('SELECT id,alias FROM projects WHERE space_id=? ORDER BY alias_key', (grant.get('space_id','legacy'),))
+    rows = store.all('SELECT id,alias FROM projects WHERE space_id=? ORDER BY alias_key', (grant.get('space_id'),))
     return {'authorization_mode': 'role', 'role': {'id': role['id'], 'label': role['label'], 'version': role['version'], 'enabled': bool(role['enabled'])},
             'project_permissions': [{'id': r['id'], 'alias': r['alias'], 'actions': sorted(actions)}
                 for r in rows if role['enabled'] and (actions := project_actions(policy, r['id'], created))],
@@ -349,7 +349,8 @@ def role_context(store, grant):
             'policy_follows_role': True, 'initial_consent_is_resource_ceiling': False}
 
 
-def validate_role_consent(store, user_id, profile_id, profile_version, role_version, confirmed, *, space_id="legacy"):
+def validate_role_consent(store, user_id, profile_id, profile_version, role_version, confirmed, *, space_id=None):
+    space_id = space_id or iam.default_space(store, user_id)
     if confirmed is not True:
         raise DevError('DYNAMIC_CONSENT_REQUIRED', '请明确同意角色未来的能力及项目变更，不会自动升级旧授权', 400)
     profile = store.one('SELECT * FROM access_profiles WHERE id=? AND user_id=? AND space_id=?', (profile_id, user_id, space_id))
@@ -373,7 +374,9 @@ def public_role(row, store=None):
     return result
 
 
-def role_values(store, body, space_id="legacy"):
+def role_values(store, body, space_id=None):
+    if not space_id:
+        raise DevError('SPACE_REQUIRED', '角色规则必须明确指定已授权空间', 403)
     label = body.label.strip()
     if not label or any(ord(c) < 32 or ord(c) == 127 for c in label):
         raise DevError('INVALID_ROLE', '名称不能为空或包含控制字符')

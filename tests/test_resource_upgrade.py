@@ -13,19 +13,21 @@ from tests.historical_workflows import seed_workflow
 
 def test_additive_upgrade_preserves_resource_credentials_policies_and_histories(tmp_path):
     directory=tmp_path/'old-hub';store=Store(directory);now=time.time()
-    store.execute('INSERT INTO users VALUES (?,?,?,?)',('owner','admin',password_hash('isolated'),now))
-    store.execute('INSERT INTO devices(id,name,secret,created) VALUES(?,?,?,?)',('d','Agent',store.encrypt('AGENT_SECRET'),now))
-    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created) VALUES(?,?,?,?,?,?,?,?)',('p','P','p','d','/fixture','write',1,now))
-    store.execute('INSERT INTO vps_connections(id,name,name_key,host,port,username,secret,created,updated) VALUES(?,?,?,?,?,?,?,?,?)',
+    from tests.legacy_iam_fixture import seed_owner
+    seed_owner(store, 'owner', 'admin')
+    store.execute('UPDATE users SET password_hash=? WHERE id=?', (password_hash('isolated'), 'owner'))
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES(?,?,?,?,'legacy','owner')",('d','Agent',store.encrypt('AGENT_SECRET'),now))
+    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?,'legacy','owner')",('p','P','p','d','/fixture','write',1,now))
+    store.execute("""INSERT INTO vps_connections(id,name,name_key,host,port,username,secret,created,updated,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,'legacy','owner')""",
                   ('1'*32,'Existing VPS','existing vps','existing.invalid',22,'fixture',store.encrypt('SSH_SECRET'),now,now))
     store.execute('INSERT INTO vps_projects VALUES(?,?,?)',('1'*32,'p','old-association'))
-    store.execute('INSERT INTO access_roles(id,user_id,label,label_key,policy,enabled,version,created,updated,create_key,create_fingerprint) VALUES(?,?,?,?,?,1,1,?,?,?,?)',
+    store.execute("""INSERT INTO access_roles(id,user_id,label,label_key,policy,enabled,version,created,updated,create_key,create_fingerprint,space_id,owner_user_id) VALUES(?,?,?,?,?,1,1,?,?,?,?,'legacy','owner')""",
                   ('rol_old','owner','generic','generic','{"project_rules":[{"actions":["read","execute"],"projects":["p"]}]}',now,now,'old-role','fingerprint'))
-    store.execute('INSERT INTO access_profiles(id,user_id,label,label_key,scopes,projects,enabled,version,created,updated,create_key,create_fingerprint) VALUES(?,?,?,?,?,?,1,1,?,?,?,?)',
+    store.execute("""INSERT INTO access_profiles(id,user_id,label,label_key,scopes,projects,enabled,version,created,updated,create_key,create_fingerprint,space_id,owner_user_id) VALUES(?,?,?,?,?,?,1,1,?,?,?,?,'legacy','owner')""",
                   ('prf_old','owner','Old identity','old identity','["read","execute"]','["p"]',now,now,'old-profile','fingerprint'))
     from hub.auth import Auth
     auth=Auth(store)
-    grant=auth.issue_grant(Principal('panel:admin','owner',{'read','execute'},[],admin=True),'old client',['read','execute'],['p'],profile_id='prf_old',profile_version=1)
+    grant=auth.issue_grant(Principal('panel:admin','owner',{'read','execute'},[],admin=True,space_id='legacy'),'old client',['read','execute'],['p'],profile_id='prf_old',profile_version=1)
     archived=seed_workflow(store,project_id='p',user_id='owner',grant_id=grant['grant_id'],key='historical-replay')
     # Existing remote account ciphertext is preserved, with no network discovery.
     store.execute('INSERT INTO gateway_connectors(id,space_id,label,endpoint,protocol,networks,created) VALUES(?,?,?,?,?,?,?)',('service','legacy','Existing service','https://service.invalid/mcp','auto','[]',now))
@@ -33,7 +35,7 @@ def test_additive_upgrade_preserves_resource_credentials_policies_and_histories(
                   ('account','service','legacy','owner','Existing account','private',store.encrypt('MCP_SECRET'),now))
     opid=uuid.uuid4().hex
     request={'tool':'exec','args':{'target':'vps:'+'1'*32},'project':{'root':'/fixture','alias':'P'},'vps_ref':{'id':'1'*32,'binding_id':'old-association','connection_revision':1}}
-    store.execute('INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,state,payload,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+    store.execute("""INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,state,payload,created,updated,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'legacy','owner')""",
         (opid,'d','p','mcp:'+grant['grant_id']+':old client',grant['grant_id'],'exec','{"target":"vps:'+ '1'*32+'"}','old-fingerprint','queued',store.encrypt(json.dumps(request)),now,now))
     store.audit('panel:admin','old.event','p',detail={'historical':True})
     tables=['devices','projects','vps_connections','vps_projects','access_roles','access_profiles','grants','tokens','operations','audit','workflows','workflow_events','workflow_replays','gateway_connectors','gateway_accounts']

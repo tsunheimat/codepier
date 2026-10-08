@@ -108,7 +108,7 @@ function stopEvents() {
 }
 function sessionOwner(session) {
   return session?.user_id
-    ? 'id:' + session.user_id + ':space:' + (S.space_id || 'legacy')
+    ? 'id:' + session.user_id + ':space:' + (S.space_id || 'unselected')
     : session?.username
       ? 'name:' + session.username
       : null;
@@ -146,6 +146,8 @@ function clearSpaceSnapshots() {
     settings: null,
     grants: [],
     integrations: null,
+    projectToolsRoute: null,
+    artifactRoute: null,
     workflow: null,
     resourceTab: null,
     accessTab: null,
@@ -413,7 +415,7 @@ function renderLogin(configured = true) {
   closeModal();
   document.title = '登录 · CodePier';
   $('#app').innerHTML =
-    `<main class="login-screen"><section class="login-art">${brand}<div class="eyebrow">CodePier / 远程开发</div><h1>连接你的<br><span>开发现场</span></h1><p>AI 与本地代码对接、任务停靠的地方。</p><div class="login-orbit" aria-hidden="true"><span class="brand-mark" aria-hidden="true">C</span><span class="login-orbit-caption">MCP · CodePier · AGENT</span></div></section><section class="login-panel"><div class="eyebrow">CodePier / 登录</div><h2>登录控制台</h2><p>使用外部身份或本地账号继续</p><div id="oidc-login-buttons" aria-label="外部身份登录"></div>${appearanceControl()}${!configured ? notice('请先在服务器运行 <code>python -m hub init</code> 初始化账号。') : ''}<form id="login-form"><div class="field"><label for="username">账号</label><input id="username" name="username" autocomplete="username" placeholder="输入账号" required maxlength="80"></div><div class="field"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="输入密码"></div><p id="login-error" class="error-text" role="alert"></p><button class="btn primary" type="submit">进入控制台 ${icon('arrow')}</button></form><div class="spacer"></div>${location.protocol === 'http:' ? notice('HTTP 连接未加密，请在可信网络或 SSH 转发中使用。') : '<span class="badge">HTTPS 连接</span>'}<div class="login-footer">自托管 · 由管理员控制</div></section></main>`;
+    `<main class="login-screen"><section class="login-art">${brand}<div class="eyebrow">CodePier / 远程开发</div><h1>连接你的<br><span>开发现场</span></h1><p>AI 与本地代码对接、任务停靠的地方。</p><div class="login-orbit" aria-hidden="true"><span class="brand-mark" aria-hidden="true">C</span><span class="login-orbit-caption">MCP · CodePier · AGENT</span></div></section><section class="login-panel"><div class="eyebrow">CodePier / 登录</div><h2>登录控制台</h2><p>使用外部身份或本地账号继续</p><div id="oidc-login-buttons" aria-label="外部身份登录"></div>${appearanceControl()}<div id="login-bootstrap-state" data-unconfigured="${!configured}">${!configured ? notice('正在检查首次登录方式…') : ''}</div><form id="login-form"><div class="field"><label for="username">账号</label><input id="username" name="username" autocomplete="username" placeholder="输入账号" required maxlength="80"></div><div class="field"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="输入密码"></div><p id="login-error" class="error-text" role="alert"></p><button class="btn primary" type="submit">进入控制台 ${icon('arrow')}</button></form><div class="spacer"></div>${location.protocol === 'http:' ? notice('HTTP 连接未加密，请在可信网络或 SSH 转发中使用。') : '<span class="badge">HTTPS 连接</span>'}<div class="login-footer">自托管 · 由管理员控制</div></section></main>`;
   uiLabelFields($('#login-form'));
   CodePierIdentity.loginButtons();
   $('#login-form').addEventListener('submit', async (e) => {
@@ -440,11 +442,8 @@ function renderShell() {
   const chosen = nav.find((x) => x[0] === S.page);
   const groups = [
     ['CodePier', ['resources', 'access', 'conversations']],
-    ['工具与记录', ['native', 'workbench', 'integrations', 'artifacts', 'audit']],
-    [
-      '管理',
-      ['overview', 'devices', 'identity', 'members', 'identity-admin', 'diagnostics', 'settings'],
-    ],
+    ['工具与记录', ['native', 'workbench', 'audit']],
+    ['管理', ['overview', 'identity', 'identity-admin', 'diagnostics', 'settings']],
   ];
   const navigation = groups
     .map(
@@ -782,6 +781,22 @@ function connectEvents() {
   };
 }
 function productHash(page) {
+  if (page === 'integrations' && (S.projectToolsRoute || S.integrations)?.project) {
+    const v = S.projectToolsRoute || S.integrations;
+    return (
+      'project/' +
+      encodeURIComponent(v.project) +
+      '/tools?' +
+      new URLSearchParams({
+        workspace_id: v.workspace_id || '',
+        tab: v.tab || 'overview',
+      })
+    );
+  }
+  if (page === 'artifacts' && (S.artifactRoute || deliveryState().project))
+    return (
+      'project/' + encodeURIComponent(S.artifactRoute || deliveryState().project) + '/artifacts'
+    );
   return page === 'resources'
     ? 'resources/' + (S.resourceTab || 'projects')
     : page === 'access'
@@ -791,10 +806,32 @@ function productHash(page) {
         : page;
 }
 function canonicalPage(page) {
+  const [path, query = ''] = page.split('?');
+  const parts = path.split('/');
+  if (parts.length === 3 && parts[0] === 'project' && ['tools', 'artifacts'].includes(parts[2])) {
+    let project;
+    try {
+      project = decodeURIComponent(parts[1]);
+    } catch {
+      return 'resources';
+    }
+    if (!project || project.length > 100) return 'resources';
+    if (parts[2] === 'artifacts') {
+      S.artifactRoute = project;
+      return 'artifacts';
+    }
+    const params = new URLSearchParams(query);
+    S.projectToolsRoute = {
+      project,
+      workspace_id: params.get('workspace_id') || '',
+      tab: params.get('tab') || 'overview',
+    };
+    return 'integrations';
+  }
   const [area, tab] = page.split('/');
   const allowed = {
-    resources: ['projects', 'vps', 'mcp'],
-    access: ['roles', 'connections', 'advanced'],
+    resources: ['projects', 'devices', 'vps', 'mcp'],
+    access: ['roles', 'connections', 'members', 'advanced'],
     conversations: ['index', 'archive'],
   };
   if (tab && allowed[area]?.includes(tab)) {
@@ -804,6 +841,8 @@ function canonicalPage(page) {
   }
   const aliases = {
     projects: ['resources', 'projects'],
+    devices: ['resources', 'devices'],
+    members: ['access', 'members'],
     vps: ['resources', 'vps'],
     'mcp-gateway': ['resources', 'mcp'],
     roles: ['access', 'roles'],
@@ -1280,7 +1319,7 @@ function resetWork(project, workspace_id = '') {
 function workbenchHTML() {
   const w = S.work,
     p = S.projects.find((p) => p.id === w.project);
-  const more = `<button class="btn ghost" data-devtools="worktrees">${icon('folder')}隔离工作目录</button><button class="btn ghost" data-devtools="handoff">${icon('history')}任务衔接</button><button class="btn ghost" data-insight="symbols">${icon('code')}代码结构</button><button class="btn ghost" data-wf-action="context">${icon('file')}项目上下文</button><button class="btn ghost" data-action="checkpoint">${icon('history')}建立源码检查点</button>`;
+  const more = `<button class="btn ghost" data-devtools="worktrees">${icon('folder')}隔离工作目录</button><button class="btn ghost" data-resource-detail="${esc(S.work.project)}" data-resource-type="project" data-resource-workspace="${esc(S.work.workspace_id || '')}">项目详情与文件产物</button><button class="btn ghost" data-insight="symbols">${icon('code')}代码结构</button><button class="btn ghost" data-action="checkpoint">${icon('history')}建立源码检查点</button>`;
   return (
     heading(
       '远程工作台',
@@ -2550,10 +2589,13 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 window.addEventListener('hashchange', () => {
+  const previousContext = productHash(S.page);
   const before = JSON.stringify([S.resourceTab, S.accessTab, S.conversationTab]);
   const page = canonicalPage(location.hash.slice(1));
   if (
     (page !== S.page ||
+      (['integrations', 'artifacts'].includes(page) &&
+        location.hash.slice(1) !== previousContext) ||
       before !== JSON.stringify([S.resourceTab, S.accessTab, S.conversationTab])) &&
     nav.some((n) => n[0] === page)
   )

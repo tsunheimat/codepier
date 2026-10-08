@@ -12,9 +12,9 @@ from tests.test_audit_api import api, oauth_tokens, rpc
 
 
 def add_project(app, identifier='future'):
-    app.state.store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES (?,?,?,?,?,?,?,?,?)',
+    app.state.store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                             (identifier, identifier, identifier, 'device', '/tmp/' + identifier,
-                             '', 'write', 0, time.time()))
+                             '', 'write', 0, time.time(), 'legacy', 'owner'))
 
 
 def visible_projects(client, credential):

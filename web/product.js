@@ -41,7 +41,8 @@ window.CodePierProduct = (() => {
     await loadBasics();
     const tab = S.resourceTab || 'projects';
     let body;
-    if (tab === 'vps') body = await vpsHTML(seq);
+    if (tab === 'devices') body = devicesHTML();
+    else if (tab === 'vps') body = await vpsHTML(seq);
     else if (tab === 'mcp') {
       body = await CodePierGateway.html();
       const t = document.createElement('template');
@@ -56,6 +57,7 @@ window.CodePierProduct = (() => {
       tab,
       [
         ['projects', 'Projects · 项目'],
+        ['devices', 'Devices / Agents · 执行节点'],
         ['mcp', 'MCP Services · 服务'],
         ['vps', 'VPS · SSH 连接'],
       ],
@@ -75,6 +77,8 @@ window.CodePierProduct = (() => {
       S.roleBindings = gw.bindings;
       S.roleAccounts = gw.accounts;
       body = await CodePierRoles.html();
+    } else if (tab === 'members') {
+      body = await CodePierIdentity.html('members');
     } else if (tab === 'advanced') {
       S.settings = await api('/api/settings');
       S.grants = (await api('/api/grants')).grants;
@@ -114,6 +118,7 @@ window.CodePierProduct = (() => {
       [
         ['roles', 'Roles · 角色'],
         ['connections', 'Client Connections · 客户端连接'],
+        ...(CodePierIdentity.admin() ? [['members', 'Space Members · 成员与分配']] : []),
         ['advanced', '高级身份与兼容接入'],
       ],
     )}<div id="access-content">${withoutHeading(body)}</div></div>`;
@@ -202,7 +207,7 @@ window.CodePierProduct = (() => {
       });
     };
   }
-  async function resourceDetail(type, id) {
+  async function resourceDetail(type, id, workspace_id = '') {
     const current = intent();
     const login = S.session,
       seq = S.renderSeq;
@@ -249,7 +254,9 @@ window.CodePierProduct = (() => {
         ['conversations', '相关对话'],
         ['records', '操作与审计'],
       ])}<div data-detail-pane="configuration"><dl class="kv">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(String(v))}</dd>`).join('')}</dl><div class="actions">${controls}</div><h3>资源关联</h3>${r.associations.map((a) => `<p>${esc(a.type)} · ${esc(a.name)}</p>`).join('') || '<p>暂无关联</p>'}<p class="form-note">关联不授予访问；角色规则与连接同意独立检查。</p></div><div data-detail-pane="access" hidden>${r.access.map((a) => `<p><strong>${esc(a.role)}</strong> → ${esc((a.actions || a.tools).join(' / '))} · ${a.enabled ? '启用' : '暂停'}</p>`).join('') || '<p>暂无角色规则。</p>'}<button class="btn" data-product-tab="roles" data-product-area="access">配置角色规则</button></div><div data-detail-pane="conversations" hidden>${conversationRows(r.conversations)}${r.next_conversation_offset !== null ? '<p>更多对话可在 Conversations 按资源筛选。</p>' : ''}</div><div data-detail-pane="records" hidden>${operationRows(r.operations)}<h3>审计记录</h3>${r.audit.map((a) => `<p>${esc(timeText(a.at))} · ${esc(a.action)} · ${esc(a.status)}</p>`).join('') || '<p>暂无记录。</p>'}<p class="form-note">最多显示 50 条当前身份获准读取的记录。</p></div>`,
-      '',
+      type === 'project'
+        ? `<button class="btn primary" data-project-tools="${esc(id)}" data-workspace="${esc(workspace_id)}">Development Tools · 开发工具</button><button class="btn" data-project-artifacts="${esc(id)}">Artifacts / Downloads · 文件产物</button>`
+        : '',
       true,
     );
     for (const b of $$('[data-product-area="detail"]', d))
@@ -410,6 +417,7 @@ window.CodePierProduct = (() => {
       if (S.resourceTab === 'mcp') CodePierGateway.bind();
     }
     if (S.page === 'access') {
+      if (S.accessTab === 'members') CodePierIdentity.bind();
       if ((S.accessTab || 'roles') === 'roles') CodePierRoles.bind();
       if (S.accessTab === 'advanced') CodePierProfiles.bind();
       if ($('#connection-create')) $('#connection-create').onclick = newConnection;
@@ -446,7 +454,7 @@ window.CodePierProduct = (() => {
   }
   document.addEventListener('click', async (e) => {
     const b = e.target.closest(
-      '[data-product-tab],[data-resource-detail],[data-conversation-detail],[data-archive-detail],[data-project-mcp],[data-connection-profile],[data-connection-consent],[data-legacy-grant]',
+      '[data-product-tab],[data-resource-detail],[data-project-tools],[data-project-artifacts],[data-conversation-detail],[data-archive-detail],[data-project-mcp],[data-connection-profile],[data-connection-consent],[data-legacy-grant]',
     );
     if (!b || b.disabled || b.dataset.productArea === 'detail') return;
     try {
@@ -458,8 +466,21 @@ window.CodePierProduct = (() => {
           area === 'resources' ? 'resourceTab' : area === 'access' ? 'accessTab' : 'conversationTab'
         ] = b.dataset.productTab;
         await navigate(area);
+      } else if (b.dataset.projectTools) {
+        if (!panelDialogs.requestClose(null, { navigation: true })) return;
+        await CodePierIntegrations.open({
+          project: b.dataset.projectTools,
+          workspace_id: b.dataset.workspace || '',
+        });
+      } else if (b.dataset.projectArtifacts) {
+        if (!panelDialogs.requestClose(null, { navigation: true })) return;
+        await openProjectArtifacts(b.dataset.projectArtifacts);
       } else if (b.dataset.resourceDetail)
-        await resourceDetail(b.dataset.resourceType, b.dataset.resourceDetail);
+        await resourceDetail(
+          b.dataset.resourceType,
+          b.dataset.resourceDetail,
+          b.dataset.resourceWorkspace || '',
+        );
       else if (b.dataset.conversationDetail) await conversationDetail(b.dataset.conversationDetail);
       else if (b.dataset.projectMcp) await projectMCP(b.dataset.projectMcp);
       else if (b.dataset.connectionProfile)

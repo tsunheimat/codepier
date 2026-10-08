@@ -24,7 +24,9 @@ def access_defaults(store, user_id):
     return {key: value.get(key) is True for key in ('all_projects', 'developer_scopes')}
 
 
-def project_selection(store, projects, all_projects=False, *, space_id="legacy"):
+def project_selection(store, projects, all_projects=False, *, space_id=None):
+    if not space_id:
+        raise DevError('SPACE_REQUIRED', '项目范围必须明确指定已授权空间', 403)
     if type(all_projects) is not bool:
         raise DevError('INVALID_PROJECT', '全部项目选项必须是布尔值')
     if (not isinstance(projects, list) or len(projects) > 1000

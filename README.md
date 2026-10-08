@@ -20,6 +20,8 @@ CodePier 是自托管的开发工具连接层。**Hub** 提供 MCP 接口和管�
 
 Conversations 只保存对话标识、可选原网址及资源/操作关联，不保存聊天正文或任务进度。旧工作流作为只读历史保留。设置路径、兼容入口和升级行为见 [资源与访问模型](docs/RESOURCE_MODEL.md)、[对话关联](docs/CONVERSATIONS.md)。
 
+Devices / Agents 放在 Resources；Project 详情打开该项目的开发工具与文件产物；成员与角色使用/委派分配放在 Access。新安装直接建立正常 Personal Space，不创建 Legacy 默认空间；现有空兼容容器按完整引用检查退役，已有业务资料保留原空间。见 [Personal Space 与导航](docs/PERSONAL_SPACES.md)。
+
 ## 可以用它做什么
 
 | 场景 | 功能 |

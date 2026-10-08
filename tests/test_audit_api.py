@@ -33,17 +33,20 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PUBLIC_URL", "")
     app = create_app(str(tmp_path / "hub"))
     store = app.state.store
-    store.execute("INSERT INTO users VALUES (?,?,?,?)", ("owner", "admin", password_hash("original-password"), time.time()))
+    from tests.legacy_iam_fixture import seed_owner
+    seed_owner(store, 'owner', 'admin')
+    store.execute('UPDATE users SET password_hash=? WHERE id=?', (password_hash('original-password'), 'owner'))
     store.execute("INSERT INTO sessions VALUES (?,?,?,?)", (digest("session"), "owner", "csrf", time.time() + 3600))
     from tests.legacy_iam_fixture import attach_session_security
     attach_session_security(store)
-    store.execute("INSERT INTO devices(id,name,secret,created) VALUES (?,?,?,?)", ("device", "fixture", store.encrypt("x" * 43), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES (?,?,?,?,?,?,?,?,?)", ("project", "fixture", "fixture", "device", "/tmp/fixture", "", "write", 0, time.time()))
-    principal = Principal("panel:admin", "owner", {"read", "write"}, ["*"], admin=True)
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)", ("device", "fixture", store.encrypt("x" * 43), time.time(), 'legacy', 'owner'))
+    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)", ("project", "fixture", "fixture", "device", "/tmp/fixture", "", "write", 0, time.time(), 'legacy', 'owner'))
+    principal = Principal("panel:admin", "owner", {"read", "write"}, ["*"], admin=True, space_id='legacy')
     pat = app.state.auth.issue_grant(principal, "fixture", ["read"], ["project"])["token"]
     with TestClient(app) as client:
         client.cookies.set("rd_session", "session")
         client.headers["X-RD-CSRF"] = "csrf"
+        client.headers['X-CodePier-Space'] = 'legacy'
         yield app, client, pat
 
 

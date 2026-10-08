@@ -4,10 +4,12 @@ CodePier is a reusable MCP bridge for ChatGPT Web and other clients. Roles are c
 
 ## Setup in the panel
 
-1. Open **Resources** (`/#resources/projects`). Configure a Project, an MCP Service (`/#resources/mcp`), or a VPS (`/#resources/vps`). Each type keeps its own settings and availability checks.
+1. Open **Resources** (`/#resources/projects`). Configure a Project, an execution node (`/#resources/devices`), an MCP Service (`/#resources/mcp`), or a VPS (`/#resources/vps`). Each type keeps its own settings and availability checks.
 2. Open **Access → Roles** (`/#access/roles`). Pair actions with the specific resources they target. For MCP select the approved account/binding and individual tool names.
 3. Open **Access → Client Connections** (`/#access/connections`). Select a role and create a Bearer connection, or copy the role OAuth URL for ChatGPT. The OAuth confirmation window can create the stable connection identity inline or reuse an existing identity.
 4. Read actual permissions in Client Connections. Resource details group configuration/availability, role access, related conversations, and permitted existing operation/audit records.
+
+Project details are the primary entry for Development Tools (exact project/workspace) and Artifacts / Downloads (selected-project filter). Space members, invitations and role-use/delegation assignment live in **Access → Space Members**. Fresh installations start with a real Personal Space; unused compatibility containers retire conservatively. See [Personal Spaces and navigation](PERSONAL_SPACES.md).
 
 Example worker policy:
 

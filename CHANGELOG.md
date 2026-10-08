@@ -2,6 +2,10 @@
 
 ## Unreleased — resource and access restructure
 
+- Place execution nodes under Resources, Space membership/assignment under Access, and project Development Tools / Artifacts in resource details with contextual deep links and original operation recovery.
+- Bootstrap real Personal Spaces without fresh Legacy defaults; retire unused Legacy memberships/containers conservatively while retaining audit provenance and populated compatibility data.
+- Align first-login OIDC onboarding with configured bootstrap, restore file snapshot submission/recovery, scope browser downloads to their authorized Space, and include redesigned guides in public source bundles.
+
 - Resources unifies Projects, MCP Services and VPS settings, availability, role access and permitted history. Associations grant no access; VPS read/execute rules and a validated project/Agent route replace project-derived SSH permission.
 - Access exposes Roles and Client Connections. Stable identities remain, fixed connection snapshots never expand, and dynamic/future-role and external MCP consent remain explicit and private per grant.
 - Conversations durably associates client identifiers, optional supplied HTTPS URLs, resources and original receipts. It stores no transcript or progress state. Old workflows become read-only archives with explicit retirement errors and compatible old bookmarks/read tools.

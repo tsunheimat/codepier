@@ -47,7 +47,6 @@ window.CodePierIntegrations = (() => {
         drafts: {},
         submissions: receipts,
         trees: [],
-        workflow_id: '',
         ready: null,
       };
     }
@@ -89,7 +88,6 @@ window.CodePierIntegrations = (() => {
       v.workspace_id = source.workspace_id || '';
       v.tab = 'overview';
       v.trees = [];
-      v.workflow_id = '';
     }
   }
   async function open(options = {}) {
@@ -98,14 +96,13 @@ window.CodePierIntegrations = (() => {
         project: v.project,
         workspace_id: v.workspace_id,
         tab: v.tab,
-        workflow_id: v.workflow_id,
       };
     const p = S.projects.find((p) => p.id === options.project || p.alias === options.project);
     if (options.project && !p) throw new Error('项目映射已变化，请重新选择项目。');
     v.project = p?.id || v.project;
     v.workspace_id = options.workspace_id || '';
     v.tab = tabs.some((t) => t[0] === options.tab) ? options.tab : 'overview';
-    v.workflow_id = options.workflow_id || '';
+    S.projectToolsRoute = null;
     v.trees = [];
     v.explicit = true;
     if (options.path) {
@@ -131,6 +128,24 @@ window.CodePierIntegrations = (() => {
     `<section class="panel integration-section"><h2>${esc(title)}</h2>${help ? `<p class="integration-help">${esc(help)}</p>` : ''}<form data-i-form="${id}" class="integration-form">${fields}<p class="integration-form-error" role="alert" hidden></p><div class="integration-form-actions"><button class="btn primary" type="submit">${esc(submit)}</button><span class="integration-form-hint" role="status"></span></div></form></section>`;
   function html() {
     const v = state();
+    if (S.projectToolsRoute) {
+      const route = S.projectToolsRoute;
+      const p = S.projects.find((p) => p.id === route.project);
+      if (!p)
+        return (
+          notice('所选项目不存在或当前身份无权访问。') +
+          '<button class="btn" data-nav="resources/projects">返回 Projects</button>'
+        );
+      if (!/^(|[a-f0-9]{32})$/.test(route.workspace_id)) return notice('隔离目录标识无效。');
+      if (v.project !== p.id || v.workspace_id !== route.workspace_id) {
+        v.ready = null;
+        v.trees = [];
+      }
+      v.project = p.id;
+      v.workspace_id = route.workspace_id;
+      v.tab = tabs.some((t) => t[0] === route.tab) ? route.tab : 'overview';
+      S.projectToolsRoute = null;
+    }
     if (!S.projects.some((p) => p.id === v.project)) {
       v.project = S.projects[0]?.id || '';
       v.workspace_id = '';
@@ -145,7 +160,7 @@ window.CodePierIntegrations = (() => {
     return (
       heading(
         '开发工具',
-        'DEVELOPMENT / WORKFLOW',
+        'PROJECT / DEVELOPMENT TOOLS',
         '围绕当前项目检查、验证与继续工作。',
         action('refresh', '重新检查'),
       ) +
@@ -161,6 +176,7 @@ window.CodePierIntegrations = (() => {
     );
   }
   function bind() {
+    if (!$('#integration-center')) return;
     detach();
     const controller = (mounted = new AbortController()),
       v = state(),
@@ -445,6 +461,8 @@ window.CodePierIntegrations = (() => {
             browser_close: '释放页面',
             integration_control: '接入控制',
             validations_accept: '人工验收决定',
+            artifacts_register: '文件快照',
+            searches_start: '项目检索',
           }[r.name] || r.name;
         small.textContent =
           (r.error || U().label(r.phase)) + ' · ' + (r.operation_id || '提交回执待核查');
@@ -531,12 +549,15 @@ window.CodePierIntegrations = (() => {
       const saved = draft();
       for (const el of $$('input[name],textarea[name],select[name]', body)) {
         if (Object.hasOwn(saved, el.name)) el.value = saved[el.name];
-        el.addEventListener('input', () => (saved[el.name] = el.value), {
-          signal: controller.signal,
-        });
-        el.addEventListener('change', () => (saved[el.name] = el.value), {
-          signal: controller.signal,
-        });
+        // The visible old form can still receive input while a refresh loads.
+        // Keep its scoped draft listener until the DOM is replaced; abort only
+        // requests/actions, and never carry drafts across a session/Space reset.
+        const remember = () => {
+          if (S.session === session && S.integrations === v && root.isConnected)
+            saved[el.name] = el.value;
+        };
+        el.addEventListener('input', remember);
+        el.addEventListener('change', remember);
       }
     }
     function submit(id, fn) {
@@ -614,6 +635,11 @@ window.CodePierIntegrations = (() => {
     async function changeTab(id) {
       if (!tabs.some((t) => t[0] === id)) return;
       v.tab = id;
+      history.replaceState(
+        null,
+        '',
+        location.pathname + location.search + '#' + productHash('integrations'),
+      );
       await renderPage(false);
       const selected = $(`[data-i-tab="${id}"]`);
       selected?.focus({ preventScroll: true });
@@ -1576,16 +1602,24 @@ window.CodePierIntegrations = (() => {
     $('#i-project', root).onchange = async (e) => {
       v.project = e.target.value;
       v.workspace_id = '';
-      v.workflow_id = '';
       v.trees = [];
       v.ready = null;
+      history.replaceState(
+        null,
+        '',
+        location.pathname + location.search + '#' + productHash('integrations'),
+      );
       await renderPage(false);
       $('#i-project')?.focus({ preventScroll: true });
     };
     $('#i-workspace', root).onchange = async (e) => {
       v.workspace_id = e.target.value;
-      v.workflow_id = '';
       v.ready = null;
+      history.replaceState(
+        null,
+        '',
+        location.pathname + location.search + '#' + productHash('integrations'),
+      );
       await renderPage(false);
       $('#i-workspace')?.focus({ preventScroll: true });
     };
@@ -1614,7 +1648,7 @@ window.CodePierIntegrations = (() => {
   document.addEventListener('click', (e) => {
     const b = e.target.closest('[data-devtools]');
     if (!b || b.disabled || !S.session) return;
-    if (b.closest('.modal')) closeModal();
+    if (b.closest('.modal') && !panelDialogs.requestClose(null, { navigation: true })) return;
     let project = b.dataset.project || '',
       workspace_id = b.dataset.workspace || '',
       path = b.dataset.path || '',
@@ -1644,8 +1678,28 @@ window.CodePierIntegrations = (() => {
       line,
       column,
       tab: b.dataset.devtools || 'overview',
-      workflow_id: b.dataset.workflow || '',
     }).catch((error) => toast(U().errorText(error), true));
   });
-  return { html, bind, open, inherit, detach };
+  function rememberOperation(name, args, receipt = null) {
+    const v = state();
+    const entry = v.submissions.get(args.idempotency_key) || {
+      key: args.idempotency_key,
+      name,
+      project: args.project,
+      workspace_id: args.workspace_id || '',
+      created: Date.now() / 1000,
+      restored: true,
+      busy: false,
+    };
+    if (receipt?.operation_id) entry.operation_id = receipt.operation_id;
+    entry.phase = receipt?.operation_id ? 'pending' : 'uncertain';
+    v.submissions.set(entry.key, entry);
+    saveReceipts(v);
+  }
+  function forgetOperation(key) {
+    const v = state();
+    v.submissions.delete(key);
+    saveReceipts(v);
+  }
+  return { html, bind, open, inherit, detach, rememberOperation, forgetOperation };
 })();

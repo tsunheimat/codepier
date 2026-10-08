@@ -222,7 +222,7 @@ class Runtime:
         return Principal('mcp:' + grant['id'] + ':' + grant['label'], grant['user_id'], scopes, projects,
                          grant_id=grant['id'], profile_id=grant.get('profile_id'),
                          authorization_mode=grant.get('authorization_mode', 'fixed'), role_id=grant.get('role_id'),
-                         space_id=grant.get('space_id','legacy'), identity_id=grant.get('identity_id'), user_epoch=grant.get('user_epoch',1))
+                         space_id=grant.get('space_id'), identity_id=grant.get('identity_id'), user_epoch=grant.get('user_epoch',1))
 
     def authorize(self, principal, action, *, project_id=None, device_id=None, creation=None):
         try:
@@ -236,7 +236,7 @@ class Runtime:
             raise
 
     def visible_project(self, p: dict, principal: Principal):
-        return p.get("space_id", "legacy") == principal.space_id and (principal.admin or "*" in principal.projects or p["id"] in principal.projects)
+        return p.get("space_id") == principal.space_id and (principal.admin or "*" in principal.projects or p["id"] in principal.projects)
 
     @iam.read_decision
     def project(self, value: str, principal: Principal):
@@ -772,7 +772,7 @@ class Runtime:
         owner = op.get('owner_user_id')
         if not owner:
             raise DevError('ACCOUNT_DISABLED', '原操作缺少可信用户归属', 401)
-        principal = Principal(op['actor'], owner, {'read'}, [], space_id=op.get('space_id','legacy'),
+        principal = Principal(op['actor'], owner, {'read'}, [], space_id=op.get('space_id'),
                               user_epoch=context.get('user_epoch'), identity_id=context.get('identity_id'))
         return iam.live_principal(self.store, principal)
 

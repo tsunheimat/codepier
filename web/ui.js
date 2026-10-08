@@ -42,14 +42,15 @@ function uiTrapTab(e, root) {
 const uiMobileMedia = matchMedia('(max-width:900px)');
 const uiDockPages = new Set(['access', 'resources', 'native', 'conversations']);
 function uiSyncNavigation() {
+  const current = ['integrations', 'artifacts'].includes(S.page) ? 'resources' : S.page;
   $$('[data-nav]').forEach((b) => {
-    const chosen = b.dataset.nav === S.page;
+    const chosen = b.dataset.nav === current;
     b.classList.toggle('active', chosen);
     if (chosen) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
   const more = $('.mobile-dock [data-action="toggle-menu"]');
-  if (more) more.classList.toggle('active', !uiDockPages.has(S.page));
+  if (more) more.classList.toggle('active', !uiDockPages.has(current));
 }
 function uiSetMenu(value, restore = true, origin = null) {
   const side = $('.sidebar'),
@@ -565,7 +566,7 @@ function uiManagementLayout(page) {
         : S.page;
   if (!['identity', 'members', 'identity-admin', 'profiles', 'roles', 'mcp-gateway'].includes(area))
     return;
-  const host = $('#profiles-page,#roles-page,#gateway-page', page) || page;
+  const host = $('#profiles-page,#roles-page,#gateway-page,#access-content', page) || page;
   host.classList.add('management-page');
   const panels = $$(':scope > .panel', host);
   if (panels.length > 1 && area === 'mcp-gateway') {

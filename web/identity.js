@@ -37,6 +37,18 @@ window.CodePierIdentity = (() => {
       const out = await api('/api/auth/providers');
       if (!host.isConnected) return;
       host.replaceChildren();
+      const bootstrap = $('#login-bootstrap-state');
+      if (bootstrap) {
+        bootstrap.innerHTML = out.bootstrap_admin_available
+          ? notice(
+              '已配置首次 SSO 管理员初始化。首位获准登录将获得实例管理身份，并进入自己的 Personal Space。',
+            )
+          : bootstrap.dataset.unconfigured === 'true'
+            ? notice(
+                '请在服务器运行 <code>python -m hub init</code> 初始化本地恢复账号，或由管理员配置首次 SSO 初始化。',
+              )
+            : '';
+      }
       for (const provider of out.providers) {
         const button = document.createElement('a');
         button.className = 'btn primary';
@@ -52,7 +64,11 @@ window.CodePierIdentity = (() => {
       if (out.providers.length) {
         const note = document.createElement('p');
         note.className = 'form-note';
-        note.textContent = '或使用本地账号登录；外部登录不会自动获得管理员权限。';
+        note.textContent = out.bootstrap_admin_available
+          ? '首次管理员窗口由后台校验；后续用户只获得自己的 Personal Space 与明确分配的权限。'
+          : out.local_login_available
+            ? '也可使用本地账号登录；外部登录权限由后台的身份与空间分配决定。'
+            : '此安装使用外部身份登录。';
         host.append(note);
       }
     } catch (error) {
@@ -66,7 +82,7 @@ window.CodePierIdentity = (() => {
     const selected =
       me.spaces.find((x) => x.id === S.space_id) ||
       me.spaces.find((x) => x.id === saved) ||
-      me.spaces[0];
+      me.spaces.find((x) => x.id === me.default_space_id);
     S.space_id = selected?.id || null;
     if (S.space_id) sessionValue('codepier-space:' + me.id, S.space_id);
     S.session = { ...S.session, instance_admin: me.instance_admin, spaces: me.spaces };
@@ -112,8 +128,8 @@ window.CodePierIdentity = (() => {
     S.suspendedUser = null;
     sessionValue('codepier-integration-receipts', null);
     sessionValue('codepier-space:' + me.id, id);
-    S.page = 'overview';
-    location.hash = 'overview';
+    S.page = 'resources';
+    location.hash = 'resources/projects';
     renderShell();
     connectEvents();
     if (typeof startComputerApprovals === 'function') startComputerApprovals();

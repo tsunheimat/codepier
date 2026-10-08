@@ -87,7 +87,8 @@ def make_iam_router(auth,runtime):
         ids=store.all('SELECT i.id,i.provider_id,p.label,i.enabled,i.fresh_until FROM external_identities i JOIN oidc_providers p ON p.id=i.provider_id WHERE i.user_id=?',(u['id'],))
         return {'id':u['id'],'username':u['username'],'display_name':u['display_name'] or u['username'],
                 'instance_admin':bool(u['instance_admin']),'local_login':bool(u['local_login']),
-                'spaces':spaces_for(store,u['id']),'identities':ids,'session_expires':session['expires'],
+                'spaces':spaces_for(store,u['id']),'default_space_id':iam.default_space(store,u['id']),
+                'identities':ids,'session_expires':session['expires'],
                 'disabled_spaces':store.all("SELECT DISTINCT s.* FROM spaces s JOIN memberships m ON m.space_id=s.id WHERE m.user_id=? AND m.level='owner' AND m.active=1 AND s.active=0 AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=m.space_id AND b.user_id=m.user_id AND b.blocked=1)",(u['id'],))}
 
     @router.get('/spaces')

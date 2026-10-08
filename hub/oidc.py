@@ -510,11 +510,6 @@ class OIDCService:
                     # assigned a generated local password or linked by email.
                     store.db.execute('INSERT INTO users(id,username,password_hash,created) VALUES(?,?,?,?)',(user_id,'oidc-'+uuid.uuid4().hex,'!oidc-only',now))
                     store.db.execute('UPDATE iam_users SET local_login=0,instance_admin=?,display_name=? WHERE user_id=?',(int(bootstrap),str(claims.get('name') or claims.get('preferred_username') or 'OIDC user')[:100],user_id))
-                    if bootstrap:
-                        # The bootstrap administrator owns Legacy exactly like a CLI-created one.
-                        store.db.execute("UPDATE memberships SET level='owner',active=1,version=version+1 WHERE user_id=? AND space_id='legacy'",(user_id,))
-                    else:
-                        store.db.execute("DELETE FROM memberships WHERE user_id=? AND space_id='legacy'",(user_id,))
                     iam.create_personal_space(store,user_id,'Personal')
                 iid='idn_'+uuid.uuid4().hex
                 store.db.execute('INSERT INTO external_identities(id,issuer,subject,provider_id,user_id,checked_at,fresh_until,created) VALUES(?,?,?,?,?,?,?,?)',(iid,provider['issuer'],subject,provider['id'],user_id,now,now+provider['freshness_seconds'],now))
@@ -680,7 +675,11 @@ class OIDCService:
         @router.get('/api/auth/providers')
         @database_endpoint(store)
         def providers():
-            return {'providers':store.all('SELECT id,label FROM oidc_providers WHERE enabled=1 ORDER BY label')}
+            return {'providers':store.all('SELECT id,label FROM oidc_providers WHERE enabled=1 ORDER BY label'),
+                    'local_login_available':bool(store.one('SELECT 1 FROM iam_users WHERE active=1 AND local_login=1')),
+                    'bootstrap_admin_available':bool(self.bootstrap_admin
+                        and not store.one('SELECT 1 FROM iam_users WHERE active=1 AND instance_admin=1')
+                        and store.one("SELECT 1 FROM oidc_providers WHERE enabled=1 AND admission='jit'"))}
 
         @router.get('/api/iam/oidc/providers')
         @database_endpoint(store)
