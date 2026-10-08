@@ -9,6 +9,57 @@ from tests.test_integrations_stack import integrated_stack, resolved
 from tests.test_iam_integration import team as team
 
 
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+@pytest.mark.parametrize('width,height', [(1440,1000),(390,844)])
+def test_selected_tools_tab_does_not_replace_form_during_typing(integrated_stack,chat_browser_pool,engine,width,height):
+    s=integrated_stack
+    page=chat_browser_pool(engine).new_page(viewport={'width':width,'height':height})
+    try:
+        page.goto(s.url+'/#project/'+s.project['id']+'/tools?tab=validation')
+        page.fill('#username','admin');page.fill('#password',s.password);page.click('#login-form button')
+        expect(page.locator('[name=command]')).to_be_visible()
+        page.evaluate('''() => {
+          window.draftEvents=[];
+          window.draftRenderSeq=S.renderSeq;
+          window.holdDraftRefresh=true;
+          window.draftSnapshotReads=[];
+          window.draftField=document.querySelector('[name=command]');
+          const read=api;
+          window.api=async(path,options)=>{
+            if(['/api/projects','/api/devices'].includes(path))draftSnapshotReads.push(path);
+            const response=await read(path,options);
+            if(path==='/api/projects' && holdDraftRefresh){
+              holdDraftRefresh=false;
+              await new Promise(resolve=>window.releaseDraftRefresh=resolve);
+            }
+            return response;
+          };
+          draftField.addEventListener('focus',()=>{
+            draftEvents.push({event:'focus',connected:draftField.isConnected});
+            if(window.releaseDraftRefresh)releaseDraftRefresh();
+          });
+          document.addEventListener('input',event=>{
+            if(event.target.name==='command')draftEvents.push({event:'input',value:event.target.value});
+          },true);
+        }''')
+        page.locator('[data-i-tab=validation]').click()
+        if page.evaluate('S.renderSeq!==draftRenderSeq'):
+            page.wait_for_function('() => typeof releaseDraftRefresh === "function"')
+        # The selected tab should keep the editable form mounted. A refresh at
+        # this focus/text boundary can otherwise direct input to the tab itself.
+        page.locator('[name=command]').fill('printf retained-navigation-draft')
+        print('DRAFT_TYPING='+json.dumps(page.evaluate('({events:draftEvents,connected:draftField.isConnected,active:document.activeElement?.id,value:document.querySelector("[name=command]")?.value,drafts:S.integrations.drafts})')))
+        expect(page.locator('[name=command]')).to_have_value('printf retained-navigation-draft')
+        assert page.evaluate('draftField.isConnected')
+        assert page.evaluate('S.renderSeq===draftRenderSeq')
+        assert not page.evaluate('draftSnapshotReads')
+        page.evaluate('holdDraftRefresh=false;window.releaseDraftRefresh?.()')
+        page.evaluate("navigate('resources/projects')")
+        page.evaluate('(project)=>CodePierIntegrations.open({project,tab:"validation"})',s.project['id'])
+        expect(page.locator('[name=command]')).to_have_value('printf retained-navigation-draft')
+    finally:page.close()
+
+
 @pytest.mark.parametrize('width,height', [(1440,1000),(390,844)])
 def test_resources_devices_project_tools_artifacts_and_access_members(integrated_stack,chat_browser_pool,tmp_path,width,height):
     s=integrated_stack; page=chat_browser_pool('chromium').new_page(viewport={'width':width,'height':height})
@@ -43,6 +94,13 @@ def test_resources_devices_project_tools_artifacts_and_access_members(integrated
         page.locator('[data-i-tab=validation]').click()
         page.locator('[name=command]').fill('printf retained-navigation-draft')
         page.evaluate("navigate('resources/projects')")
+        page.evaluate('(args)=>CodePierIntegrations.open(args)',{'project':s.project['id'],'workspace_id':ws['workspace_id'],'tab':'validation'})
+        expect(page.locator('[name=command]')).to_have_value('printf retained-navigation-draft')
+        page.evaluate('(project)=>CodePierIntegrations.open({project,tab:"validation"})',s.project['id'])
+        expect(page.locator('#i-workspace')).to_have_value('')
+        expect(page.locator('[name=command]')).to_have_value('')
+        page.evaluate('(project)=>CodePierIntegrations.open({project,tab:"validation"})',s.projects[1]['id'])
+        expect(page.locator('[name=command]')).to_have_value('')
         page.evaluate('(args)=>CodePierIntegrations.open(args)',{'project':s.project['id'],'workspace_id':ws['workspace_id'],'tab':'validation'})
         expect(page.locator('[name=command]')).to_have_value('printf retained-navigation-draft')
         page.reload();expect(page.locator('#i-project')).to_have_value(s.project['id'])

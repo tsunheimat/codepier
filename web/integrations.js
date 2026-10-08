@@ -638,7 +638,9 @@ window.CodePierIntegrations = (() => {
       }
     }
     async function changeTab(id) {
-      if (!tabs.some((t) => t[0] === id)) return;
+      // Selecting the current tab is not a refresh. Replacing its live form
+      // asynchronously can steal focus between focusing a field and typing.
+      if (!tabs.some((t) => t[0] === id) || id === v.tab) return;
       v.tab = id;
       history.replaceState(
         null,
