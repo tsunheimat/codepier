@@ -26,6 +26,7 @@ def app_page(chat_browser_pool):
         page.add_script_tag(path=str(ROOT / 'web' / name))
     page.add_script_tag(content=panel_without_boot())
     page.add_script_tag(path=str(ROOT / 'web' / 'identity.js'))
+    page.add_script_tag(path=str(ROOT / 'web' / 'product.js'))
     for name in ('chat-markdown.js','chat-panels.js','chat-chrome.js',
                  'chat-history.js','chat-catalog.js','chat.js'):
         page.add_script_tag(path=str(ROOT / 'web' / name))
@@ -45,7 +46,8 @@ def app_page(chat_browser_pool):
         if(path==='/api/login')return response(nextLogin);
         if(path==='/api/auth/providers')return response({providers:[]});
         if(path==='/api/iam/me')return response({id:S.session.user_id,username:S.session.username,
-          instance_admin:true,spaces:[{id:'legacy',label:'Fixture Space',level:'owner',active:true}],
+          instance_admin:true,default_space_id:'personal-fixture',
+          spaces:[{id:'personal-fixture',kind:'personal',label:'Personal',level:'owner',active:true}],
           disabled_spaces:[],identities:[],sessions:[]});
         if(path==='/api/logout')return response({ok:true});
         if(path==='/api/devices')return response({devices:fixtureDevices});

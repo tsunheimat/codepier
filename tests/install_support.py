@@ -31,10 +31,11 @@ def _real_auth_app(tmp_path, *, enabled=True):
     store = Store(tmp_path / 'hub')
     secret = 's' * 48
     device_id = 'd' * 32
-    store.execute('INSERT INTO devices(id,name,secret,enabled,created) VALUES (?,?,?,?,?)',
-                  (device_id, 'Laptop', store.encrypt(secret), int(enabled), time.time()))
     store.execute('INSERT INTO users(id,username,password_hash,created) VALUES (?,?,?,?)',
                   ('u1', 'admin', 'unused-in-session-test', time.time()))
+    space_id=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='u1'")['personal_space_id']
+    store.execute('INSERT INTO devices(id,name,secret,enabled,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?)',
+                  (device_id, 'Laptop', store.encrypt(secret), int(enabled), time.time(),space_id,'u1'))
     cookie, csrf = 'session-cookie', 'session-csrf'
     store.execute('INSERT INTO sessions(id_hash,user_id,csrf,expires) VALUES (?,?,?,?)',
                   (digest(cookie), 'u1', csrf, time.time() + 3600))

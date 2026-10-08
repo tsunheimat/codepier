@@ -21,13 +21,13 @@ def task_runtime(tmp_path):
     store = Store(tmp_path / 'hub')
     seed_owner(store, 'owner', 'admin')
     seed_owner(store, 'other', 'other')
-    store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('dev','fixture',?,?)", (store.encrypt(token()), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created) VALUES ('proj','Fixture','fixture','dev','/tmp/fixture','write',1,?)", (time.time(),))
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','fixture',?,?,'legacy','owner')", (store.encrypt(token()), time.time()))
+    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev','/tmp/fixture','write',1,?,'legacy','owner')", (time.time(),))
     seed_grant(store, 'grant', 'owner', scopes=('read','write','execute'), projects=('proj',))
     seed_grant(store, 'second', 'owner', scopes=('read','write','execute'), projects=('proj',))
     runtime = Runtime(store)
     runtime.wait_seconds = 0
-    principal = Principal('mcp:grant:fixture', 'owner', {'read','write','execute'}, ['proj'], grant_id='grant')
+    principal = Principal('mcp:grant:fixture', 'owner', {'read','write','execute'}, ['proj'], grant_id='grant', space_id='legacy')
     yield runtime, principal, TaskService(runtime)
     store.close()
 

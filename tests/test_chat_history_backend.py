@@ -19,8 +19,8 @@ def add(obj,project,**extra):
     row.update(extra)
     store=obj.runtime.store
     if not store.one('SELECT id FROM projects WHERE id=?',(project['id'],)):
-        store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,owner_user_id) VALUES(?,?,?,?,?,?,?,1,?)',
-                      (project['id'],project['id'],project['id'],project['device_id'],project['root'],project['mode'],int(project['allow_tasks']),'owner'))
+        store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,owner_user_id,space_id) VALUES(?,?,?,?,?,?,?,1,?,?)',
+                      (project['id'],project['id'],project['id'],project['device_id'],project['root'],project['mode'],int(project['allow_tasks']),'owner',project['space_id']))
     with closing(database(obj.directory)) as db,db:
         db.execute('INSERT INTO sessions('+','.join(row)+') VALUES ('+','.join('?' for _ in row)+')',list(row.values()))
     return row['id']

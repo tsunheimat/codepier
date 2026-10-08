@@ -46,8 +46,8 @@ def test_validation_cannot_commit_after_its_authority_or_target_changes(api, mon
         if change == 'project':
             store.execute("UPDATE projects SET description='newer window' WHERE id='project'")
         elif change == 'alias':
-            store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES (?,?,?,?,?,?,?,?,?)',
-                          ('other-window','NewMapping','newmapping','device','/tmp/other','newer window','write',0,time.time()))
+            store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                          ('other-window','NewMapping','newmapping','device','/tmp/other','newer window','write',0,time.time(),'legacy','owner'))
         elif change == 'device':
             store.execute("UPDATE devices SET enabled=0 WHERE id='device'")
         else:

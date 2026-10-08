@@ -64,7 +64,7 @@ def wait_for_agent(process, is_online, timeout=45):
 
 
 class Stack:
-    def __init__(self, directory):
+    def __init__(self, directory, *, space_label=None):
         self.directory=Path(directory); self.directory.mkdir(parents=True,exist_ok=True)
         with socket.socket() as s:
             s.bind(('127.0.0.1',0)); self.port=s.getsockname()[1]
@@ -92,6 +92,11 @@ class Stack:
         self.start_hub()
         self.client=httpx.Client(base_url=self.url,timeout=35,trust_env=False)
         self.login()
+        self.space_id=self.must(self.client.get('/api/iam/me'))['default_space_id']
+        if space_label:
+            self.space_id=self.must(self.client.post('/api/iam/spaces',json={
+                'label':space_label,'idempotency_key':uuid.uuid4().hex}))['id']
+            self.client.headers['X-CodePier-Space']=self.space_id
         r=self.client.post('/api/devices',json={'name':'HOME / DEVELOPMENT NODE','hub_url':self.url}); self.must(r)
         self.pairing=r.json()['pairing']; self.device=self.pairing['device_id']
         self.config_path=self.directory/'agent-config'/'config.json'
@@ -172,9 +177,9 @@ class Stack:
             if handle:handle.close()
 
 @contextlib.contextmanager
-def running_stack(directory):
+def running_stack(directory, *, space_label=None):
     s=Stack.__new__(Stack)
     try:
-        s.__init__(directory)
+        s.__init__(directory,space_label=space_label)
         yield s
     finally:s.close()

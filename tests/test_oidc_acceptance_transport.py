@@ -10,11 +10,32 @@ import httpx
 import pytest
 
 from scripts.check_oidc_authentik import (
-    MCP_ACCEPTANCE_VERSION, initialize_mcp, mcp_request, required,
+    MCP_ACCEPTANCE_VERSION, initialize_mcp, mcp_request, required, select_personal_space,
 )
 from tests.test_access_profiles import data
 from tests.test_iam_integration import team as team, shared_role
 from tests.test_roles import credential, must, profile, update_role
+
+
+def test_acceptance_bootstrap_selects_actual_personal_and_keeps_invalid_space_denial(tmp_path,monkeypatch):
+    from fastapi.testclient import TestClient
+    from hub.app import create_app
+    from tests.legacy_iam_fixture import seed_personal_owner
+    monkeypatch.setenv('HUB_PUBLIC_URL','http://testserver')
+    monkeypatch.setenv('MCP_PUBLIC_URL','')
+    app=create_app(str(tmp_path/'hub'))
+    personal=seed_personal_owner(app.state.store,'owner','admin')
+    with app.state.store.transaction():
+        session=app.state.auth.new_session('owner')
+    with TestClient(app) as client:
+        client.cookies.set('rd_session',session['cookie'])
+        client.headers.update({'X-RD-CSRF':session['csrf'],'X-CodePier-Space':'legacy'})
+        body={'label':'Acceptance team','idempotency_key':'fixture-bootstrap-space'}
+        assert client.post('/api/iam/spaces',json=body).status_code==404
+        assert select_personal_space(client)==personal
+        space=required(client.post('/api/iam/spaces',json=body),201)
+        assert space['kind']=='team' and space['id']!=personal
+        assert not app.state.store.one("SELECT 1 FROM spaces WHERE kind='legacy'")
 
 
 def test_acceptance_client_sends_required_headers_and_initialization():

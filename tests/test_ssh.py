@@ -16,7 +16,7 @@ from agent.ssh import prepare_ssh, ssh_error
 from shared.contracts import SSHExec, tool_definitions
 from shared.contracts import ShellExec, _compact_input_schema
 from shared.secret_output import SecretOutput
-from shared.util import DevError, atomic_json, safe_summary
+from shared.util import DevError, safe_summary
 from tests.test_shell import shell_agent  # noqa: F401
 from tests.support import wait_for
 
@@ -187,12 +187,15 @@ async def test_existing_local_script_password_env_is_redacted(shell_agent):
     assert PASSWORD not in json.dumps(state)
 
 
-def test_mcp_ssh_recovery_cancel_scope_and_secret_storage(stack):
-    stack.stop_agent()
-    path = fake_transport(stack.directory / 'ssh-bin')
-    stack.config['shell'] = {'enabled': True, 'projects': ['Imago'], 'command': ['/bin/sh', '-c'], 'env': {'PATH': path}}
-    atomic_json(stack.config_path, stack.config)
-    stack.start_agent()
+@pytest.fixture
+def ssh_vps_stack(stack):
+    # Import after module initialization: the VPS fixture reuses our fake SSH.
+    from tests.test_vps import vps_stack
+    yield from vps_stack.__wrapped__(stack)
+
+
+def test_mcp_ssh_recovery_cancel_scope_and_secret_storage(ssh_vps_stack):
+    stack=ssh_vps_stack
     from tests.test_vps import create_remote
     remote = create_remote(stack)
     invalid_remote = create_remote(stack, password='wrong')
@@ -221,11 +224,14 @@ def test_mcp_ssh_recovery_cancel_scope_and_secret_storage(stack):
     stack.mcp('process', {'operation': 'cancel', 'operation_ids': [cancelled]})
     assert stack.poll(cancelled)['state'] == 'cancelled'
     assert not (stack.imago / 'must-not-exist').exists()
-    grant = stack.must(stack.client.post('/api/grants', json={'label': 'ssh-readonly', 'scopes': ['read'], 'projects': [stack.project['id']], 'days': 1}))
+    from tests.test_roles import role,profile,credential,must
+    readonly=role(stack.client,label='SSH readonly',project_rules=[{'actions':['read'],'projects':[stack.project['id']]}],vps_rules=[{'actions':['read'],'vps':[remote['id']]}])
+    grant=must(credential(stack.client,readonly,profile(stack.client,readonly,'SSH readonly identity')))
     denied = stack.mcp('exec', execution(), token_value=grant['token'])
     assert denied['isError'] and 'execute' in denied['content'][0]['text']
     stack.stop_agent()
-    grant = stack.must(stack.client.post('/api/grants', json={'label': 'ssh-revoke', 'scopes': ['read', 'execute'], 'projects': [stack.project['id']], 'days': 1}))
+    revoke=role(stack.client,label='SSH revoke',project_rules=[{'actions':['read','execute'],'projects':[stack.project['id']]}],vps_rules=[{'actions':['read','execute'],'vps':[remote['id']]}])
+    grant=must(credential(stack.client,revoke,profile(stack.client,revoke,'SSH revoke identity')))
     queued = stack.mcp('exec', execution(command='touch revoked-ssh'), token_value=grant['token'])['structuredContent']['operation_id']
     stack.must(stack.client.delete('/api/grants/' + grant['grant_id']))
     stack.start_agent()

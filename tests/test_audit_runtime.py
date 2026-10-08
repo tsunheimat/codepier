@@ -22,13 +22,13 @@ def runtime(tmp_path):
     from tests.legacy_iam_fixture import seed_owner
     seed_owner(store,'owner','owner')
     secret = token()
-    store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('dev','home',?,?)",
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')",
                   (store.encrypt(secret), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES ('proj','Project','project','dev','/tmp/project','','write',1,?)",
+    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Project','project','dev','/tmp/project','','write',1,?,'legacy','owner')",
                   (time.time(),))
     runtime = Runtime(store)
     runtime.wait_seconds = 0
-    principal = Principal("panel:owner", "owner", {"read", "write", "execute"}, ["*"], admin=True)
+    principal = Principal("panel:owner", "owner", {"read", "write", "execute"}, ["*"], admin=True, space_id='legacy')
     yield runtime, principal, secret
     store.close()
 

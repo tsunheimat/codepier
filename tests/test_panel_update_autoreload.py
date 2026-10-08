@@ -61,14 +61,16 @@ def test_no_early_reload_and_monitor_survives_navigation_and_service_recovery(up
         expect(page.locator('#panel-update-note')).to_contain_text('等待目标版本')
         assert '_codepier_updated=' not in page.url
         page.evaluate("navigate('devices')")
-        expect(page.locator('#page h1')).to_have_text('设备节点')
+        expect(page.locator('#page h1')).to_have_text('资源')
+        expect(page.locator('[data-product-tab="devices"]')).to_have_attribute('aria-pressed','true')
         # A successful HTTP response with unavailable updater is not an update failure.
         state.update(enabled=False, code='UPDATER_UNAVAILABLE')
         page.wait_for_timeout(2400)
         assert '_codepier_updated=' not in page.url
         complete(state)
-        expect(page).to_have_url(re.compile(r'_codepier_updated=.*#devices$'), timeout=12000)
-        expect(page.locator('#page h1')).to_have_text('设备节点')
+        expect(page).to_have_url(re.compile(r'_codepier_updated=.*#resources/devices$'), timeout=12000)
+        expect(page.locator('#page h1')).to_have_text('资源')
+        expect(page.locator('[data-product-tab="devices"]')).to_have_attribute('aria-pressed','true')
         assert not calls and not errors, errors
     finally:
         page.close()

@@ -16,14 +16,16 @@ import pytest
 from hub import keyring
 from hub.store import Store
 from shared.instance_lock import InstanceLock
+from tests.legacy_iam_fixture import seed_personal_owner
 
 
 def populated(directory: Path):
     store = Store(directory)
     try:
-        store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('d','fixture',?,?)", (store.encrypt('fixture-device-key'), time.time()))
-        store.execute("INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated,payload) VALUES ('o','fixture','fs_read','{}','test','queued',?,?,?)", (time.time(), time.time(), store.encrypt('{"path":"fixture.py"}')))
-        store.execute("INSERT INTO vps_connections(id,name,name_key,host,port,username,secret,created,updated) VALUES ('v','fixture','fixture','vps.invalid',22,'fixture',?,?,?)", (store.encrypt('fixture-password'), time.time(), time.time()))
+        space_id=seed_personal_owner(store)
+        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('d','fixture',?,?,?,'owner')", (store.encrypt('fixture-device-key'), time.time(),space_id))
+        store.execute("INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated,payload,space_id,owner_user_id) VALUES ('o','fixture','fs_read','{}','test','queued',?,?,?,?,'owner')", (time.time(), time.time(), store.encrypt('{"path":"fixture.py"}'),space_id))
+        store.execute("INSERT INTO vps_connections(id,name,name_key,host,port,username,secret,created,updated,space_id,owner_user_id) VALUES ('v','fixture','fixture','vps.invalid',22,'fixture',?,?,?,?,'owner')", (store.encrypt('fixture-password'), time.time(), time.time(),space_id))
         return (directory / 'master.key').read_bytes()
     finally:
         store.close()

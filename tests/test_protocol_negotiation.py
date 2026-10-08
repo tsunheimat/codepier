@@ -14,7 +14,7 @@ from shared.util import DevError
 from agent.runner import Agent
 from hub.runtime import Runtime, Principal
 from hub.store import Store
-from tests.legacy_iam_fixture import seed_owner
+from tests.legacy_iam_fixture import seed_personal_owner
 
 
 @pytest.mark.parametrize('old_hub', [True, False], ids=['legacy-hub-wire', 'current-hub-wire'])
@@ -28,12 +28,12 @@ async def test_bidirectional_wire_matrix_preserves_one_write_and_recovery(tmp_pa
         'allowed_roots':[{'path':str(root),'writable':True,'allow_tasks':True}],'tasks':{}}))
     agent = Agent(config)
     store = Store(tmp_path / 'hub')
-    seed_owner(store)
+    space_id = seed_personal_owner(store)
     runtime = Runtime(store);runtime.wait_seconds = 0
     try:
-        store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('dev','fixture',?,?)", (store.encrypt(secret), time.time()))
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES ('proj','Fixture','fixture','dev',?,'','write',1,?)", (str(root), time.time()))
-        principal = Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True)
+        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','fixture',?, ?,?,'owner')", (store.encrypt(secret), time.time(), space_id))
+        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev',?,'','write',1,?,?,'owner')", (str(root), time.time(), space_id))
+        principal = Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True,space_id=space_id)
         challenge = token(32)
         hub_channel = SecureChannel(secret, challenge, 'dev', 'hub')
         agent_channel = SecureChannel(secret, challenge, 'dev', 'agent')
@@ -66,6 +66,8 @@ async def test_bidirectional_wire_matrix_preserves_one_write_and_recovery(tmp_pa
         peer.send = deliver;agent.send = report
         args = {'project':'Fixture','path':'once.txt','content':'only once','expected_sha256':'new','idempotency_key':'wire-matrix'}
         receipt = await runtime.invoke('fs_write', args, principal)
+        assert store.one('SELECT space_id,owner_user_id FROM operations WHERE id=?',(receipt['operation_id'],)) == {'space_id':space_id,'owner_user_id':'owner'}
+        assert not store.one("SELECT 1 FROM spaces WHERE kind='legacy'")
         runtime.connections['dev'] = peer
         await runtime.deliver(receipt['operation_id'])
         assert (root / 'once.txt').read_text() == 'only once'
@@ -123,12 +125,12 @@ def test_invalid_call_epoch_is_rejected(epoch):
 async def test_pending_payload_keeps_original_semantics_after_upgrade(tmp_path, monkeypatch, sent):
     from shared import tool_protocol
     store = Store(tmp_path / 'hub')
-    seed_owner(store)
+    space_id = seed_personal_owner(store)
     runtime = Runtime(store);runtime.wait_seconds = 0
     try:
-        store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('dev','fixture',?,?)", (store.encrypt(token()), time.time()))
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES ('proj','Fixture','fixture','dev','/fixture','','write',1,?)", (time.time(),))
-        principal = Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True)
+        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','fixture',?,?,?,'owner')", (store.encrypt(token()), time.time(), space_id))
+        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev','/fixture','','write',1,?,?,'owner')", (time.time(), space_id))
+        principal = Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True,space_id=space_id)
         receipt = await runtime.invoke('fs_write', {'project':'Fixture','path':'once','content':'one','expected_sha256':'new','idempotency_key':'epoch-fence'}, principal)
         row = store.one('SELECT payload FROM operations WHERE id=?', (receipt['operation_id'],))
         assert json.loads(store.decrypt(row['payload']))['tool_contract_version'] == 1

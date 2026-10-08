@@ -17,13 +17,13 @@ def inbox(tmp_path):
     runtime = Runtime(store)
     from tests.legacy_iam_fixture import seed_owner
     seed_owner(store, 'u', 'admin')
-    store.execute('INSERT INTO devices(id,name,secret,created) VALUES (?,?,?,?)',
-                  ('d', 'Device', store.encrypt('fixture'), time.time()))
-    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,created) VALUES (?,?,?,?,?,?)',
-                  ('p', 'Test', 'test', 'd', '/fixture', time.time()))
+    store.execute('INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)',
+                  ('d', 'Device', store.encrypt('fixture'), time.time(),'legacy','u'))
+    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?)',
+                  ('p', 'Test', 'test', 'd', '/fixture', time.time(),'legacy','u'))
     request = {'project': {'id': 'p', 'alias': 'Test', 'root': '/fixture'}}
-    store.execute('INSERT INTO operations(id,device_id,project_id,actor,tool,args_summary,fingerprint,state,created,updated,payload,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                  ('op', 'd', 'p', 'panel:admin', 'computer_observe', '{}', 'f', 'running', time.time(), time.time(), store.encrypt(json.dumps(request)),'u'))
+    store.execute('INSERT INTO operations(id,device_id,project_id,actor,tool,args_summary,fingerprint,state,created,updated,payload,owner_user_id,space_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                  ('op', 'd', 'p', 'panel:admin', 'computer_observe', '{}', 'f', 'running', time.time(), time.time(), store.encrypt(json.dumps(request)),'u','legacy'))
     sent = []
 
     async def send(data):
@@ -86,7 +86,7 @@ async def test_decision_publishes_before_send_and_rejects_second_tab(inbox):
         await release.wait()
 
     connection.send = send
-    principal = Principal('panel:admin', 'u', {'computer'}, ['*'], admin=True)
+    principal = Principal('panel:admin', 'u', {'computer'}, ['*'], admin=True,space_id='legacy')
     first = asyncio.create_task(approvals.decide(data['request_id'], 'decline', principal))
     await sending.wait()
     changed(events)
@@ -105,7 +105,7 @@ async def test_decision_on_expired_request_publishes_removal_without_sending(inb
     changed(events)
     approvals.pending[data['request_id']]['expires_at'] = time.time() - 1
     with pytest.raises(DevError) as error:
-        await approvals.decide(data['request_id'], 'accept', Principal('panel:admin', 'u', {'computer'}, ['*'], admin=True))
+        await approvals.decide(data['request_id'], 'accept', Principal('panel:admin', 'u', {'computer'}, ['*'], admin=True,space_id='legacy'))
     assert error.value.code == 'APPROVAL_EXPIRED'
     # Worker invalidations are scheduled on the SSE queue's owning loop.
     # Wait for that event, not an arbitrary delay or a test retry.

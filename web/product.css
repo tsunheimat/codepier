@@ -10,6 +10,15 @@
 #resource-content > .actions {
   margin-bottom: 16px;
 }
+@media (min-width: 901px) {
+  #resources-page .product-tabs {
+    margin-bottom: 12px;
+  }
+  #resources-page .workspace-project-head {
+    min-height: 120px;
+    padding-block: 16px;
+  }
+}
 .connection-permissions p {
   margin: 8px 0;
 }

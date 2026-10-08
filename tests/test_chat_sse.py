@@ -20,8 +20,8 @@ def service(tmp_path):
     from tests.legacy_iam_fixture import seed_owner
     store=Store(tmp_path/'hub')
     seed_owner(store,'owner','owner')
-    store.execute("INSERT INTO devices(id,name,secret,created,owner_user_id) VALUES('device','Fixture','unused',1,'owner')")
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,owner_user_id) VALUES('project','Fixture','fixture','device',?,'write',1,1,'owner')",(str(tmp_path),))
+    store.execute("INSERT INTO devices(id,name,secret,created,owner_user_id,space_id) VALUES('device','Fixture','unused',1,'owner','legacy')")
+    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,owner_user_id,space_id) VALUES('project','Fixture','fixture','device',?,'write',1,1,'owner','legacy')",(str(tmp_path),))
     project={'id':'project','device_id':'device','root':str(tmp_path),'mode':'write','allow_tasks':True,'device_enabled':True,'space_id':'legacy','owner_user_id':'owner','_native_owner':'user:owner','_native_space':'legacy','_native_operator':True,'_native_allow_legacy':True}
     def get_project(value, principal):
         if value!=project['id'] or not project['allow_tasks']:
@@ -94,7 +94,7 @@ class TestAuth:
         if not self.allowed:raise DevError('LOGIN_REQUIRED','revoked',401)
         if write and request.headers.get('x-rd-csrf')!='valid':raise DevError('CSRF_REJECTED','csrf',403)
         from hub.runtime import Principal
-        return Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True,instance_admin=True)
+        return Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True,instance_admin=True,space_id='legacy')
 
 
 def request(headers=(),body=b'{}'):

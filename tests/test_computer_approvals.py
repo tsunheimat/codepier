@@ -99,10 +99,11 @@ async def test_hub_codepier_live_operation_and_panel_only_routes(tmp_path):
     import uuid
     store=Store(tmp_path/'hub');rt=Runtime(store)
     store.execute('INSERT INTO users VALUES (?,?,?,?)',('u','admin',password_hash('fixture-password-123'),time.time()))
-    store.execute('INSERT INTO devices(id,name,secret,created) VALUES (?,?,?,?)',('d','Device',store.encrypt('s'),time.time()))
-    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,created) VALUES (?,?,?,?,?,?)',('p','Test','test','d','/fixture',time.time()))
+    space_id=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='u'")['personal_space_id']
+    store.execute('INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)',('d','Device',store.encrypt('s'),time.time(),space_id,'u'))
+    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?)',('p','Test','test','d','/fixture',time.time(),space_id,'u'))
     request={'project':{'id':'p','alias':'Test','root':'/fixture'}}
-    store.execute('INSERT INTO operations(id,device_id,project_id,actor,tool,args_summary,fingerprint,state,created,updated,payload,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',('op','d','p','panel:admin','computer_observe','{}','f','running',time.time(),time.time(),store.encrypt(json.dumps(request)),'u'))
+    store.execute('INSERT INTO operations(id,device_id,project_id,actor,tool,args_summary,fingerprint,state,created,updated,payload,owner_user_id,space_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',('op','d','p','panel:admin','computer_observe','{}','f','running',time.time(),time.time(),store.encrypt(json.dumps(request)),'u',space_id))
     sent=[]
     async def send(data):sent.append(data)
     connection=SimpleNamespace(unusable=False,device_secret=None,send=send)
@@ -112,7 +113,7 @@ async def test_hub_codepier_live_operation_and_panel_only_routes(tmp_path):
     inbox=rt.computer_approvals
     inbox.receive('d',connection,{**data,'owner':'grant:other'});assert not inbox.list()
     inbox.receive('d',connection,data);assert len(inbox.list())==1
-    principal=Principal('panel:admin','u',{'computer'},['*'],admin=True)
+    principal=Principal('panel:admin','u',{'computer'},['*'],admin=True,space_id=space_id)
     await inbox.decide(key,'decline',principal)
     assert sent[0]['action']=='decline' and not inbox.list()
     with pytest.raises(DevError):await inbox.decide(key,'accept',principal)

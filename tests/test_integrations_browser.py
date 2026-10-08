@@ -14,7 +14,7 @@ OUT=BASE/'docs/evidence/devtools-flow-20260918/real-stack-screenshots'
 
 
 def login(page,s):
-    page.goto(s.url+'/#integrations')
+    page.goto(s.url+'/#project/'+s.project['id']+'/tools')
     page.locator('#username').fill('admin');page.locator('#password').fill(s.password)
     page.locator('#login-form button[type=submit]').click()
     page.wait_for_selector('#integration-center')
@@ -58,7 +58,9 @@ def test_panel_real_validation_semantics_navigation_and_draft_retention(integrat
         f.locator('[name=path]').fill('source.py');f.locator('[name=action]').select_option('hover')
         f.locator('button[type=submit]').click();expect(page.locator('#i-result')).to_contain_text('fixture: str',timeout=15000)
         tab(page,'browser');expect(page.locator('#i-browser-status')).to_contain_text('未连接')
-        tab(page,'handoff');expect(page.locator('#i-workflows')).not_to_contain_text('读取任务')
+        tab(page,'overview')
+        expect(page.get_by_role('button',name='打开对话关联')).to_be_visible()
+        expect(page.locator('[data-i-tab="handoff"]')).to_have_count(0)
         tab(page,'setup');expect(page.locator('[href="/static/browser-extension.zip"]')).to_be_visible()
         with page.expect_download() as download:
             page.locator('[data-i-form=settings] button[type=submit]').click()
@@ -113,7 +115,7 @@ def test_integration_views_keep_readable_geometry(integrated_stack,engine,scheme
         browser=getattr(pw,engine).launch();page=browser.new_page(viewport={'width':width,'height':height},color_scheme=scheme,reduced_motion='reduce')
         errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
         login(page,s);page.evaluate('(scheme)=>document.documentElement.dataset.appearance=scheme',scheme)
-        for name in ['overview','status','validation','worktrees','navigation','browser','handoff','setup']:
+        for name in ['overview','status','validation','worktrees','navigation','browser','setup']:
             tab(page,name)
             expect(page.locator('#i-body')).not_to_be_empty()
             page.wait_for_timeout(150)

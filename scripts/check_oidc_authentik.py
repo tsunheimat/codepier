@@ -56,6 +56,18 @@ def required(response, status=200):
     return response.json() if response.content else {}
 
 
+def select_personal_space(client):
+    """Use the authenticated bootstrap owner's real Space, never a legacy hint."""
+    me = required(client.get('/api/iam/me'))
+    personal = next((space for space in me['spaces']
+                     if space['id'] == me['default_space_id']
+                     and space['kind'] == 'personal' and space['level'] == 'owner'), None)
+    assert me['instance_admin'] and personal is not None
+    assert not any(space['kind'] == 'legacy' for space in me['spaces'])
+    client.headers['X-CodePier-Space'] = personal['id']
+    return personal['id']
+
+
 
 MCP_ACCEPTANCE_VERSION = '2025-11-25'
 
@@ -191,7 +203,9 @@ def acceptance(output):
             owner = httpx.Client(base_url=hub_url, timeout=30)
             await_ready(lambda: owner.get('/healthz').status_code == 200, 60)
             login = required(owner.post('/api/login', json={'username': 'admin', 'password': hub_env['CODEPIER_ADMIN_PASSWORD']}))
-            owner.headers.update({'X-RD-CSRF': login['csrf'], 'X-CodePier-Space': 'legacy'})
+            owner.headers['X-RD-CSRF'] = login['csrf']
+            select_personal_space(owner)
+            passed('fresh_admin_owns_normal_personal_without_legacy')
             sid = required(owner.post('/api/iam/spaces', json={'label': 'Provider acceptance team', 'idempotency_key': uuid.uuid4().hex}), 201)['id']
             owner.headers['X-CodePier-Space'] = sid
             role = required(owner.post('/api/access-roles', json={'label': 'secretary',

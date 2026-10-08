@@ -58,16 +58,16 @@ def test_package_is_deterministic_and_excludes_private_files(tmp_path):
 def test_ticket_is_single_use_rotated_and_secret_never_in_command(tmp_path):
     package_tree(tmp_path / 'source')
     store = Store(tmp_path / 'hub')
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store,'u','admin')
+    from tests.legacy_iam_fixture import seed_personal_owner
+    space_id=seed_personal_owner(store,'u','admin')
     secret = 's' * 48
     device_id = 'd' * 32
-    store.execute('INSERT INTO devices(id,name,secret,created) VALUES (?,?,?,?)',
-                  (device_id, 'Laptop', store.encrypt(secret), 1))
+    store.execute('INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)',
+                  (device_id, 'Laptop', store.encrypt(secret), 1,space_id,'u'))
 
     class Auth:
         def panel(self, request, write=False):
-            return Principal('panel:admin', 'u', {'read', 'write', 'computer'}, ['*'], admin=True)
+            return Principal('panel:admin', 'u', {'read', 'write', 'computer'}, ['*'], admin=True,space_id=space_id)
 
     from tests.legacy_iam_fixture import attach_session_security
     attach_session_security(store)
@@ -152,16 +152,16 @@ def test_agent_lifecycle_endpoints_pin_package_and_require_exact_uninstall_name(
     source = tmp_path / 'source'
     package_tree(source)
     store = Store(tmp_path / 'hub')
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store,'u','admin')
+    from tests.legacy_iam_fixture import seed_personal_owner
+    space_id=seed_personal_owner(store,'u','admin')
     device_id = 'd' * 32
-    store.execute('INSERT INTO devices(id,name,secret,enabled,created) VALUES (?,?,?,?,?)',
-                  (device_id, 'Studio Mac', store.encrypt('s' * 48), 1, time.time()))
+    store.execute('INSERT INTO devices(id,name,secret,enabled,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?)',
+                  (device_id, 'Studio Mac', store.encrypt('s' * 48), 1, time.time(),space_id,'u'))
     calls = []
 
     class AdminAuth:
         def panel(self, request, write=False):
-            return Principal('panel:admin', 'u', {'read', 'write', 'computer'}, ['*'], admin=True)
+            return Principal('panel:admin', 'u', {'read', 'write', 'computer'}, ['*'], admin=True,space_id=space_id)
 
     class Runtime:
         def __init__(self):

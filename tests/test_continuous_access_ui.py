@@ -36,6 +36,13 @@ def access_page(access_browser, stack):
         stack.must(stack.client.put('/api/settings/access', json={'all_projects': False, 'developer_scopes': False}))
 
 
+def fixed_grant_settings(page):
+    """Original consent/range controls remain in the explicit advanced view."""
+    page.evaluate("navigate('access/advanced')")
+    page.get_by_text('原固定授权与技术接入', exact=True).click()
+    expect(page.locator('#grant-panel')).to_be_visible()
+
+
 def test_settings_preselect_new_grant_without_desktop_access_and_preserve_other_inputs(access_page, stack):
     page, errors, kind = access_page
     form = page.locator('#access-settings-form')
@@ -52,8 +59,8 @@ def test_settings_preselect_new_grant_without_desktop_access_and_preserve_other_
     screenshots = Path('.work/robustness-20260923/screenshots'); screenshots.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(screenshots / f'{kind}-access-settings-mobile.png'), full_page=True)
     page.fill('#password-form [name="current_password"]', '')
-    page.evaluate("navigate('connect')")
-    page.click('[data-action="new-grant"]')
+    fixed_grant_settings(page)
+    page.click('[data-legacy-grant]')
     expect(page.locator('#grant-form [name="all_projects"]')).to_be_checked()
     expect(page.locator('#grant-form [name="scope"][value="write"]')).to_be_checked()
     expect(page.locator('#grant-form [name="scope"][value="execute"]')).to_be_checked()
@@ -71,7 +78,7 @@ def test_existing_connection_range_edit_without_reissuing_token_and_rejects_stal
         'label': 'range UI fixture', 'scopes': ['read'], 'projects': [stack.project['id']]}))
     grant_id = created['grant_id']
     try:
-        page.evaluate("navigate('connect')")
+        fixed_grant_settings(page)
         page.locator('[data-action="edit-grant-projects"][data-id="' + grant_id + '"]').click()
         dialog = page.locator('.modal')
         expect(dialog.locator('[name="all_projects"]')).not_to_be_checked()
@@ -156,7 +163,7 @@ def test_grants_compact_history_pagination_and_project_disclosure(access_page, s
     page.on('request', lambda request: mutations.append(request.method)
             if '/api/grants' in request.url and request.method != 'GET' else None)
     page.route('**/api/grants', lambda route: route.fulfill(json={'grants': grants}))
-    page.evaluate("navigate('connect')")
+    fixed_grant_settings(page)
     panel = page.locator('#grant-panel')
     current = panel.locator('[data-grant-group="current"]')
     expect(panel.locator('.panel-head')).to_contain_text('7 当前授权')

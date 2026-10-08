@@ -104,6 +104,7 @@ def test_failed_chat_load_cannot_overwrite_a_new_panel_page(stack):
             }''')
             expect(page.locator('.workspace-project-row').first).to_be_visible()
             expect(page.get_by_text('A late failed chat load')).to_have_count(0)
-            assert page.evaluate('S.page') == 'projects'
+            assert page.evaluate('S.page') == 'resources'
+            assert page.evaluate('S.resourceTab') == 'projects'
         finally:
             browser.close()

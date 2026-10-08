@@ -28,6 +28,12 @@ def seed_owner(store,user_id='owner',username='owner'):
     return user_id
 
 
+def seed_personal_owner(store,user_id='owner',username='owner'):
+    """A fresh identity owns the normal Personal Space created by real bootstrap."""
+    store.execute("INSERT OR IGNORE INTO users VALUES (?,?, '!fixture-only',1)",(user_id,username))
+    return store.one('SELECT personal_space_id FROM iam_users WHERE user_id=?',(user_id,))['personal_space_id']
+
+
 def seed_grant(store,grant_id,user_id='u',scopes=('read','write','execute'),projects=('p','p2')):
     import json
     store.execute("INSERT OR IGNORE INTO grants(id,user_id,label,scopes,projects,created,space_id,owner_user_id) VALUES(?,?,'fixture',?,?,1,'legacy',?)",(grant_id,user_id,json.dumps(scopes),json.dumps(projects),user_id))

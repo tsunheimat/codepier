@@ -8,9 +8,9 @@ import pytest
 from playwright.sync_api import expect, sync_playwright
 
 PAGES = {
-    'overview': '控制总览', 'devices': '设备节点', 'projects': '项目映射',
-    'workbench': '远程工作台', 'workflows': '开发任务', 'audit': '操作审计',
-    'connect': 'MCP 接入', 'diagnostics': '运行诊断', 'artifacts': '产物交付',
+    'overview': '控制总览', 'devices': '资源', 'projects': '资源',
+    'workbench': '远程工作台', 'workflows': '对话关联', 'audit': '操作审计',
+    'connect': '访问', 'diagnostics': '运行诊断', 'artifacts': '产物交付',
     'settings': '系统设置',
 }
 OUT = Path(os.getenv('CODEPIER_UI_SCREENSHOTS', 'docs/evidence/ui-20260913/screenshots'))
@@ -24,10 +24,18 @@ def login(page, stack, route='overview'):
 
 
 def navigate(page, name):
+    area, tab = {'projects':('resources','projects'), 'devices':('resources','devices'),
+                 'connect':('access','connections'), 'workflows':('conversations','archive')}.get(name,(name,None))
+    if name == 'artifacts':
+        page.evaluate("navigate('artifacts')")  # authorized secondary cross-project overview
+        expect(page.locator('#page h1')).to_have_text(PAGES[name])
+        return
     if page.viewport_size['width'] <= 900:
         page.click('.mobile-menu')
         expect(page.locator('.sidebar')).to_have_class('sidebar open')
-    page.locator(f'.nav [data-nav="{name}"]').click()
+    page.locator(f'.nav [data-nav="{area}"]').click()
+    if tab:
+        page.locator(f'[data-product-area="{area}"][data-product-tab="{tab}"]').click()
     expect(page.locator('#page h1')).to_have_text(PAGES[name])
 
 
@@ -60,8 +68,8 @@ def test_all_pages_layout_and_screenshots(stack, width, height):
         page.screenshot(path=str(OUT/f'{width}-login.png'),full_page=True,animations='disabled')
         page.fill('#username', 'admin');page.fill('#password', stack.password)
         page.click('#login-form button')
-        # Authenticate and finish the initial overview load before measuring layout.
-        expect(page.locator('.stats')).to_be_visible(timeout=15000)
+        # Fresh login starts with the primary Resources area.
+        expect(page.locator('#resources-page')).to_be_visible(timeout=15000)
         measurements={}
         for name in PAGES:
             navigate(page,name)
@@ -158,6 +166,8 @@ def test_project_search_disclosure_tools_and_modal_focus(stack):
         page.click('[data-action="refresh"]')
         expect(page.locator('#project-query')).to_have_value('missing-name')
         navigate(page,'connect')
+        page.locator('[data-product-tab="advanced"]').click()
+        page.get_by_text('原固定授权与技术接入',exact=True).click()
         expect(page.get_by_role('button',name='复制核心地址')).to_be_visible()
         assert page.evaluate('codingEndpoint()').endswith('/mcp?profile=core')
         expect(page.locator('.tool-chip').first).to_be_hidden()
@@ -168,8 +178,10 @@ def test_project_search_disclosure_tools_and_modal_focus(stack):
         layout(page,'expanded-tools')
         navigate(page,'workbench')
         page.locator('.tool-menu summary').click()
-        page.click('[data-wf-action="context"]')
-        expect(page.locator('.context-document summary').first).to_contain_text('README.md')
+        page.click('[data-resource-detail][data-resource-type="project"]')
+        expect(page.locator('#modal-title')).to_have_text('资源 · Imago')
+        expect(page.locator('[data-detail-pane="configuration"]')).to_contain_text(stack.project['root'])
+        expect(page.locator('[data-project-tools]')).to_have_attribute('data-project-tools',stack.project['id'])
         assert page.locator('#app').evaluate('(el)=>el.inert')
         # Hidden buttons in closed details must not receive trapped focus.
         page.locator('.modal [data-action="close-modal"]').focus()

@@ -23,9 +23,9 @@ def native_cache(tmp_path):
                'root': '/a/project', 'mode': 'write', 'allow_tasks': True, 'space_id': 'legacy', 'owner_user_id': 'u'}
     store = Store(tmp_path / 'hub')
     seed_owner(store, 'u', 'admin')
-    store.execute("INSERT INTO devices(id,name,secret,created,owner_user_id) VALUES(?,'Fixture',?,1,'u')",
+    store.execute("INSERT INTO devices(id,name,secret,created,owner_user_id,space_id) VALUES(?,'Fixture',?,1,'u','legacy')",
                   (project['device_id'], store.encrypt('fixture')))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,owner_user_id) VALUES(?,'Fixture','fixture',?,?,'write',1,1,'u')",
+    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,owner_user_id,space_id) VALUES(?,'Fixture','fixture',?,?,'write',1,1,'u','legacy')",
                   (project['id'], project['device_id'], project['root']))
     service = NativeService(SimpleNamespace(store=store))
     row = {'id': uuid.uuid4().hex, 'project_id': project['id'], 'device_id': project['device_id'],

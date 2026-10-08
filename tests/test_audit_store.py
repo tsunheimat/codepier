@@ -82,13 +82,15 @@ def test_many_concurrent_openers_complete_atomic_migration(tmp_path, legacy):
 def test_missing_master_key_cannot_silently_orphan_encrypted_records(tmp_path, encrypted_record):
     directory = tmp_path / "hub"
     store = Store(directory)
+    from tests.legacy_iam_fixture import seed_personal_owner
+    space_id = seed_personal_owner(store)
     key = (directory / "master.key").read_bytes()
     encrypted = store.encrypt("must-remain-recoverable")
     if encrypted_record == "device":
-        store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('dev','fixture',?,1)", (encrypted,))
+        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','fixture',?,1,?,'owner')", (encrypted,space_id))
     else:
-        store.execute("""INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated,payload)
-                         VALUES ('op','owner','fs_read','{}','fingerprint','queued',1,1,?)""", (encrypted,))
+        store.execute("""INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated,payload,space_id,owner_user_id)
+                         VALUES ('op','owner','fs_read','{}','fingerprint','queued',1,1,?,?,'owner')""", (encrypted,space_id))
     store.close()
     (directory / "master.key").unlink()
 
@@ -179,7 +181,9 @@ def test_future_schema_is_rejected_without_downgrading_metadata(tmp_path):
 
 def test_v2_grant_migration_preserves_existing_authorizations(tmp_path):
     directory = tmp_path / "hub"
-    store = Store(directory)
+    from tests.legacy_iam_fixture import legacy_store
+    store = legacy_store(directory)
+    store.execute("INSERT INTO users VALUES ('owner','owner','!fixture-only',1)")
     store.execute("ALTER TABLE grants DROP COLUMN resource")
     store.execute("UPDATE meta SET value='2' WHERE key='schema'")
     store.execute("""INSERT INTO grants(id,user_id,label,client_id,scopes,projects,created)

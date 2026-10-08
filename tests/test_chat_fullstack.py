@@ -61,7 +61,8 @@ def test_full_panel_direct_chat_actual_sse_history_and_responsive_layout(chat_st
             expect(page.locator('#chat-compose')).to_have_value('')
             from urllib.parse import urlsplit, parse_qs
             event_queries = [parse_qs(urlsplit(r).query) for r in requests if urlsplit(r).path.endswith('/events')]
-            assert any(q.get('project') and q.get('space_id') == ['legacy'] for q in event_queries)
+            assert any(q.get('project') and q.get('space_id') == [s.space_id] for q in event_queries)
+            assert page.evaluate('S.space_id') == s.space_id
             assert not any('/lease' in r or '/output?' in r or '/api/native/input' in r for r in requests)
             assert page.locator('#native-write').count()==0
             expect(page.locator('.chat-review').first).to_be_visible(timeout=15000)

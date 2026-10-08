@@ -70,4 +70,6 @@ def test_page_boots_brand_migration_before_reading_preferences():
     html=(ROOT/'web/index.html').read_text()
     assert html.index('/static/brand.js')<html.index('/static/appearance.js')
     assert '<title>CodePier · 码头</title>' in html
-    assert 'AI 与本地代码对接、任务停靠的地方' in html and '>R</span>' not in html
+    assert 'content="MCP 资源与客户端连接"' in html and '>R</span>' not in html
+    app=(ROOT/'web/app.js').read_text()
+    assert 'AI 与本地代码对接、任务停靠的地方' in app and '>R</span>' not in app
