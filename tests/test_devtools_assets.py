@@ -10,7 +10,7 @@ import pytest
 ROOT=Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize('path',['web/integration-ui.js','web/integrations.js','web/app.js','web/chat.js','web/workflows.js'])
+@pytest.mark.parametrize('path',['web/integration-ui.js','web/integrations.js','web/app.js','web/chat.js','web/product.js','web/workflows.js'])
 def test_developer_tools_scripts_parse(path):
     result=subprocess.run(['node','--check',str(ROOT/path)],capture_output=True,text=True,timeout=20)
     assert result.returncode==0,result.stdout+result.stderr
@@ -31,8 +31,10 @@ def test_helpers_are_loaded_before_the_workspace_and_assets_exist():
     for file in files:
         assert (ROOT/file).is_file(),file
     assets = check_web_assets(ROOT, VERSION)
-    for file in ['integration-ui.js','integration-flow.css','integrations.js','app.js','chat.js','workflows.js']:
+    for file in ['integration-ui.js','integration-flow.css','integrations.js','app.js','chat.js','product.js']:
         assert file in assets, file
+    # Historical workflow compatibility remains in source, outside the active UI.
+    assert 'web/workflows.js' not in files
 
 
 def test_source_distribution_keeps_new_assets_but_not_private_test_outputs():

@@ -149,7 +149,7 @@ def event_page(chat_browser_pool):
     page = chat_browser_pool('chromium').new_page()
     page.set_content('<div id="page"></div>')
     page.evaluate("""() => {
-      window.S={session:{user_id:'fixture'},space_id:'legacy',page:'projects',work:{}};
+      window.S={session:{user_id:'fixture'},space_id:'fixture-personal',page:'resources',resourceTab:'projects',work:{}};
       window.$=s=>document.querySelector(s);
       window.networkState=()=>{};window.toast=()=>{};
       window.CodePierIdentity={refresh:async()=>{}};
@@ -176,7 +176,7 @@ def test_first_event_connection_does_not_repeat_boot_reads(event_page):
     assert page.evaluate('renderCalls') == 0
     assert page.evaluate('basicCalls') == 0
     page.evaluate('stream.onopen()')
-    page.wait_for_timeout(60)
+    page.wait_for_function('renderCalls === 1', timeout=5000)
     assert page.evaluate('renderCalls') == 1
 
 
@@ -212,7 +212,7 @@ def test_background_refresh_does_not_reopen_page_after_navigation_or_reconnect(e
     page.evaluate("stream.onmessage({data:JSON.stringify({type:'project'})});S.page='native'")
     page.wait_for_timeout(800)
     assert page.evaluate('renderCalls') == 0
-    page.evaluate("S.page='projects';window.oldStream=stream;stream.onmessage({data:JSON.stringify({type:'project'})});connectEvents()")
+    page.evaluate("S.page='resources';window.oldStream=stream;stream.onmessage({data:JSON.stringify({type:'project'})});connectEvents()")
     page.wait_for_timeout(800)
     assert page.evaluate('oldStream.closed') is True
     assert page.evaluate('renderCalls') == 0

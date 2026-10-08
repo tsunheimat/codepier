@@ -66,8 +66,8 @@ def test_missing_parser_dependency_is_explicit_and_fail_closed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_queue_does_not_retry_missing_grammar_forever(runtime, monkeypatch):
-    r, _, _ = runtime
-    p = Principal('mcp:test:ChatGPT', 'owner', {'read','execute'}, ['*'])
+    r, owner, _ = runtime
+    p = Principal('mcp:test:ChatGPT', 'owner', {'read','execute'}, ['*'], space_id=owner.space_id)
     monkeypatch.delenv('MCP_BLOCK_LOCAL_CODEX', raising=False)
     receipt = await r.invoke('shell_exec', {'project':'Project', 'command':'echo normal', 'idempotency_key':'missing-parser-queue'}, p)
     monkeypatch.setenv('MCP_BLOCK_LOCAL_CODEX', 'true')
@@ -81,8 +81,8 @@ async def test_queue_does_not_retry_missing_grammar_forever(runtime, monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.parametrize('accepted', [False, True])
 async def test_ambiguous_or_accepted_work_is_only_probed(runtime, monkeypatch, accepted):
-    r, _, secret = runtime
-    p = Principal('mcp:test:ChatGPT', 'owner', {'read','execute'}, ['*'])
+    r, owner, secret = runtime
+    p = Principal('mcp:test:ChatGPT', 'owner', {'read','execute'}, ['*'], space_id=owner.space_id)
     monkeypatch.delenv('MCP_BLOCK_LOCAL_CODEX', raising=False)
     receipt = await r.invoke('shell_exec', {'project':'Project', 'command':'codex never-run', 'idempotency_key':'ambiguous-policy-probe'}, p)
     r.store.execute('UPDATE operations SET attempts=1,accepted_at=? WHERE id=?', (time.time() if accepted else None, receipt['operation_id']))

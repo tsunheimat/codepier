@@ -71,11 +71,16 @@ window.CodePierGateway = (() => {
         try {
           await save(node);
           if (session !== S.session || space !== S.space_id || !dialog.isConnected) return;
-          closeModal(dialog);
+          $('#gw-status', dialog).textContent = '已保存，正在刷新配置…';
+          $$('input[type="password"]', node).forEach((input) => {
+            input.value = '';
+          });
           if (title === '审核工具并发布')
             (S.managementTabs || (S.managementTabs = {}))['mcp-gateway'] = 'tools';
           if (S.page === 'mcp-gateway' || (S.page === 'resources' && S.resourceTab === 'mcp'))
             await renderPage(false);
+          if (session !== S.session || space !== S.space_id || !dialog.isConnected) return;
+          closeModal(dialog);
           toast('MCP 配置已保存');
         } catch (error) {
           if (session === S.session && space === S.space_id && dialog.isConnected) {

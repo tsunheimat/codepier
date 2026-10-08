@@ -85,6 +85,39 @@ def test_desktop_essentials_fit_and_text_is_readable(stack,engine,scheme,width,h
         browser.close()
 
 
+@pytest.mark.parametrize('engine',['chromium','webkit'])
+@pytest.mark.parametrize('scheme',['light','dark'])
+def test_short_desktop_device_controls_fit_with_wrapped_host_metadata(stack,engine,scheme):
+    """Host labels vary across runners; wrapping must leave controls reachable."""
+    hostname = 'macos-ci-worker-4b68076446ee4acbbc0ac71a8ccd63d4.local'
+    with sync_playwright() as pw:
+        browser=getattr(pw,engine).launch()
+        page=browser.new_page(viewport={'width':1180,'height':640},color_scheme=scheme,reduced_motion='reduce')
+        mutations=[]
+        page.on('request', lambda request: mutations.append(request.url)
+                if request.method not in ('GET','HEAD') and request.url.split('?')[0].rsplit('/',1)[-1] != 'login' else None)
+        def host_metadata(route):
+            # Keep the real authorized inventory and execution node. Vary only
+            # the display metadata that a macOS/FQDN host can legitimately send.
+            response=route.fetch()
+            value=response.json()
+            value['devices'][0]['info'].update(platform='Darwin',hostname=hostname)
+            route.fulfill(response=response,json=value)
+        page.route('**/api/devices',host_metadata)
+        _login(page,stack,'devices');_set_scheme(page,scheme)
+        expect(page.locator('.workspace-device-facts').first).to_contain_text(hostname)
+        print('WRAPPED_DEVICE_LAYOUT=' + json.dumps(page.locator('.workspace-device-actions').first.bounding_box()))
+        within(page,'.workspace-device-actions',1180,640)
+        for button in page.locator('.workspace-device-actions .btn').all():
+            expect(button).to_be_visible()
+            within(page,'.workspace-device-actions .btn',1180,640)
+        report=page.evaluate(MEASURE)
+        assert not report['failures'],report['failures']
+        assert not mutations,mutations
+        page.screenshot(path=str(OUT/f'{engine}-{scheme}-wrapped-device-1180-640.png'),animations='disabled')
+        browser.close()
+
+
 @pytest.mark.parametrize('scheme',['light','dark'])
 def test_semantic_palette_pairing_including_hover_and_selection(stack,scheme):
     with sync_playwright() as pw:

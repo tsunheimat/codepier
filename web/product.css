@@ -19,6 +19,17 @@
     padding-block: 16px;
   }
 }
+/* The Resources header and wrapped host metadata also need room on short
+   desktops. Keep every control and text size; trim only repeated spacing. */
+@media (min-width: 901px) and (max-height: 680px) {
+  #resources-page .workspace-device-facts {
+    padding-block: 6px;
+    row-gap: 6px;
+  }
+  #resources-page .workspace-device-actions {
+    padding-block: 8px;
+  }
+}
 .connection-permissions p {
   margin: 8px 0;
 }

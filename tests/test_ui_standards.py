@@ -8,7 +8,7 @@ import pytest
 from playwright.sync_api import expect, sync_playwright
 
 from tests.browser_support import chat_page
-from tests.test_ui_unification import _login, _layout, _set_scheme
+from tests.test_ui_unification import _login, _layout, _navigate, _set_scheme
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs/evidence/ui-standards-20260916/screenshots"
@@ -62,7 +62,10 @@ def test_field_semantics_invalid_reset_and_clear_search(stack, engine):
         page.once("dialog", lambda dialog: dialog.accept())
         page.keyboard.press("Escape")
         assert not page.locator("#app").evaluate("el=>el.inert")
-        page.evaluate("newGrant()")
+        _navigate(page, 'profiles')
+        page.get_by_text('原固定授权与技术接入', exact=True).click()
+        page.locator('[data-legacy-grant]').click()
+        expect(page.locator('#grant-form')).to_be_visible()
         groups = page.locator('.check-list[role="group"]')
         expect(groups).to_have_count(2)
         for group in groups.all():

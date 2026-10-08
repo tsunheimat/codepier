@@ -30,6 +30,19 @@ def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path):
         // stream races WebKit's reload teardown and produces a CORS pageerror.
         // Keep real browser security and every HTTP/IAM request unchanged.
         window.fixtureEventStreams = [];
+        // Delay delivery of one real inventory response after a successful save.
+        // The request still goes to the real Hub/IAM; only its timing changes.
+        const fetchHTTP = window.fetch.bind(window);
+        window.fixtureHoldInventory = false;
+        window.fetch = async (...args) => {
+            const response = await fetchHTTP(...args);
+            if (window.fixtureHoldInventory && response.ok &&
+                new URL(response.url).pathname === '/api/mcp-gateway') {
+                window.fixtureHoldInventory = false;
+                await new Promise(resolve => window.fixtureReleaseInventory = resolve);
+            }
+            return response;
+        };
         window.EventSource = class extends EventTarget {
             static CONNECTING = 0; static OPEN = 1; static CLOSED = 2;
             constructor(url) {
@@ -66,11 +79,29 @@ def test_gateway_panel_end_to_end(gw, gateway_browser, width, tmp_path):
         page.click('[data-gw="connector"]')
         page.fill('#gw-form [name="label"]', 'UI MCP <not markup>')
         page.fill('#gw-form [name="endpoint"]', 'https://mcp.example/mcp')
-        page.click('button[form="gw-form"]'); expect(page.locator('#gw-form')).to_have_count(0)
+        page.evaluate('fixtureHoldInventory = true')
+        page.click('button[form="gw-form"]')
+        page.wait_for_function('() => typeof fixtureReleaseInventory === "function"')
+        # A save is not ready for the next configuration step until the current
+        # authorized inventory has reached the page. Keep the busy dialog open.
+        expect(page.locator('#gw-form')).to_be_visible()
+        expect(page.locator('button[form="gw-form"]')).to_be_disabled()
+        assert len(app.state.store.all('SELECT id FROM gateway_connectors')) == 1
+        page.evaluate('fixtureReleaseInventory()')
+        expect(page.locator('#gw-form')).to_have_count(0)
+        expect(page.locator('#gateway-page')).to_contain_text('UI MCP <not markup>')
         page.click('[data-gw="account"]')
         page.fill('#gw-form [name="label"]', 'UI account')
         page.fill('#gw-form [name="token"]', 'PRIVATE_UI_TOKEN')
-        page.click('button[form="gw-form"]'); expect(page.locator('#gw-form')).to_have_count(0)
+        page.evaluate('fixtureHoldInventory = true; fixtureReleaseInventory = null')
+        page.click('button[form="gw-form"]')
+        page.wait_for_function('() => typeof fixtureReleaseInventory === "function"')
+        expect(page.locator('#gw-form [name="token"]')).to_have_value('')
+        expect(page.locator('button[form="gw-form"]')).to_be_disabled()
+        page.evaluate("document.querySelector('#gw-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}))")
+        page.evaluate('fixtureReleaseInventory()')
+        expect(page.locator('#gw-form')).to_have_count(0)
+        assert len(app.state.store.all('SELECT id FROM gateway_accounts')) == 1
         page.click('[data-gw-discover]')
         page.fill('#gw-form [name="alias"]', 'ui_mcp')
         page.check('#gw-form [name="tool"][value="echo"]')

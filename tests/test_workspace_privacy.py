@@ -72,7 +72,9 @@ def test_live_panel_stream_signals_authority_loss_without_private_payload(team, 
 def test_audit_export_query_is_an_authorized_selector_not_authority(team):
     app, browsers = team
     store = app.state.store
-    for space in ("team", "legacy"):
+    personal = store.one("SELECT personal_space_id FROM iam_users WHERE user_id='owner'")['personal_space_id']
+    assert personal and store.one('SELECT kind FROM spaces WHERE id=?', (personal,))['kind'] == 'personal'
+    for space in ("team", "legacy", personal):
         store.execute("INSERT INTO audit(at,actor,action,target,status,detail,space_id,owner_user_id) VALUES(1,'panel:owner',?,'','ok','{}',?,'owner')",
                       ("SENTINEL_" + space, space))
     owner = browsers["owner"]
@@ -80,12 +82,19 @@ def test_audit_export_query_is_an_authorized_selector_not_authority(team):
     headers = {"Cookie": "rd_session=" + owner.cookie}
     default = owner.client.get("/api/audit-export", headers=headers)
     assert default.status_code == 200
-    assert "SENTINEL_legacy" in default.text and "SENTINEL_team" not in default.text
+    assert "SENTINEL_" + personal in default.text
+    assert "SENTINEL_legacy" not in default.text and "SENTINEL_team" not in default.text
     chosen = owner.client.get("/api/audit-export?space_id=team", headers=headers)
     assert chosen.status_code == 200
     assert "SENTINEL_team" in chosen.text and "SENTINEL_legacy" not in chosen.text
+    assert "SENTINEL_" + personal not in chosen.text
+    historical = owner.client.get("/api/audit-export?space_id=legacy", headers=headers)
+    assert historical.status_code == 200 and "SENTINEL_legacy" in historical.text
+    assert "SENTINEL_team" not in historical.text and "SENTINEL_" + personal not in historical.text
     denied = browsers["alice"].get("/api/audit-export?space_id=legacy", headers={"X-CodePier-Space": ""})
     assert denied.status_code == 403 and "SENTINEL_" not in denied.text
+    other_personal = browsers['alice'].get('/api/audit-export?space_id=' + personal, headers={"X-CodePier-Space": ""})
+    assert other_personal.status_code == 403 and "SENTINEL_" not in other_personal.text
     assert chosen.headers["cache-control"] == "no-store"
 
 
