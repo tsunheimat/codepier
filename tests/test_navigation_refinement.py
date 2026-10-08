@@ -210,13 +210,14 @@ def test_members_entry_is_admin_only_and_membership_assignment_gates_remain_real
     finally:page.close()
 
 
-@pytest.mark.parametrize('saved',['team','own_personal','other_personal'])
+@pytest.mark.parametrize('saved',['team','legacy','own_personal','other_personal'])
 def test_saved_selection_keeps_authorized_space_and_never_adopts_another_users_personal(team,chat_browser_pool,saved):
     from urllib.parse import urlsplit
     app,b=team;store=app.state.store
     personal=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='owner'")['personal_space_id']
     other=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='alice'")['personal_space_id']
-    selected={'team':'team','own_personal':personal,'other_personal':other}[saved]
+    selected={'team':'team','legacy':'legacy','own_personal':personal,'other_personal':other}[saved]
+    expected=selected if saved in ('team','legacy') else personal
     page=chat_browser_pool('chromium').new_page()
     page.add_init_script('sessionStorage.setItem("codepier-space:owner",'+json.dumps(selected)+');window.EventSource=class extends EventTarget{close(){}};')
     def route(request_route):
@@ -228,8 +229,8 @@ def test_saved_selection_keeps_authorized_space_and_never_adopts_another_users_p
     try:
         page.goto('http://127.0.0.1:8765/#resources/projects')
         page.fill('#username','owner');page.fill('#password','fixture-password-only');page.click('#login-form button')
-        expect(page.locator('#iam-active-space')).to_have_value('team' if saved=='team' else personal)
-        page.reload();expect(page.locator('#iam-active-space')).to_have_value('team' if saved=='team' else personal)
+        expect(page.locator('#iam-active-space')).to_have_value(expected)
+        page.reload();expect(page.locator('#iam-active-space')).to_have_value(expected)
         assert page.evaluate('S.space_id')!=other
         assert b['owner'].get('/api/projects',headers={'X-CodePier-Space':other}).status_code==403
     finally:page.close()

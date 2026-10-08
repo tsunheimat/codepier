@@ -152,8 +152,8 @@ def test_artifact_metadata_rechecks_mapping_and_never_exposes_credentials(env):
         ('artifacts_register', json.dumps({'ok': True, 'data': {'artifact_id': identifier}}), identifier))
     now = time.time()
     root = runtime.project('P', env[1])['root']
-    runtime.store.execute('INSERT INTO artifacts(id,project_id,device_id,grant_id,actor,root,name,bytes,sha256,created,expires,source_operation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-        (identifier, 'p', 'd', 'g', env[1].actor, root, 'source.zip', 42, 'a' * 64, now, now + 60, ''))
+    runtime.store.execute('INSERT INTO artifacts(id,project_id,device_id,grant_id,actor,root,name,bytes,sha256,created,expires,source_operation_id,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (identifier, 'p', 'd', 'g', env[1].actor, root, 'source.zip', 42, 'a' * 64, now, now + 60, '', env[1].space_id, env[1].user_id))
     receipt = update(env, receipt, evidence=[identifier])
     artifact = dashboard(env, receipt)['evidence'][0]['artifact']
     assert artifact['download_path'] == '/api/artifacts/' + identifier + '/download?space_id=legacy'

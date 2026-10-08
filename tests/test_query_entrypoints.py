@@ -19,11 +19,11 @@ from tests.legacy_iam_fixture import seed_owner, seed_grant
 def runtime(tmp_path):
     store = Store(tmp_path / 'hub')
     seed_owner(store, 'owner', 'admin')
-    store.execute("INSERT INTO devices(id,name,secret,created) VALUES ('dev','home',?,?)", (store.encrypt(token()), time.time()))
+    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')", (store.encrypt(token()), time.time()))
     for identifier, alias in [('visible', 'Visible'), ('hidden', 'Hidden')]:
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created) VALUES (?,?,?,'dev','/tmp/fixture','','write',1,?)", (identifier, alias, alias.lower(), time.time()))
+        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,'dev','/tmp/fixture','','write',1,?,'legacy','owner')", (identifier, alias, alias.lower(), time.time()))
     seed_grant(store, 'reader', 'owner', scopes=('read',), projects=('visible',))
-    principal = Principal('mcp:reader:test', 'owner', {'read'}, ['visible'], grant_id='reader')
+    principal = Principal('mcp:reader:test', 'owner', {'read'}, ['visible'], grant_id='reader', space_id='legacy')
     instance = Runtime(store)
     instance.wait_seconds = 0
     yield instance, principal
