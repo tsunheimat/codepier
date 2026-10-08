@@ -158,7 +158,9 @@ def test_reset_password_rolls_back_when_revocation_fails(tmp_path, monkeypatch):
 def test_unconfirmed_file_durability_is_marked_for_review(tmp_path):
     store = Store(tmp_path / "hub")
     try:
-        store.execute("INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated) VALUES ('flush','panel:owner','fs_write','{}','hash','running',0,0)")
+        from tests.legacy_iam_fixture import seed_personal_owner
+        space_id = seed_personal_owner(store)
+        store.execute("INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated,space_id,owner_user_id) VALUES ('flush','panel:owner','fs_write','{}','hash','running',0,0,?,'owner')",(space_id,))
         runtime = Runtime(store)
         runtime.complete({"id": "flush"}, {"ok": False, "error": {"code": "DURABILITY_UNCONFIRMED", "message": "Directory sync failed after publication"}})
         operation = store.one("SELECT * FROM operations WHERE id='flush'")
