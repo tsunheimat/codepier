@@ -9,7 +9,7 @@ from playwright.sync_api import expect, sync_playwright
 
 PAGES = {
     'overview': '控制总览', 'devices': '资源', 'projects': '资源',
-    'workbench': '远程工作台', 'conversations': '对话关联', 'audit': '操作审计',
+    'workbench': '远程工作台', 'conversations': '操作审计', 'audit': '操作审计',
     'connect': '访问', 'diagnostics': '运行诊断', 'artifacts': '产物交付',
     'settings': '系统设置',
 }
@@ -25,7 +25,7 @@ def login(page, stack, route='overview'):
 
 def navigate(page, name):
     area, tab = {'projects':('resources','projects'), 'devices':('resources','devices'),
-                 'connect':('access','connections')}.get(name,(name,None))
+                 'connect':('access','connections'), 'conversations':('audit',None)}.get(name,(name,None))
     if name == 'artifacts':
         page.evaluate("navigate('artifacts')")  # authorized secondary cross-project overview
         expect(page.locator('#page h1')).to_have_text(PAGES[name])
@@ -34,6 +34,10 @@ def navigate(page, name):
         page.click('.mobile-menu')
         expect(page.locator('.sidebar')).to_have_class('sidebar open')
     page.locator(f'.nav [data-nav="{area}"]').click()
+    if name == 'conversations':
+        assert not page.locator('.nav [data-nav="conversations"]').count()
+        page.locator('[data-action="audit-mode"][data-mode="sessions"]').click()
+        expect(page.locator('#audit-sessions')).to_be_visible()
     if tab:
         page.locator(f'[data-product-area="{area}"][data-product-tab="{tab}"]').click()
     expect(page.locator('#page h1')).to_have_text(PAGES[name])

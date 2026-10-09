@@ -33,6 +33,6 @@ Before a real upgrade, preserve the database and matching key material under the
 - The same Project detail opens **Artifacts / Downloads** at `/#project/PROJECT_ID/artifacts`. The list filters to that project; an authorized-project overview and the old `/#artifacts` remain available. Download URLs carry the original authorized Space. Snapshots, expiry, source-operation references and grant-private access retain their original contracts.
 - **Access → Space Members** (`/#access/members`) owns memberships, invitations and use/delegation assignment. `/#members` redirects here. These remain separate from role policy, client consent and resource administration, with the same administrator gates.
 
-The sidebar has no duplicate routine Devices, Members, Development Tools or Artifacts entries. CLI/workbench/audit and unrelated administration remain reachable. Conversations continue to store identifiers and resource/receipt associations only; artifact bodies and chat transcripts are not copied into the index.
+The sidebar has no duplicate routine Devices, Members, Development Tools or Artifacts entries. CLI/workbench/audit and unrelated administration remain reachable. Audit now includes All operations and By session; host-provided correlation is automatic and the old Conversations bookmark redirects there. Only call observations, identifiers and resource/receipt references are stored; artifact bodies and chat transcripts are not copied into this view.
 
-Related public guides: [Resources and Access](RESOURCE_MODEL.md), [Conversations](CONVERSATIONS.md), [OIDC and membership](MULTIUSER_OIDC.md).
+Related public guides: [Resources and Access](RESOURCE_MODEL.md), [Audit sessions](CONVERSATIONS.md), [OIDC and membership](MULTIUSER_OIDC.md).

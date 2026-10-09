@@ -905,7 +905,7 @@ window.CodePierIntegrations = (() => {
             )
             .join(
               '',
-            )}</div><div class="integration-grid"><section class="panel integration-section"><div class="integration-section-head"><h2>项目就绪状态</h2>${jump('status', '详细诊断')}</div><div id="i-checks">正在核对当前环境…</div></section><section class="panel integration-section"><div class="integration-section-head"><h2>相关对话与操作</h2></div><p>在 Conversations 查看资源关联和原操作回执；继续在所选客户端发出指令。</p><button class="btn" data-nav="conversations">打开对话关联</button></section></div><div id="i-result"></div>`;
+            )}</div><div class="integration-grid"><section class="panel integration-section"><div class="integration-section-head"><h2>项目就绪状态</h2>${jump('status', '详细诊断')}</div><div id="i-checks">正在核对当前环境…</div></section><section class="panel integration-section"><div class="integration-section-head"><h2>相关对话与操作</h2></div><p>在 Audit 按会话查看当前活动与原操作回执；继续在所选客户端发出指令。</p><button class="btn" data-nav="audit/sessions">查看会话活动</button></section></div><div id="i-result"></div>`;
         $('[data-i-action=start-chat]', body).onclick = wire(() => toChat());
         $('[data-i-action=edit]', body).onclick = wire(() => openEditor());
         await section('#i-checks', checks);

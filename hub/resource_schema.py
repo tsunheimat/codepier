@@ -41,6 +41,27 @@ def migrate(db):
         operation_type TEXT NOT NULL CHECK(operation_type IN ('native','mcp')),
         operation_id TEXT NOT NULL, associated_at REAL NOT NULL,
         PRIMARY KEY(conversation_id,operation_type,operation_id));
+    CREATE INDEX IF NOT EXISTS conversation_operation_lookup ON conversation_operations(operation_type,operation_id,conversation_id);
+    CREATE TABLE IF NOT EXISTS audit_activity (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, owner_user_id TEXT NOT NULL,
+        grant_id TEXT, conversation_id TEXT REFERENCES conversations(id),
+        correlation TEXT NOT NULL, method TEXT NOT NULL, tool TEXT NOT NULL,
+        action TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL, request_id TEXT,
+        state TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '',
+        created REAL NOT NULL, updated REAL NOT NULL);
+    CREATE INDEX IF NOT EXISTS audit_activity_owner ON audit_activity(space_id,owner_user_id,created DESC,id);
+    CREATE INDEX IF NOT EXISTS audit_activity_session ON audit_activity(conversation_id,updated DESC);
+    CREATE TABLE IF NOT EXISTS audit_activity_resources (
+        activity_id TEXT NOT NULL REFERENCES audit_activity(id),
+        resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+        PRIMARY KEY(activity_id,resource_type,resource_id));
+    CREATE TABLE IF NOT EXISTS audit_activity_receipts (
+        activity_id TEXT NOT NULL REFERENCES audit_activity(id),
+        operation_type TEXT NOT NULL, operation_id TEXT NOT NULL,
+        relation TEXT NOT NULL CHECK(relation IN ('admitted','observed')),
+        resources TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY(activity_id,operation_type,operation_id,relation));
+    CREATE INDEX IF NOT EXISTS audit_activity_receipt_lookup ON audit_activity_receipts(operation_type,operation_id);
     '''
     for statement in statements.split(';'):
         if statement.strip():

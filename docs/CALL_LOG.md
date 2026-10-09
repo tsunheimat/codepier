@@ -1,6 +1,6 @@
 # 工具调用流水
 
-入口：面板 → **操作审计 → 工具执行**。全部事件仍保留在相邻标签页。
+入口：面板 → **操作审计 → 全部操作**。相邻的 **按会话** 自动汇总宿主 session 标识对应的当前/最近调用；**全部事件** 保留原有事件与 CSV。无需手动登记对话，详见 [Audit 会话与关联](CONVERSATIONS.md)。
 
 ## 阅读一次调用
 
@@ -20,7 +20,7 @@
 
 ## 隐私与权限
 
-接口只允许已登录的面板管理员读取；MCP Bearer 凭据不会自动获得面板日志权限。响应禁止缓存。详情仅保留在当前标签页内存，退出或登录主体变化时清除，迟到响应不会恢复上一账号的数据。
+接口要求已登录的面板身份，并沿用原有用户 / Space / 操作可见性及资源权限；会话和外部 MCP 结果仅所属账号可见。实例管理员的原有 native 操作读取权限保留；MCP Bearer 凭据不会自动获得面板日志权限。响应禁止缓存。详情仅保留在当前标签页内存，退出或登录主体变化时清除，迟到响应不会恢复上一账号的数据。
 
 不为详细日志另存完整请求体，不解密持久队列 payload 展示参数，不额外保存文件正文。已有参数摘要继续以字符数替代正文；新增调用保存编辑次数和原始命令字符数。环境变量值、可识别的密码、令牌、授权请求头、Cookie、URL 内凭据和私钥默认脱敏。自动脱敏不能识别所有无标签的秘密值，分享导出或输出前仍应复查。
 
@@ -28,14 +28,14 @@
 
 ## 开发与验证
 
-模块：`hub/call_log.py`、`shared/audit_redaction.py`、`web/call-log.js`、`web/call-log.css`。
+模块：`hub/session_activity.py`、`web/audit-sessions.js`、`hub/call_log.py`、`shared/audit_redaction.py`、`web/call-log.js`、`web/call-log.css`。
 
 修改面板脚本或样式后，重新生成静态资源清单：
 
 ```sh
 python scripts/build_web_assets.py
 python scripts/build_web_assets.py --check
-python -m pytest -q tests/test_call_log.py tests/test_call_log_api.py tests/test_call_log_browser.py tests/test_call_log_fullstack.py
+python -m pytest -q tests/test_call_log.py tests/test_call_log_api.py tests/test_call_log_browser.py tests/test_call_log_fullstack.py tests/test_session_activity.py tests/test_session_activity_browser.py
 ```
 
 测试包含脱敏、旧记录兼容、游标分页、授权、截断、输出尾部、网络错误、复制、导出、实时更新、登录生命周期，以及真实 loopback Hub / Agent / Chromium 联调。源码修改不等于已更新运行中的 Hub；按项目现有发布和面板更新流程部署后生效，无需重新配对 Agent 或重新创建 MCP 授权。

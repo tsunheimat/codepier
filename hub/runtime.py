@@ -101,6 +101,8 @@ class Runtime:
         self.vps = VPSService(self)
         from hub.conversations import ConversationRegistry
         self.conversations = ConversationRegistry(self)
+        from hub.session_activity import SessionActivity
+        self.session_activity = SessionActivity(self)
         self.diagnostics = Diagnostics(self)
         self.artifacts = ArtifactService(self)
         self.native = NativeService(self)
@@ -659,6 +661,9 @@ class Runtime:
             snapshot["_computer_owner"] = "grant:" + principal.grant_id if principal.grant_id else principal.actor
             snapshot["_computer_admin"] = principal.admin
         fingerprint = digest(json.dumps({"tool": name, "args": args, "project": snapshot, "device": project["device_id"]}, sort_keys=True, ensure_ascii=False))
+        resources = [{'type': 'project', 'id': project['id']}] if project.get('id') else []
+        if name == 'exec' and args.get('target', '').startswith('vps:'):
+            resources.append({'type': 'vps', 'id': args['target'][4:]})
         with self.store.lock:
             old = self.store.one("SELECT * FROM operations WHERE space_id=? AND actor=? AND idem=?", (principal.space_id, principal.actor, idem)) if idem else None
             if name == "tasks_list" and not idem:
@@ -679,6 +684,7 @@ class Runtime:
                     raise DevError("IDEMPOTENCY_CONFLICT", "幂等键已经用于不同请求；未执行新操作", 409, operation_id=old["id"])
                 id = old["id"]
                 if old["result"]:
+                    self.conversations.admitted(principal, id, resources)
                     return id, json.loads(old["result"])
                 # A retry wakes the durable worker; it does not allocate another operation.
                 self.store.execute("UPDATE operations SET next_attempt=0 WHERE id=?", (id,))
@@ -718,9 +724,6 @@ class Runtime:
                 self.store.audit(principal.actor, name, project.get("alias", ""), "queued", {"operation_id": id, "args": operation_summary(args)})
                 self.diagnostics.record(id, "hub_received")
                 self.publish("operation", {"id": id, "state": "queued", "tool": name})
-        resources = [{'type': 'project', 'id': project['id']}] if project.get('id') else []
-        if name == 'exec' and args.get('target', '').startswith('vps:'):
-            resources.append({'type': 'vps', 'id': args['target'][4:]})
         self.conversations.admitted(principal, id, resources)
         return id, None
 

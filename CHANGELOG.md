@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Move client activity monitoring into Audit: automatic host session correlation, concurrent session cards with actual current resources and durable receipt states, immediate/read/error observations, private gateway results, explicit metadata gaps, and compatible Conversations bookmarks without manual registration.
 - Consolidate account/identity navigation at `/#identity` with My Account, administrator-only Users and SSO tabs; old identity-admin bookmarks resolve to SSO.
 - Remove retired workflow/archive UI, routes, compatibility tools and guidance, workflow sharing and dashboard archive fields. Fresh storage omits workflow tables; existing rows remain inert without deletion or conversion. Conversations, execution receipts, cancellation, audit, artifacts and consent/grant security remain independent.
 

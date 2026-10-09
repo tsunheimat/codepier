@@ -23,7 +23,7 @@ from hub.mcp_tasks import TaskService, CreatedTask, METHODS as TASK_METHODS, EXT
 from shared.contracts import tool_definitions,TOOLS
 from shared.core_contracts import CORE_INSTRUCTIONS, CORE_TOOLS, REPLACED_MCP_TOOLS
 from hub.core_tools import result as core_result
-from hub.conversations import current_conversation
+from hub.session_activity import mark_error
 from shared.mcp_presentation import present, error_view
 from shared.integration_contracts import ADMIN_TOOLS,APP_ONLY_TOOLS
 from shared.util import DevError,VERSION,valid_json_value
@@ -39,6 +39,7 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
     tasks = TaskService(runtime)
 
     def failure(identifier,code,message,status=200,data=None,headers=None):
+        mark_error(code)
         mark('rejected',error_code=code,outcome='protocol_error')
         error={'code':code,'message':error_view(message)}
         if data is not None:error['data']=error_view(data)
@@ -99,6 +100,19 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         if not isinstance(params,dict):return failure(identifier,-32602,'params must be an object',400 if modern else 200)
         metadata=params.get('_meta',{})
         if not isinstance(metadata,dict):return failure(identifier,-32602,'_meta must be an object',400 if modern else 200)
+        try:
+            principal=await runtime.store.run(refresh_principal,runtime.store,principal)
+        except DevError as exc:
+            return failure(identifier,-32000,error_view(exc.message),exc.status if modern else 200,{'code':exc.code})
+        activity = None
+        if 'id' in body:
+            try:
+                activity = await runtime.store.run(runtime.session_activity.begin, principal, method, params, metadata)
+            except Exception:
+                runtime.session_activity.write_errors += 1
+            if activity:
+                request.state.codepier_activity = activity
+                runtime.session_activity.start_context(activity)
         if modern:
             if 'id' not in body:return failure(None,-32601,'No HTTP client notifications are implemented for 2026-07-28',404)
             try:
@@ -115,7 +129,6 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         instructions=CORE_INSTRUCTIONS
         if 'id' not in body:return Response(status_code=202)
         try:
-            principal=await runtime.store.run(refresh_principal,runtime.store,principal)
             if method=='initialize' and not modern:
                 offered=params.get('protocolVersion','')
                 if not isinstance(offered,str):return failure(identifier,-32602,'protocolVersion must be a string')
@@ -148,13 +161,7 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                 try:
                     route=await runtime.store.run(tools.resolve, principal, name)
                     mark('route_resolved',tool=name)
-                    conversation_id = None
-                    try:
-                        conversation_id = await runtime.store.run(runtime.conversations.begin, metadata, principal)
-                    except Exception:
-                        runtime.conversations.write_errors += 1
-                    if conversation_id:
-                        current_conversation.set((runtime.store, conversation_id))
+                    conversation_id = activity['session_id'] if activity else None
                     if route.backend == 'remote':
                         mark('invoke_started')
                         result=await runtime.gateway.call(principal,name,arguments,lambda:auth.bearer(request),
@@ -184,9 +191,12 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                             created=await runtime.store.run(tasks.create,value,arguments,principal)
                             if created is not None:result=created
                     observed=result.body if isinstance(result,CreatedTask) else result
+                    if observed.get('isError'):
+                        mark_error('TOOL_ERROR')
                     mark('tool_returned',operation_id=value.get('operation_id') if route.backend!='remote' else None,
                          outcome='tool_error' if observed.get('isError') else 'complete')
                 except DevError as exc:
+                    mark_error(exc.code)
                     mark('tool_error',error_code=exc.code,outcome='tool_error',operation_id=exc.details.get('operation_id'))
                     if exc.code=='UNKNOWN_TOOL' and modern:return failure(identifier,-32602,'Unknown tool',400)
                     value={'error':error_view({'code':exc.code,'message':exc.message,**exc.details})}
@@ -229,6 +239,9 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                 else:
                     result=complete(result)
             correlation=request_id()
+            if activity:
+                diagnostic = {k: activity[k] for k in ('id', 'session_id', 'correlation')}
+                result={**result,'_meta':{**result.get('_meta',{}),'codepier/activity':diagnostic}}
             if modern and correlation:
                 result={**result,'_meta':{**result.get('_meta',{}),'com.codepier/requestId':correlation}}
             return JSONResponse({'jsonrpc':'2.0','id':identifier,'result':result},

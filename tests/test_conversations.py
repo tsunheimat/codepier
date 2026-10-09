@@ -20,7 +20,7 @@ from tests.test_mcp_gateway import gw as gw, connector, account, publish
 
 
 def rpc(client, token, name='project_query', args=None, metadata=None):
-    params={'name':name,'arguments':args or {'operation':'list'}}
+    params={'name':name,'arguments':args if args is not None else {'operation':'list'}}
     if metadata is not None:params['_meta']=metadata
     return client.post('/mcp',json={'jsonrpc':'2.0','id':1,'method':'tools/call','params':params},
         headers={'Authorization':'Bearer '+token,'Accept':'application/json, text/event-stream','Content-Type':'application/json'})
@@ -162,6 +162,7 @@ def test_conversations_survive_actual_hub_close_reopen_and_preserve_receipt(tmp_
         args={'project':'P','command':'true','yield_seconds':0,'idempotency_key':key}
         operation=value(rpc(client,grant['token'],'exec',args,{'openai/session':'persistent'}))['operation_id']
         original=records(client,grant['token'])[0]
+        saved_activity = store.one('SELECT * FROM audit_activity WHERE conversation_id=?', (original['id'],))
     app2=create_app(str(directory))
     with TestClient(app2) as client:
         restored=records(client,grant['token'])[0]
@@ -171,6 +172,12 @@ def test_conversations_survive_actual_hub_close_reopen_and_preserve_receipt(tmp_
         assert detail['operations'][0]['id']==operation
         assert value(rpc(client,grant['token'],'exec',args,{'openai/session':'persistent'}))['operation_id']==operation
         assert app2.state.store.one('SELECT count(*) AS n FROM operations')['n']==1
+        assert app2.state.store.one('SELECT * FROM audit_activity WHERE id=?', (saved_activity['id'],)) == saved_activity
+        caller = app2.state.runtime.grant_principal(app2.state.store.one('SELECT * FROM grants WHERE id=?', (grant['grant_id'],)))
+        projected = app2.state.runtime.session_activity.sessions(caller)['sessions'][0]
+        assert projected['id'] == original['id']
+        assert projected['current'][0]['id'] == operation
+        assert projected['current'][0]['state'] == app2.state.store.one('SELECT state FROM operations WHERE id=?', (operation,))['state']
         assert not app2.state.store.all("SELECT name FROM sqlite_master WHERE name LIKE 'workflow%'")
 
 

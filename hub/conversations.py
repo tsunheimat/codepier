@@ -20,6 +20,7 @@ from hub.db_worker import database_endpoint
 from hub.principal import refresh_principal
 from shared.conversation_contracts import ConversationAssociate, ConversationIdentity, Conversations as Arguments
 from shared.util import DevError
+from shared.audit_redaction import redact_text
 
 current_conversation = ContextVar('codepier_conversation', default=None)
 
@@ -32,7 +33,7 @@ def validated_url(value, platform):
         host = parsed.hostname
         if (parsed.scheme != 'https' or not host or parsed.username is not None or parsed.password is not None
                 or parsed.port not in (None, 443) or '\\' in value or any(c.isspace() for c in value)
-                or host == 'localhost' or host.endswith(('.localhost', '.local'))):
+                or host == 'localhost' or host.endswith(('.localhost', '.local')) or redact_text(value) != value):
             raise ValueError()
         try:
             address = ipaddress.ip_address(host)
@@ -67,6 +68,8 @@ def metadata_identity(metadata):
         data = {'platform': 'chatgpt', 'conversation_identifier': anonymous}
         if isinstance(supplied, dict):
             data.update({k: supplied[k] for k in ('label', 'original_url') if k in supplied})
+            if not isinstance(data.get('label', ''), str) or len(data.get('label', '')) > 160 or any(ord(c) < 32 or ord(c) == 127 for c in data.get('label', '')):
+                data.pop('label', None)
     elif isinstance(supplied, dict):
         data = supplied
     else:
@@ -183,6 +186,7 @@ class ConversationRegistry:
             self.store.db.execute('UPDATE conversations SET last_activity=max(last_activity,?) WHERE id=?', (now, identifier))
 
     def admitted(self, principal, operation_id, resources, operation_type='native'):
+        self.runtime.session_activity.admitted(principal, operation_id, resources, operation_type)
         context = current_conversation.get()
         if not context or context[0] is not self.store:
             return
@@ -191,6 +195,9 @@ class ConversationRegistry:
         except Exception:
             # Indexing failure must never discard an admitted execution receipt.
             self.write_errors += 1
+
+    def observed_resource(self, principal, kind, identifier):
+        self.runtime.session_activity.observe_resource(principal, kind, identifier)
 
     def observe(self, identifier, principal, arguments):
         resources = []
@@ -204,6 +211,12 @@ class ConversationRegistry:
     def public(self, row, principal, *, detail=False):
         value = {k: row[k] for k in ('id', 'platform', 'conversation_identifier', 'label', 'original_url',
                                     'grant_id', 'profile_id', 'owner_user_id', 'first_activity', 'last_activity')}
+        value['label'] = redact_text(value['label'])
+        value['conversation_identifier'] = redact_text(value['conversation_identifier'])
+        try:
+            value['original_url'] = validated_url(value['original_url'], value['platform'])
+        except DevError:
+            value['original_url'] = ''
         value['resources'] = []
         for item in self.store.all('SELECT resource_type,resource_id FROM conversation_resources WHERE conversation_id=?', (row['id'],)):
             try:

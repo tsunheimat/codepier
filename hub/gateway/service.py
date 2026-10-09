@@ -212,6 +212,8 @@ class Gateway:
                 if (fresh.space_id, fresh.user_id, fresh.grant_id) != (principal.space_id, principal.user_id, principal.grant_id):
                     raise DevError('GATEWAY_IDENTITY_CHANGED', '请求身份已改变', 403)
                 plan = self.resolve(fresh, name)
+                if getattr(self, 'conversations', None):
+                    self.conversations.observed_resource(fresh, 'mcp', plan[1]['id'])
                 catalog.validate_arguments(plan[-1], arguments, schema_check=False)
                 return plan, self.store.decrypt(plan[2]['secret'])
 

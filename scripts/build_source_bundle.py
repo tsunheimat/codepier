@@ -113,6 +113,8 @@ REQUIRED_FILES = {
     'docs/MCP-WORKSPACE-DASHBOARD-20260917.md',
     'hub/app.py',
     'hub/call_log.py',
+    'hub/session_activity.py',
+    'web/audit-sessions.js',
     'hub/integrations.py',
     'hub/mcp_apps.py',
     'hub/native_cli.py',

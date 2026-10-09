@@ -253,7 +253,7 @@ window.CodePierProduct = (() => {
         ['access', '访问规则'],
         ['conversations', '相关对话'],
         ['records', '操作与审计'],
-      ])}<div data-detail-pane="configuration"><dl class="kv">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(String(v))}</dd>`).join('')}</dl><div class="actions">${controls}</div><h3>资源关联</h3>${r.associations.map((a) => `<p>${esc(a.type)} · ${esc(a.name)}</p>`).join('') || '<p>暂无关联</p>'}<p class="form-note">关联不授予访问；角色规则与连接同意独立检查。</p></div><div data-detail-pane="access" hidden>${r.access.map((a) => `<p><strong>${esc(a.role)}</strong> → ${esc((a.actions || a.tools).join(' / '))} · ${a.enabled ? '启用' : '暂停'}</p>`).join('') || '<p>暂无角色规则。</p>'}<button class="btn" data-product-tab="roles" data-product-area="access">配置角色规则</button></div><div data-detail-pane="conversations" hidden>${conversationRows(r.conversations)}${r.next_conversation_offset !== null ? '<p>更多对话可在 Conversations 按资源筛选。</p>' : ''}</div><div data-detail-pane="records" hidden>${operationRows(r.operations)}<h3>审计记录</h3>${r.audit.map((a) => `<p>${esc(timeText(a.at))} · ${esc(a.action)} · ${esc(a.status)}</p>`).join('') || '<p>暂无记录。</p>'}<p class="form-note">最多显示 50 条当前身份获准读取的记录。</p></div>`,
+      ])}<div data-detail-pane="configuration"><dl class="kv">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(String(v))}</dd>`).join('')}</dl><div class="actions">${controls}</div><h3>资源关联</h3>${r.associations.map((a) => `<p>${esc(a.type)} · ${esc(a.name)}</p>`).join('') || '<p>暂无关联</p>'}<p class="form-note">关联不授予访问；角色规则与连接同意独立检查。</p></div><div data-detail-pane="access" hidden>${r.access.map((a) => `<p><strong>${esc(a.role)}</strong> → ${esc((a.actions || a.tools).join(' / '))} · ${a.enabled ? '启用' : '暂停'}</p>`).join('') || '<p>暂无角色规则。</p>'}<button class="btn" data-product-tab="roles" data-product-area="access">配置角色规则</button></div><div data-detail-pane="conversations" hidden>${conversationRows(r.conversations)}${r.next_conversation_offset !== null ? '<p>更多活动可在 Audit 按会话查看。</p>' : ''}</div><div data-detail-pane="records" hidden>${operationRows(r.operations)}<h3>审计记录</h3>${r.audit.map((a) => `<p>${esc(timeText(a.at))} · ${esc(a.action)} · ${esc(a.status)}</p>`).join('') || '<p>暂无记录。</p>'}<p class="form-note">最多显示 50 条当前身份获准读取的记录。</p></div>`,
       type === 'project'
         ? `<button class="btn primary" data-project-tools="${esc(id)}" data-workspace="${esc(workspace_id)}">Development Tools · 开发工具</button><button class="btn" data-project-artifacts="${esc(id)}">Artifacts / Downloads · 文件产物</button>`
         : '',
@@ -280,86 +280,9 @@ window.CodePierProduct = (() => {
     rows
       .map(
         (c) =>
-          `<article class="grant-row"><div><strong>${esc(c.label || c.platform + ' · ' + c.conversation_identifier)}</strong><p>${esc(c.resources.map((r) => r.name).join(' / ') || '暂无资源关联')}</p><small>${esc(timeText(c.last_activity))}</small></div><button class="btn small" data-conversation-detail="${esc(c.id)}">查看对话关联</button>${c.original_url ? `<a class="btn small" href="${esc(c.original_url)}" target="_blank" rel="noopener noreferrer">返回原对话</a>` : ''}</article>`,
+          `<article class="grant-row"><div><strong>${esc(c.label || c.platform + ' · ' + c.conversation_identifier)}</strong><p>${esc(c.resources.map((r) => r.name).join(' / ') || '暂无资源关联')}</p><small>${esc(timeText(c.last_activity))}</small></div><button class="btn small" data-conversation-detail="${esc(c.id)}">查看会话时间线</button>${c.original_url ? `<a class="btn small" href="${esc(c.original_url)}" target="_blank" rel="noopener noreferrer">原对话网址</a>` : ''}</article>`,
       )
       .join('') || '<p>暂无对话关联。</p>';
-  async function conversations() {
-    await loadBasics();
-    const [vps, gw] = await Promise.all([vpsInventory(), api('/api/mcp-gateway')]);
-    const options = [
-      ...S.projects.map((p) => ({ type: 'project', id: p.id, name: p.alias })),
-      ...vps.map((v) => ({ type: 'vps', id: v.id, name: v.name })),
-      ...gw.bindings.map((b) => ({ type: 'mcp', id: b.id, name: b.alias })),
-    ];
-    const filter = S.conversationFilter || {};
-    const q = new URLSearchParams({ offset: String(S.conversationOffset || 0), ...filter });
-    const result = await api('/api/conversations?' + q);
-    S.conversationNext = result.next_offset;
-    const body = `<label class="field">按资源筛选<select id="conversation-resource"><option value="">全部资源</option>${options.map((r) => `<option value="${r.type}|${esc(r.id)}" ${filter.resource_type === r.type && filter.resource_id === r.id ? 'selected' : ''}>${esc(r.type)} · ${esc(r.name)}</option>`).join('')}</select></label><div class="actions"><button class="btn primary" id="conversation-create">关联已有对话</button>${filter.resource_id ? '<button class="btn ghost" id="conversation-clear">清除资源筛选</button>' : ''}</div><p class="form-note">宿主提供 session 元数据时自动关联。匿名 ChatGPT session ID 用于关联调用；原对话网址须另外提供。这里不保存聊天正文、回答或进度；继续在原客户端阅读回答和发出指令。</p>${conversationRows(result.conversations)}<div class="pagination"><button class="btn ghost" id="conversation-prev" ${S.conversationOffset || 0 ? '' : 'disabled'}>上一页</button><button class="btn ghost" id="conversation-next" ${result.next_offset !== null ? '' : 'disabled'}>下一页</button></div>`;
-    return `<div id="conversations-page">${heading('对话关联', 'CONVERSATIONS', '一条对话可使用多个资源；同一资源可出现在不同对话中。')}${section('对话与资源', body)}</div>`;
-  }
-
-  async function conversationDetail(id) {
-    const current = intent();
-    const login = S.session,
-      seq = S.renderSeq;
-    const { conversation: c } = await api('/api/conversations/' + encodeURIComponent(id));
-    if (!current()) return;
-    const d = modal(
-      c.label || '对话关联',
-      `<dl class="kv"><dt>平台</dt><dd>${esc(c.platform)}</dd><dt>客户端对话标识</dt><dd class="product-wrap">${esc(c.conversation_identifier)}</dd><dt>来源连接</dt><dd>${esc(c.grant_id || '当前登录账号手动关联')}</dd><dt>首次活动</dt><dd>${esc(timeText(c.first_activity))}</dd><dt>最近活动</dt><dd>${esc(timeText(c.last_activity))}</dd></dl>${c.original_url ? `<a class="btn" href="${esc(c.original_url)}" target="_blank" rel="noopener noreferrer">返回原对话</a>` : '<p>没有提供原对话网址；无法从匿名标识生成网址或取得聊天正文。</p>'}<h3>关联资源</h3>${c.resources.map((r) => `<div class="grant-row"><span>${esc(r.type)} · ${esc(r.name)}</span>${detailButton(r.type, r.id)}</div>`).join('') || '<p>暂无获准查看的资源。</p>'}<h3>已有操作</h3>${operationRows(c.operations)}<p class="form-note">最多显示 ${c.operation_limit} 条操作；原执行状态、回执与取消功能独立保留。</p>`,
-      '',
-      true,
-    );
-    d.querySelector('.modal-body').insertAdjacentHTML(
-      'beforeend',
-      '<button class="btn" id="conversation-edit">编辑标签、网址与资源关联</button>',
-    );
-    $('#conversation-edit', d).onclick = () => conversationEdit(c);
-  }
-  async function conversationEdit(saved = null) {
-    const current = intent();
-    const login = S.session,
-      seq = S.renderSeq;
-    const [vps, gw] = await Promise.all([vpsInventory(), api('/api/mcp-gateway')]);
-    await loadBasics();
-    if (!current()) return;
-    const choices = [
-      ...S.projects.map((p) => ({ type: 'project', id: p.id, name: p.alias })),
-      ...vps.map((v) => ({ type: 'vps', id: v.id, name: v.name })),
-      ...gw.bindings.map((b) => ({ type: 'mcp', id: b.id, name: b.alias })),
-    ];
-    const d = modal(
-      saved ? '编辑对话关联' : '关联已有对话',
-      `<form id="conversation-form"><label class="field">平台 / 客户端<input name="platform" required maxlength="80" value="${esc(saved?.platform || '')}" placeholder="chatgpt / claude / 自有客户端" ${saved ? 'readonly' : ''}></label><label class="field">客户端提供的对话标识<input name="conversation_identifier" required maxlength="512" value="${esc(saved?.conversation_identifier || '')}" ${saved ? 'readonly' : ''}></label><label class="field">显示标签（可选）<input name="label" maxlength="160" value="${esc(saved?.label || '')}"></label><label class="field">真实原对话网址（可选）<input name="original_url" type="url" maxlength="2048" value="${esc(saved?.original_url || '')}" placeholder="https://…"></label><p class="form-note">只接受原客户端实际提供的 HTTPS 网址；不要用匿名 session ID 拼接网址。不存在可用标识时，可继续正常工具调用。</p><fieldset><legend>关联资源</legend>${choices.map((r) => `<label class="check"><input name="resource" type="checkbox" value="${r.type}|${esc(r.id)}" ${saved?.resources.some((s) => s.type === r.type && s.id === r.id) ? 'checked' : ''}>${esc(r.type)} · ${esc(r.name)}</label>`).join('')}</fieldset><p class="form-note">增加关联不会授予资源访问；已有关联保留，操作按原连接隔离。</p><p id="conversation-status" role="status"></p></form>`,
-      `<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" form="conversation-form" type="submit">保存关联</button>`,
-    );
-    const f = $('#conversation-form', d);
-    f.onsubmit = (e) => {
-      e.preventDefault();
-      busy($('button[type="submit"]', d), async () => {
-        if (!f.reportValidity()) return;
-        const body = Object.fromEntries(new FormData(f));
-        delete body.resource;
-        body.resources = $$('[name="resource"]:checked', f).map((x) => {
-          const [type, id] = x.value.split('|');
-          return { type, id };
-        });
-        try {
-          await api('/api/conversations' + (saved ? '/' + encodeURIComponent(saved.id) : ''), {
-            method: saved ? 'PUT' : 'POST',
-            body: JSON.stringify(body),
-          });
-          if (login === S.session && d.isConnected) {
-            closeModal(d);
-            await renderPage(false);
-          }
-        } catch (err) {
-          if (d.isConnected) $('#conversation-status', d).textContent = err.message;
-        }
-      });
-    };
-  }
   async function projectMCP(id) {
     const current = intent();
     const [r, gw] = await Promise.all([
@@ -403,30 +326,6 @@ window.CodePierProduct = (() => {
       if (S.accessTab === 'advanced') CodePierProfiles.bind();
       if ($('#connection-create')) $('#connection-create').onclick = newConnection;
     }
-    if ($('#conversation-resource'))
-      $('#conversation-resource').onchange = (e) => {
-        const [type, id] = e.target.value.split('|');
-        S.conversationFilter = id ? { resource_type: type, resource_id: id } : null;
-        S.conversationOffset = 0;
-        renderPage(false);
-      };
-    if ($('#conversation-create')) $('#conversation-create').onclick = () => conversationEdit();
-    if ($('#conversation-next'))
-      $('#conversation-next').onclick = () => {
-        S.conversationOffset = S.conversationNext;
-        renderPage(false);
-      };
-    if ($('#conversation-prev'))
-      $('#conversation-prev').onclick = () => {
-        S.conversationOffset = Math.max(0, (S.conversationOffset || 0) - 30);
-        renderPage(false);
-      };
-    if ($('#conversation-clear'))
-      $('#conversation-clear').onclick = () => {
-        S.conversationFilter = null;
-        S.conversationOffset = 0;
-        renderPage(false);
-      };
   }
   document.addEventListener('click', async (e) => {
     const b = e.target.closest(
@@ -455,7 +354,8 @@ window.CodePierProduct = (() => {
           b.dataset.resourceDetail,
           b.dataset.resourceWorkspace || '',
         );
-      else if (b.dataset.conversationDetail) await conversationDetail(b.dataset.conversationDetail);
+      else if (b.dataset.conversationDetail)
+        await navigate('audit/session/' + b.dataset.conversationDetail);
       else if (b.dataset.projectMcp) await projectMCP(b.dataset.projectMcp);
       else if (b.dataset.connectionProfile)
         await CodePierProfiles.edit(b.dataset.connectionProfile);
@@ -490,5 +390,5 @@ window.CodePierProduct = (() => {
       toast(err.message, true);
     }
   });
-  return { resources, access, conversations, bind, newConnection, resourceDetail };
+  return { resources, access, bind, newConnection, resourceDetail };
 })();

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from shared.core_contracts import CORE_TOOLS
 from shared.contracts import tool_definitions
 from hub import iam
-from shared.util import VERSION
+from shared.util import VERSION, DevError
 from hub.api.models import ComputerDecision, ToolCall
 from hub.api.devices import device_rows
 from hub.api.activity import operation_rows, audit_rows
@@ -57,7 +57,34 @@ def make_system_router(context: HubContext):
     @router.post("/api/tools/call")
     async def call_tool(request: Request, body: ToolCall):
         principal = await store.run(auth.panel, request, True)
-        return await runtime.invoke(body.tool, body.arguments, principal)
+        from hub.session_activity import current_activity, mark_error
+        from hub.conversations import current_conversation
+        trace = None
+        context = current_activity.set(None)
+        conversation_context = current_conversation.set(None)
+        delivered = False
+        try:
+            try:
+                trace = await store.run(runtime.session_activity.begin, principal, 'tools/call',
+                                        {'name': body.tool, 'arguments': body.arguments}, {})
+                if trace:
+                    runtime.session_activity.start_context(trace)
+            except Exception:
+                runtime.session_activity.write_errors += 1
+            value = await runtime.invoke(body.tool, body.arguments, principal)
+            delivered = True
+            if value.get('error') or value.get('ok') is False:
+                mark_error('TOOL_ERROR')
+            return value
+        except DevError as exc:
+            mark_error(exc.code)
+            raise
+        finally:
+            try:
+                await store.run(runtime.session_activity.finish, trace, delivered=delivered)
+            finally:
+                current_activity.reset(context)
+                current_conversation.reset(conversation_context)
 
     @router.get("/api/computer/approvals")
     async def computer_approvals(request: Request):

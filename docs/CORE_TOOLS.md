@@ -1,6 +1,6 @@
 # MCP 资源工具与对话关联
 
-CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`vps`、`browser`、`computer`。增加 `conversations`，用于持久对话、资源与操作引用索引，不保存正文或进度。旧工作流及其 read/create/update/handoff 兼容操作已移除。其他旧独立 MCP 工具入口调用仍返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
+CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`vps`、`browser`、`computer`。保留底层 `conversations` 关联接口；正常调用由 Audit 自动按宿主会话归组，无需额外登记，不保存正文或进度。旧工作流及其 read/create/update/handoff 兼容操作已移除。其他旧独立 MCP 工具入口调用仍返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
 
 身份工具 `get_profile`、`get_access_context` 额外提供稳定身份和实时权限摘要。经明确同意的动态角色连接还可使用已审核的外部 MCP 工具及 `gateway_call_get` 回执查询，详见 [MCP 网关](MCP_GATEWAY.md)。
 
@@ -119,4 +119,4 @@ Task 绑定原 operation、Space、用户和确切创建 grant，每次查询/�
 
 参考 [Pi 的工具实现](https://github.com/badlogic/pi-mono/tree/d5629e20489ccf770ed90b5a33941cb3b7ef24d0/packages/coding-agent/src/core/tools) 的少量通用原语、文本分页、输出截断、原文件多处编辑与按文件协调思路，以及 [pi-mcp](https://github.com/mofelee/pi-mcp/tree/ecf3000ea6979ec33383ddbcce45f69e8c57a70c) 的精简工具目录。实现继续使用 CodePier 的路径授权、SHA 校验、备份、加密传输和持久回执；没有引入 Pi 运行时依赖。
 
-`conversations(operation="list"/"get"/"associate")` 独立于项目选择，作用于当前认证连接的索引。缺少宿主元数据时正常调用其他工具；仅在获得真实客户端标识后显式关联。`openai/session` 不用于认证或生成对话 URL，原 URL 单独提供。见 [Conversations](CONVERSATIONS.md)。
+`conversations(operation="list"/"get"/"associate")` 保留给需要有效关联资料的客户端，独立于项目选择且按当前认证连接隔离。正常 ChatGPT 工具调用自动使用宿主 `openai/session`，不需要调用 associate 或提供 URL。缺少元数据仍正常使用工具；Audit 显示未关联活动。元数据不用于授权或生成对话 URL。见 [Audit 会话活动](CONVERSATIONS.md)。

@@ -42,7 +42,7 @@ def test_additive_upgrade_preserves_resource_credentials_policies_and_histories(
     original={t:store.all('SELECT * FROM '+t) for t in tables};key=(directory/'master.key').read_bytes();store.close()
     # Remove exactly the new additive schema to reproduce baseline 5410d26.
     db=sqlite3.connect(directory/'hub.sqlite3')
-    for table in ['conversation_operations','conversation_resources','conversations','client_connection_requests','project_mcp_resources']:db.execute('DROP TABLE '+table)
+    for table in ['audit_activity_receipts','audit_activity_resources','audit_activity','conversation_operations','conversation_resources','conversations','client_connection_requests','project_mcp_resources']:db.execute('DROP TABLE '+table)
     db.execute('ALTER TABLE vps_connections DROP COLUMN execution_project_id')
     db.execute('ALTER TABLE grants DROP COLUMN resource_policy');db.execute('ALTER TABLE grants DROP COLUMN connector_ceiling')
     db.execute("DELETE FROM meta WHERE key='resource_model_schema'");db.commit();db.close()

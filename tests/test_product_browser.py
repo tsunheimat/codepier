@@ -83,15 +83,23 @@ def test_resources_role_connection_conversation_flow(stack,chat_browser_pool,tmp
             'yield_seconds':0,'idempotency_key':uuid.uuid4().hex},'_meta':{'openai/session':'browser-'+unique}},token_value=token)
         stack.must(response);result=response.json()['result'];assert not result.get('isError'),result
         operation=result['structuredContent']['operation_id'];stack.poll(operation)
-        page.evaluate("navigate('conversations')");expect(page.locator('#conversations-page')).to_be_visible()
-        page.locator('[data-conversation-detail]').filter(visible=True).first.click()
-        expect(page.locator('.modal-body')).to_contain_text('Imago')
-        expect(page.locator('.modal-body')).to_contain_text(operation)
-        page.click('#conversation-edit');f=page.locator('#conversation-form')
-        f.locator('[name=original_url]').fill('https://chatgpt.com/c/actual-supplied-'+unique)
-        page.locator('button[form=conversation-form]').click();expect(f).to_have_count(0)
-        link=page.get_by_role('link',name='返回原对话').first
-        expect(link).to_have_attribute('href','https://chatgpt.com/c/actual-supplied-'+unique)
+        page.evaluate("navigate('conversations')");expect(page.locator('#audit-sessions')).to_be_visible()
+        assert page.evaluate('S.page') == 'audit'
+        assert not page.locator('[data-nav=conversations],#conversation-create,#conversation-form').count()
+        row = next(r for r in stack.client.get('/api/conversations').json()['conversations'] if r['conversation_identifier'] == 'browser-' + unique)
+        page.locator('[data-session-id="' + row['id'] + '"] a', has_text='查看会话时间线').click()
+        entry = page.locator('[data-call-id="' + operation + '"]')
+        expect(entry).to_contain_text('Imago')
+        expect(entry).to_contain_text(operation[:12])
+        # Optional associations remain compatible through the underlying API;
+        # normal ChatGPT flow never asks for a URL or a manual registration.
+        edited = stack.client.put('/api/conversations/' + row['id'], json={
+            'platform': 'chatgpt', 'conversation_identifier': 'browser-' + unique,
+            'original_url': 'https://chatgpt.com/c/actual-supplied-' + unique})
+        assert edited.status_code == 200, edited.text
+        page.reload();expect(entry).to_be_visible()
+        page.get_by_text('关联证据', exact=True).click()
+        expect(page.get_by_role('link', name='原对话网址（可选资料）')).to_have_attribute('href', 'https://chatgpt.com/c/actual-supplied-' + unique)
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
         page.screenshot(path=str(tmp_path/f'product-{width}.png'),full_page=True)
         assert not errors,errors
@@ -105,10 +113,10 @@ def test_removed_routes_expose_no_archive_and_tools_keep_receipts(stack,chat_bro
     page.on('request', lambda request: calls.append(request.post_data or '') if request.method=='POST' else None)
     try:
         page.goto(stack.url+'/#'+route);page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
-        expect(page.locator('#resources-page')).to_be_visible()
-        assert page.evaluate('S.page')=='resources'
+        expect(page.locator('#audit-sessions' if route.startswith('conversations') else '#resources-page')).to_be_visible()
+        assert page.evaluate('S.page') == ('audit' if route.startswith('conversations') else 'resources')
         page.evaluate("navigate('conversations')")
-        expect(page.locator('#conversations-page')).to_be_visible()
+        expect(page.locator('#audit-sessions')).to_be_visible()
         assert not page.locator('[data-product-tab=archive],[data-archive-detail]').count()
         assert 'workflows_' not in ''.join(calls)
         page.evaluate("navigate('integrations')");expect(page.locator('[data-i-tab=overview]')).to_be_visible()

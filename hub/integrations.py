@@ -117,15 +117,22 @@ class CallTimingMiddleware:
     async def __call__(self,scope,receive,send):
         if scope['type']!='http' or scope.get('path')!='/mcp':return await self.app(scope,receive,send)
         from hub.conversations import current_conversation
+        from hub.session_activity import current_activity
         context = current_conversation.set(None)
+        activity_context = current_activity.set(None)
         async def observed(message):
             await send(message)
             if message['type']=='http.response.body' and not message.get('more_body',False):
                 await self.runtime.store.run(self.runtime.integrations.finish,scope.get('state',{}).get('codepier_call_trace'))
+                await self.runtime.store.run(self.runtime.session_activity.finish,scope.get('state',{}).get('codepier_activity'),delivered=True)
         try:await self.app(scope,receive,observed)
         finally:
             try:
                 trace=scope.get('state',{}).get('codepier_call_trace')
                 if trace and not trace['finished']:await self.runtime.store.run(self.runtime.integrations.finish,trace,status='interrupted')
             finally:
-                current_conversation.reset(context)
+                try:
+                    await self.runtime.store.run(self.runtime.session_activity.finish,scope.get('state',{}).get('codepier_activity'),delivered=False)
+                finally:
+                    current_activity.reset(activity_context)
+                    current_conversation.reset(context)

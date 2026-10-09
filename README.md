@@ -14,11 +14,11 @@ CodePier 是自托管的开发工具连接层。**Hub** 提供 MCP 接口和管�
 
 ## 主产品模型
 
-**Resources → Access（Roles / Client Connections）→ Conversations**。先建立 Project、MCP Service 或 VPS 资源，再为角色配置具体资源与操作，最后连接客户端。角色是通用权限集合，不绑定 persona 或特定执行器；资源关联不会授予访问。VPS 查看与 SSH 执行分别授权，执行还须明确选择项目 / Agent 路线。
+**Resources → Access（Roles / Client Connections）→ Audit**。先建立 Project、MCP Service 或 VPS 资源，再为角色配置具体资源与操作，最后连接客户端。角色是通用权限集合，不绑定 persona 或特定执行器；资源关联不会授予访问。VPS 查看与 SSH 执行分别授权，执行还须明确选择项目 / Agent 路线。
 
 客户端连接展示实际资源权限、期限和停用/撤销状态。固定连接保留首次同意上限；动态连接须明确同意未来角色变化。稳定 Profile 与 Grant/Token 身份留在高级设置，私有历史隔离保持。
 
-Conversations 只保存对话标识、可选原网址及资源/操作关联，不保存聊天正文或任务进度。旧工作流、历史归档入口及兼容 API 已移除；已有执行回执、取消、审计与幂等记录继续独立保留。账号与身份统一在 `/#identity`，管理员额外可见 Users 与 SSO。设置路径、兼容入口和升级行为见 [资源与访问模型](docs/RESOURCE_MODEL.md)、[对话关联](docs/CONVERSATIONS.md)。
+Audit 的「全部操作 / 按会话」自动关联带有宿主 session 标识的 CodePier 调用；无需登记对话、标题或复制 ChatGPT 网址。并发会话展示实际当前操作与资源；缺少元数据的调用显示为未关联。不保存聊天正文或任务进度。旧工作流、历史归档入口及兼容 API 已移除；已有执行回执、取消、审计与幂等记录继续独立保留。账号与身份统一在 `/#identity`，管理员额外可见 Users 与 SSO。设置路径、兼容入口和升级行为见 [资源与访问模型](docs/RESOURCE_MODEL.md)、[Audit 会话活动](docs/CONVERSATIONS.md)。
 
 Devices / Agents 放在 Resources；Project 详情打开该项目的开发工具与文件产物；成员与角色使用/委派分配放在 Access。新安装直接建立正常 Personal Space，不创建 Legacy 默认空间；现有空兼容容器按完整引用检查退役，已有业务资料保留原空间。见 [Personal Space 与导航](docs/PERSONAL_SPACES.md)。
 
@@ -153,7 +153,7 @@ https://hub.example.com/mcp
 
 > 在 demo 项目中检查登录失败的原因。先复现问题，再做最小修改并运行相关测试，最后列出修改文件和验证结果，不要提交或部署。
 
-一个完整的流程通常是：打开项目并读取说明，确认现有改动，读取或搜索相关源码，修改后审阅差异，再运行测试。Conversations 只关联原客户端对话、所用资源和已有操作；不保存目标、步骤或进度。在原客户端继续阅读回答与发出指令。
+一个完整的流程通常是：打开项目并读取说明，确认现有改动，读取或搜索相关源码，修改后审阅差异，再运行测试。Audit 按会话自动关联原客户端标识、实际使用的资源和已有操作；不保存目标、步骤或进度。在原客户端继续阅读回答与发出指令。
 
 耗时操作会返回 `operation_id`。页面刷新或网络中断后，用 `task_query` 继续查询原编号；明确取消使用 `process`。不要换一个幂等键重跑结果不明的命令。是否完成要看终态、退出码和实际输出。
 

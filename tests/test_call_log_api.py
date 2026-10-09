@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from hub.call_log import operation_summary, register_call_log
+from hub.conversations import ConversationRegistry
+from hub.session_activity import SessionActivity
 from shared.util import DevError
 
 
@@ -25,9 +27,24 @@ class EvidenceStore:
                 owner_user_id TEXT DEFAULT 'owner', visibility TEXT DEFAULT 'private', grant_id TEXT);
             CREATE TABLE projects (id TEXT PRIMARY KEY, alias TEXT);
             CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT);
+            CREATE TABLE vps_connections (id TEXT PRIMARY KEY);
+            CREATE TABLE grants (id TEXT PRIMARY KEY);
+            CREATE TABLE meta (key TEXT PRIMARY KEY,value TEXT);
+            CREATE TABLE gateway_bindings (id TEXT PRIMARY KEY);
+            CREATE TABLE gateway_calls (id TEXT PRIMARY KEY,space_id TEXT,user_id TEXT,grant_id TEXT,
+                binding_id TEXT,tool TEXT,state TEXT,created REAL,updated REAL,error_code TEXT);
             INSERT INTO projects VALUES ('p1', 'MCP'), ('p2', 'Other');
             INSERT INTO devices VALUES ('d1', 'Test Agent');
         ''')
+        from hub.resource_schema import migrate
+        migrate(self.db)
+
+    def execute(self, sql, args=()):
+        return self.db.execute(sql, args)
+
+    def one(self, sql, args=()):
+        rows = self.all(sql, args)
+        return rows[0] if rows else None
 
     def all(self, sql, args=()):
         self.queries.append(sql)
@@ -50,6 +67,8 @@ def log_api():
             return SimpleNamespace(admin=True, instance_admin=True, actor='panel:test',
                 space_id='legacy', user_id='owner', user_epoch=1,grant_id=None)
     class Runtime:
+        def project(self, identifier, principal):
+            return store.one('SELECT * FROM projects WHERE id=?', (identifier,))
         def list_projects(self, principal):
             return store.all('SELECT * FROM projects')
         def operation(self, identifier, principal):
@@ -71,6 +90,8 @@ def log_api():
             raise AssertionError('Reading call details must not invoke tools or add audit calls')
     runtime=Runtime()
     runtime.store=store
+    runtime.conversations=ConversationRegistry(runtime)
+    runtime.session_activity=SessionActivity(runtime)
     runtime.diagnostics=runtime
     app=FastAPI()
     @app.exception_handler(DevError)

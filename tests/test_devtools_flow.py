@@ -96,7 +96,7 @@ def test_status_failure_retries_locally_without_hiding_tasks(tools_page):
     }''')
     page.click('[data-i-action=refresh]')
     expect(page.locator('#i-checks')).to_contain_text('fixture connection missing')
-    expect(page.locator('#integration-center [data-nav=conversations]')).to_be_visible()
+    expect(page.locator('#integration-center [data-nav="audit/sessions"]')).to_be_visible()
     page.evaluate('() => {failReady=false;savedReady.browser={connected:true,enabled:true,profile_bound:false,pool:{available:0}};}')
     page.locator('#i-checks [data-i-action=section-retry]').click()
     expect(page.locator('#i-checks')).to_contain_text('基础开发工具已就绪')
@@ -273,8 +273,8 @@ def test_code_navigation_opens_exact_line_and_keeps_dirty_buffer(tools_page, int
 def test_conversation_entry_has_no_handoff_tracker_or_native_prompt(tools_page, integrated_stack):
     page=tools_page
     assert page.locator('[data-i-tab=handoff],[data-i-action=new-workflow]').count()==0
-    page.locator('#integration-center [data-nav=conversations]').click()
-    expect(page.locator('#conversations-page')).to_be_visible()
+    page.locator('#integration-center [data-nav="audit/sessions"]').click()
+    expect(page.locator('#audit-sessions')).to_be_visible()
     assert not page.evaluate("nativeCalls.some(r=>r.path.endsWith('/start')||r.path.endsWith('/chat_prompt'))")
 
 

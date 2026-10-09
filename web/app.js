@@ -11,7 +11,6 @@ const nav = [
   ['devices', 'device', '设备节点', '02'],
   ['resources', 'folder', '资源', '03'],
   ['access', 'shield', '访问', '07'],
-  ['conversations', 'history', '对话关联', '05'],
   ['workbench', 'code', '远程工作台', '04'],
   ['audit', 'audit', '操作审计', '06'],
   ['diagnostics', 'activity', '运行诊断', '08'],
@@ -137,6 +136,10 @@ function discardLocalWork() {
   sessionValue('codepier-task-submission', null);
 }
 function clearSpaceSnapshots() {
+  window.CodePierAuditSessions?.clear();
+  S.auditSession = '';
+  S.auditCorrelation = '';
+  S.auditOperation = '';
   invalidateBasics();
   Object.assign(S, {
     overview: null,
@@ -150,8 +153,6 @@ function clearSpaceSnapshots() {
     resourceTab: null,
     accessTab: null,
     identityTab: null,
-    conversationOffset: 0,
-    conversationFilter: null,
     delivery: null,
     vps: [],
     vpsQuery: '',
@@ -170,6 +171,10 @@ function clearSpaceSnapshots() {
 }
 function endSession(discard = false) {
   window.CodePierCallLog?.clear();
+  window.CodePierAuditSessions?.clear();
+  S.auditSession = '';
+  S.auditCorrelation = '';
+  S.auditOperation = '';
   window.CodePierAccess?.detach();
   window.CodePierPanelUpdate?.detach();
   // Expiry suspends in-memory drafts, never persists message text or files.
@@ -435,7 +440,7 @@ function renderLogin(configured = true) {
 function renderShell() {
   const chosen = nav.find((x) => x[0] === S.page);
   const groups = [
-    ['CodePier', ['resources', 'access', 'conversations']],
+    ['CodePier', ['resources', 'access']],
     ['工具与记录', ['native', 'workbench', 'audit']],
     ['管理', ['overview', 'identity', 'diagnostics', 'settings']],
   ];
@@ -454,7 +459,7 @@ function renderShell() {
     ['access', 'shield', '访问'],
     ['resources', 'folder', '资源'],
     ['native', 'terminal', 'CLI'],
-    ['conversations', 'history', '对话'],
+    ['audit', 'audit', '审计'],
   ]
     .map(
       ([id, ico, label]) =>
@@ -671,13 +676,19 @@ function connectEvents() {
       opened = true;
       return;
     }
-    if (S.page === 'audit' && S.auditMode === 'operations' && window.CodePierCallLog)
-      loadBasics()
-        .then(() => current() && CodePierCallLog.refresh(true))
-        .catch(() => {});
-    else if (
-      ['overview', 'devices', 'resources', 'access', 'conversations', 'audit'].includes(S.page)
+    if (
+      S.page === 'audit' &&
+      ['operations', 'sessions'].includes(S.auditMode) &&
+      window.CodePierCallLog
     )
+      loadBasics()
+        .then(
+          () =>
+            current() &&
+            (S.auditMode === 'sessions' ? CodePierAuditSessions : CodePierCallLog).refresh(true),
+        )
+        .catch(() => {});
+    else if (['overview', 'devices', 'resources', 'access', 'audit'].includes(S.page))
       refreshPanel();
     else loadBasics().catch(() => {});
   };
@@ -737,14 +748,16 @@ function connectEvents() {
       pollTask().catch(() => {});
     if (
       S.page === 'audit' &&
-      S.auditMode === 'operations' &&
+      ['operations', 'sessions'].includes(S.auditMode) &&
       window.CodePierCallLog &&
       ['operation', 'output', 'trace', 'device', 'project'].includes(m.type)
     ) {
       clearTimeout(S.eventTimer);
       S.eventTimer = setTimeout(() => {
-        if (current() && S.page === 'audit' && S.auditMode === 'operations')
-          CodePierCallLog.refresh(true).catch(() => {});
+        if (current() && S.page === 'audit' && ['operations', 'sessions'].includes(S.auditMode))
+          (S.auditMode === 'sessions' ? CodePierAuditSessions : CodePierCallLog)
+            .refresh(true)
+            .catch(() => {});
       }, 500);
       return;
     }
@@ -757,7 +770,6 @@ function connectEvents() {
     const dependencies = {
       resources: ['vps', 'device', 'project', 'iam'],
       access: ['iam', 'vps', 'project', 'device'],
-      conversations: ['operation', 'project', 'vps'],
       overview: ['operation', 'device', 'project'],
       devices: ['device', 'project'],
       projects: ['device', 'project'],
@@ -790,6 +802,18 @@ function productHash(page) {
     return (
       'project/' + encodeURIComponent(S.artifactRoute || deliveryState().project) + '/artifacts'
     );
+  if (page === 'audit')
+    return S.auditSession
+      ? 'audit/session/' + S.auditSession
+      : S.auditOperation
+        ? 'audit/operation/' + S.auditOperation
+        : S.auditCorrelation
+          ? 'audit/unassociated'
+          : S.auditMode === 'sessions'
+            ? 'audit/sessions'
+            : S.auditMode === 'events'
+              ? 'audit/events'
+              : 'audit';
   return page === 'resources'
     ? 'resources/' + (S.resourceTab || 'projects')
     : page === 'access'
@@ -801,6 +825,30 @@ function productHash(page) {
 function canonicalPage(page) {
   const [path, query = ''] = page.split('?');
   const parts = path.split('/');
+  if (page === 'conversations' || page.startsWith('conversations/'))
+    return canonicalPage('audit/sessions');
+  if (parts[0] === 'audit') {
+    const session =
+      parts[1] === 'session' && /^[A-Za-z0-9_-]{1,100}$/.test(parts[2] || '') ? parts[2] : '';
+    const operation =
+      parts[1] === 'operation' && /^(?:act_|gwc_)?[a-f0-9]{32}$/.test(parts[2] || '')
+        ? parts[2]
+        : '';
+    const mode =
+      parts[1] === 'sessions' ? 'sessions' : parts[1] === 'events' ? 'events' : 'operations';
+    if (S.auditSession !== session || S.auditOperation !== operation || S.auditMode !== mode)
+      window.CodePierCallLog?.clear();
+    S.auditMode = mode;
+    S.auditSession = session;
+    S.auditOperation = operation;
+    S.auditCorrelation = parts[1] === 'unassociated' ? 'unassociated' : '';
+    if (session || operation || S.auditCorrelation) {
+      S.auditStatus = '';
+      S.auditSource = '';
+      S.auditQuery = operation;
+    }
+    return 'audit';
+  }
   if (parts.length === 3 && parts[0] === 'project' && ['tools', 'artifacts'].includes(parts[2])) {
     let project;
     try {
@@ -889,6 +937,7 @@ async function navigate(page) {
 }
 async function renderPage(showLoading = true) {
   window.CodePierCallLog?.detach();
+  window.CodePierAuditSessions?.detach();
   window.CodePierAccess?.detach();
   window.CodePierPanelUpdate?.detach();
   window.CodePierIntegrations?.detach();
@@ -919,8 +968,6 @@ async function renderPage(showLoading = true) {
       html = await CodePierProduct.resources(seq);
     } else if (page === 'access') {
       html = await CodePierProduct.access();
-    } else if (page === 'conversations') {
-      html = await CodePierProduct.conversations();
     } else if (page === 'overview') {
       S.overview = await api('/api/overview');
       S.projects = S.overview.projects;
@@ -982,7 +1029,7 @@ async function renderPage(showLoading = true) {
     if (page === 'mcp-gateway') CodePierGateway.bind();
     if (page === 'roles') CodePierRoles.bind();
     if (page === 'profiles') CodePierProfiles.bind();
-    if (['resources', 'access', 'conversations'].includes(page)) CodePierProduct.bind();
+    if (['resources', 'access'].includes(page)) CodePierProduct.bind();
     if (page === 'vps') bindVps();
     if (page === 'workbench') bindWorkbench();
     if (page === 'audit') bindAudit();
@@ -1967,6 +2014,7 @@ async function pollTask() {
   }
 }
 async function auditHTML(seq = S.renderSeq) {
+  if (S.auditMode === 'sessions') return CodePierAuditSessions.html(seq);
   if (S.auditMode === 'operations' && window.CodePierCallLog) return CodePierCallLog.html(seq);
   const type = S.auditMode;
   const query = new URLSearchParams({
@@ -1989,10 +2037,11 @@ async function auditHTML(seq = S.renderSeq) {
       '',
       `<button class="btn ghost" data-action="export-audit">${icon('download')}导出审计 CSV</button>`,
     ) +
-    `<div class="filters"><div class="tabs"><button class="${type === 'operations' ? 'active' : ''}" data-action="audit-mode" data-mode="operations">工具执行</button><button class="${type === 'events' ? 'active' : ''}" data-action="audit-mode" data-mode="events">全部事件</button></div><select id="audit-source" aria-label="来源"><option value="">全部来源</option>${['mcp', 'panel', ...(type === 'events' ? ['device'] : [])].map((v) => `<option value="${v}" ${S.auditSource === v ? 'selected' : ''}>${v.toUpperCase()}</option>`).join('')}</select><select id="audit-status" aria-label="操作状态"><option value="">全部状态</option>${(type === 'operations' ? ['queued', 'running', 'reconnecting', 'cancelling', 'succeeded', 'failed', 'cancelled', 'needs_review', 'interrupted'] : ['ok', 'started', 'denied', 'failed']).map((v) => `<option value="${v}" ${S.auditStatus === v ? 'selected' : ''}>${stateNames[v] || v}</option>`).join('')}</select>${type === 'events' ? `<input id="audit-query" value="${esc(S.auditQuery)}" placeholder="搜索调用者 / 操作 / 目标"><button class="btn small" data-action="audit-search">搜索</button>` : ''}</div><section class="panel">${type === 'operations' ? operationsTable(rows) : rows.length ? `<div class="table-scroll"><table class="data-table"><thead><tr><th>时间</th><th>调用来源</th><th>事件</th><th>目标</th><th>状态</th><th></th></tr></thead><tbody>${rows.map((r, i) => `<tr><td class="mono tiny muted">${esc(timeText(r.at))}</td><td class="tiny">${esc(r.actor)}</td><td class="mono tiny">${esc(r.action)}</td><td>${esc(r.target || '—')}</td><td>${badge(r.status)}</td><td><button class="icon-btn" data-event-index="${i}" aria-label="查看审计事件">${icon('arrow')}</button></td></tr>`).join('')}</tbody></table></div>` : empty('当前筛选范围没有记录。')}<div class="pagination"><span>${rows.length ? `第 ${S.auditOffset + 1}–${S.auditOffset + rows.length} 条` : '暂无记录'}</span><div class="actions"><button class="btn ghost small" data-action="audit-prev" ${S.auditOffset === 0 ? 'disabled' : ''}>上一页</button><button class="btn ghost small" data-action="audit-next" ${r.next_offset === null ? 'disabled' : ''}>下一页</button></div></div></section>${uiHelp('记录范围', '日志保存工具调用与执行证据，不含完整对话；服务器管理员可修改记录，不是第三方审计存证。')}`
+    `<div class="filters">${CodePierCallLog.tabs(type)}<select id="audit-source" aria-label="来源"><option value="">全部来源</option>${['mcp', 'panel', ...(type === 'events' ? ['device'] : [])].map((v) => `<option value="${v}" ${S.auditSource === v ? 'selected' : ''}>${v.toUpperCase()}</option>`).join('')}</select><select id="audit-status" aria-label="操作状态"><option value="">全部状态</option>${(type === 'operations' ? ['queued', 'running', 'reconnecting', 'cancelling', 'succeeded', 'failed', 'cancelled', 'needs_review', 'interrupted'] : ['ok', 'started', 'denied', 'failed']).map((v) => `<option value="${v}" ${S.auditStatus === v ? 'selected' : ''}>${stateNames[v] || v}</option>`).join('')}</select>${type === 'events' ? `<input id="audit-query" value="${esc(S.auditQuery)}" placeholder="搜索调用者 / 操作 / 目标"><button class="btn small" data-action="audit-search">搜索</button>` : ''}</div><section class="panel">${type === 'operations' ? operationsTable(rows) : rows.length ? `<div class="table-scroll"><table class="data-table"><thead><tr><th>时间</th><th>调用来源</th><th>事件</th><th>目标</th><th>状态</th><th></th></tr></thead><tbody>${rows.map((r, i) => `<tr><td class="mono tiny muted">${esc(timeText(r.at))}</td><td class="tiny">${esc(r.actor)}</td><td class="mono tiny">${esc(r.action)}</td><td>${esc(r.target || '—')}</td><td>${badge(r.status)}</td><td><button class="icon-btn" data-event-index="${i}" aria-label="查看审计事件">${icon('arrow')}</button></td></tr>`).join('')}</tbody></table></div>` : empty('当前筛选范围没有记录。')}<div class="pagination"><span>${rows.length ? `第 ${S.auditOffset + 1}–${S.auditOffset + rows.length} 条` : '暂无记录'}</span><div class="actions"><button class="btn ghost small" data-action="audit-prev" ${S.auditOffset === 0 ? 'disabled' : ''}>上一页</button><button class="btn ghost small" data-action="audit-next" ${r.next_offset === null ? 'disabled' : ''}>下一页</button></div></div></section>${uiHelp('记录范围', '日志保存工具调用与执行证据，不含完整对话；服务器管理员可修改记录，不是第三方审计存证。')}`
   );
 }
 function bindAudit() {
+  if (S.auditMode === 'sessions') return CodePierAuditSessions.bind();
   if (S.auditMode === 'operations' && window.CodePierCallLog) return CodePierCallLog.bind();
   $('#audit-source').onchange = (e) => {
     S.auditSource = e.target.value;
@@ -2478,12 +2527,17 @@ panelActions.register(['operation-detail'], async (b, e) => {
 });
 panelActions.register(['audit-mode'], async (b, e) => {
   window.CodePierCallLog?.clear();
-  S.auditMode = b.dataset.mode;
-  if (S.auditMode === 'operations') S.auditQuery = S.auditQuery.slice(0, 200);
   S.auditOffset = 0;
   S.auditStatus = '';
   S.auditSource = '';
-  await renderPage(false);
+  S.auditQuery = '';
+  await navigate(
+    b.dataset.mode === 'sessions'
+      ? 'audit/sessions'
+      : b.dataset.mode === 'events'
+        ? 'audit/events'
+        : 'audit',
+  );
   return;
 });
 panelActions.register(['audit-search'], async (b, e) => {
@@ -2589,7 +2643,7 @@ window.addEventListener('hashchange', () => {
     history.replaceState(null, '', location.pathname + location.search + '#' + productHash(page));
   if (
     (page !== S.page ||
-      (['integrations', 'artifacts'].includes(page) &&
+      (['integrations', 'artifacts', 'audit'].includes(page) &&
         location.hash.slice(1) !== previousContext) ||
       before !== JSON.stringify([S.resourceTab, S.accessTab, S.identityTab])) &&
     nav.some((n) => n[0] === page)

@@ -1,4 +1,4 @@
-# Resources, Roles / Client Connections, Conversations
+# Resources, Access and Audit sessions
 
 CodePier is a reusable MCP bridge for ChatGPT Web and other clients. Roles are configurable permission sets; labels such as worker, reviewer or manager carry no special authority.
 
@@ -7,7 +7,7 @@ CodePier is a reusable MCP bridge for ChatGPT Web and other clients. Roles are c
 1. Open **Resources** (`/#resources/projects`). Configure a Project, an execution node (`/#resources/devices`), an MCP Service (`/#resources/mcp`), or a VPS (`/#resources/vps`). Each type keeps its own settings and availability checks.
 2. Open **Access → Roles** (`/#access/roles`). Pair actions with the specific resources they target. For MCP select the approved account/binding and individual tool names.
 3. Open **Access → Client Connections** (`/#access/connections`). Select a role and create a Bearer connection, or copy the role OAuth URL for ChatGPT. The OAuth confirmation window can create the stable connection identity inline or reuse an existing identity.
-4. Read actual permissions in Client Connections. Resource details group configuration/availability, role access, related conversations, and permitted existing operation/audit records.
+4. Read actual permissions in Client Connections. Resource details group configuration/availability, role access, related Audit sessions, and permitted existing operation/audit records.
 
 Project details are the primary entry for Development Tools (exact project/workspace) and Artifacts / Downloads (selected-project filter). Space members, invitations and role-use/delegation assignment live in **Access → Space Members**. Fresh installations start with a real Personal Space; unused compatibility containers retire conservatively. See [Personal Spaces and navigation](PERSONAL_SPACES.md).
 
@@ -47,11 +47,11 @@ New fixed connections snapshot resource-use rules. Existing device-read/project-
 - `GET /api/resources/{project|vps|mcp}/{id}` collects type-specific configuration and permitted existing records. MCP IDs here identify approved bindings.
 - `PUT /api/projects/{id}/mcp-services` associates approved bindings, with an expected-association check. VPS association APIs retain their existing concurrency checks.
 - Existing bookmarks `#projects`, `#vps`, `#mcp-gateway`, `#roles`, `#connect` and `#profiles` open their corresponding consolidated tabs.
-- [Conversations](CONVERSATIONS.md) indexes resource and operation associations. The retired workflow/archive subsystem, its routes and its compatibility tools are removed. Original execution receipts, state queries, cancellation, auditing and operation idempotency remain independent.
+- [Audit sessions](CONVERSATIONS.md) automatically group observed client calls and existing execution receipts. `#conversations` redirects to `#audit/sessions`; normal ChatGPT use needs no manual association or URL. The retired workflow/archive subsystem, its routes and its compatibility tools are removed. Original execution receipts, state queries, cancellation, auditing and operation idempotency remain independent.
 
 ## Upgrade and rollback
 
-The resource migration is additive and transactionally applied when a Hub opens its data directory. It has its own `resource_model_schema=1` marker alongside the existing IAM/gateway schema markers. It adds conversation/association tables, nullable grant consent snapshot fields and a nullable VPS execution-route field. It does not rewrite old policies, credentials, tokens, histories, workflow events, replay receipts or encryption keys.
+The resource migration is additive and transactionally applied when a Hub opens its data directory. It has its own `resource_model_schema=1` marker alongside the existing IAM/gateway schema markers. It adds conversation/association and Audit observation/reference tables, nullable grant consent snapshot fields and a nullable VPS execution-route field. It does not rewrite old policies, credentials, tokens, histories, workflow events, replay receipts or encryption keys.
 
 Old VPS associations remain, but do not become grants or execution routes. An administrator must choose a route and configure explicit VPS rules before new SSH submissions. Previously queued association-only SSH requests are blocked before delivery; already dispatched operations retain their original receipts and recovery behavior. Changing only a resource's purpose associations no longer revokes an otherwise explicitly authorized route; changing the route, connection or credential blocks pending delivery. Cancellation still uses the original operation and cannot guarantee remote process termination.
 

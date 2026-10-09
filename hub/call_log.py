@@ -15,10 +15,9 @@ import time
 from fastapi import Query, Request
 
 from hub.db_worker import database_endpoint
-from hub import iam
 from shared.audit_redaction import display_value, redact_text
 
-TERMINAL = {"succeeded", "failed", "cancelled", "needs_review", "interrupted"}
+TERMINAL = {"succeeded", "failed", "cancelled", "needs_review", "interrupted", "returned", "completed", "tool_error", "rejected"}
 STATES = TERMINAL | {"queued", "running", "reconnecting", "cancelling", "unknown"}
 
 
@@ -147,55 +146,52 @@ def register_call_log(app, runtime, auth):
 
     @app.get("/api/call-log")
     @database_endpoint(store)
-    def call_log(request: Request, limit: int = Query(40, ge=1, le=100), cursor: str = Query("", max_length=1024), q: str = Query("", max_length=200), source: str = Query("", max_length=20), status: str = Query("", max_length=30), project: str = Query("", max_length=100), tool: str = Query("", max_length=100), watch: str = Query("", max_length=4096), include_filters: bool = True):
+    def call_log(request: Request, limit: int = Query(40, ge=1, le=100), cursor: str = Query("", max_length=1024), q: str = Query("", max_length=200), source: str = Query("", max_length=20), status: str = Query("", max_length=30), project: str = Query("", max_length=100), tool: str = Query("", max_length=100), watch: str = Query("", max_length=4096), include_filters: bool = True, session: str = Query('', max_length=100), correlation: str = Query('', pattern='^(|unassociated)$')):
         principal = auth.panel(request)
         if source not in {"", "mcp", "panel"} or status not in STATES | {""}:
             raise DevError("INVALID_FILTER", "无效的调用来源或状态")
-        filters = {"q": q.strip(), "source": source, "status": status, "project": project, "tool": tool, "space": principal.space_id, "user": principal.user_id, "epoch": principal.user_epoch}
-        clause, scope_args = iam.private_sql(principal, 'o.')
-        if not principal.admin:
-            clause += ' AND (o.project_id IS NULL OR o.project_id IN (%s))' % (','.join('?' for _ in principal.projects) or 'NULL')
-            scope_args.extend(principal.projects)
-        where, values = [clause], list(scope_args)
-        for column, value in (("o.state", status), ("o.project_id", project), ("o.tool", tool)):
-            if value:
-                where.append(column + "=?")
-                values.append(value)
-        if source:
-            where.append("o.actor LIKE ?")
-            values.append(source + ":%")
-        if filters["q"]:
-            literal = filters["q"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            columns = ("o.id", "o.actor", "o.tool", "o.args_summary", "o.error", "p.alias", "d.name")
-            where.append("(" + " OR ".join(column + " LIKE ? ESCAPE '\\'" for column in columns) + ")")
-            values.extend(["%" + literal + "%"] * len(columns))
+        activity = runtime.session_activity
+        if session:
+            runtime.conversations.load(session, principal)
+        filters = {"q": q.strip(), "source": source, "status": status, "project": project, "tool": tool, "session": session, "correlation": correlation, "space": principal.space_id, "user": principal.user_id, "epoch": principal.user_epoch}
+        base, scope_args = activity.sql(principal)
+        condition, values = activity.conditions(q=filters['q'], source=source, status=status, project=project, tool=tool, session=session, correlation=correlation)
+        where = [condition]
         if cursor:
             created, identifier = _decode_cursor(cursor, filters)
-            where.append("(o.created < ? OR (o.created = ? AND o.id < ?))")
+            where.append("(e.created < ? OR (e.created = ? AND e.id < ?))")
             values.extend([created, created, identifier])
         # The list never loads encrypted payloads, result bodies or task output.
-        sql = "SELECT o.id,o.project_id,o.device_id,o.tool,o.actor,o.state,o.created,o.updated,o.args_summary,o.error,o.attempts,p.alias,d.name AS device_name FROM operations o LEFT JOIN projects p ON p.id=o.project_id LEFT JOIN devices d ON d.id=o.device_id"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        rows = store.all(sql + " ORDER BY o.created DESC,o.id DESC LIMIT ?", (*values, limit + 1))
+        sql = base + ' SELECT e.* FROM entries e WHERE ' + ' AND '.join(where)
+        rows = store.all(sql + " ORDER BY e.created DESC,e.id DESC LIMIT ?", (*scope_args, *values, limit + 1))
         more = len(rows) > limit
         rows = rows[:limit]
         observed = time.time()
         watched = list(dict.fromkeys(watch.split(","))) if watch else []
-        if len(watched) > 40 or any(not re.fullmatch(r"[a-f0-9]{32}", x) for x in watched):
+        if len(watched) > 40 or any(not re.fullmatch(r"(?:act_|gwc_)?[a-f0-9]{32}", x) for x in watched):
             raise DevError("INVALID_FILTER", "无效的调用状态订阅")
         updates = []
         if watched:
-            base = "SELECT o.id,o.project_id,o.device_id,o.tool,o.actor,o.state,o.created,o.updated,o.args_summary,o.error,o.attempts,p.alias,d.name AS device_name FROM operations o LEFT JOIN projects p ON p.id=o.project_id LEFT JOIN devices d ON d.id=o.device_id"
-            updates = store.all(base + " WHERE " + clause + " AND o.id IN (" + ",".join("?" for _ in watched) + ")", (*scope_args, *watched))
-        return {"updates": [public_row(row, observed) for row in updates], "operations": [public_row(row, observed) for row in rows], "next_cursor": _cursor(rows[-1]["created"], rows[-1]["id"], filters) if more else None, "observed_at": observed, "projects": [{k: row[k] for k in ('id', 'alias')} for row in runtime.list_projects(principal)] if include_filters else [], "tools": [x["tool"] for x in store.all("SELECT DISTINCT o.tool FROM operations o WHERE " + clause + " ORDER BY o.tool LIMIT 200", scope_args)] if include_filters else []}
+            updates = store.all(base + " SELECT * FROM entries WHERE id IN (" + ",".join("?" for _ in watched) + ")", (*scope_args, *watched))
+        return {"updates": [activity.public(row, principal, observed) for row in updates], "operations": [activity.public(row, principal, observed) for row in rows], "next_cursor": _cursor(rows[-1]["created"], rows[-1]["id"], filters) if more else None, "observed_at": observed, "projects": [{k: row[k] for k in ('id', 'alias')} for row in runtime.list_projects(principal)] if include_filters else [], "tools": [x["tool"] for x in store.all(base + " SELECT DISTINCT tool FROM entries ORDER BY tool LIMIT 200", scope_args)] if include_filters else [], 'session': runtime.conversations.public(runtime.conversations.load(session, principal), principal) if session else None}
+
+    @app.get('/api/audit/sessions')
+    @database_endpoint(store)
+    def sessions(request: Request, limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0, le=100000), q: str = Query('', max_length=200), state: str = Query('', pattern='^(|active|attention|recent|failed)$'), project: str = Query('', max_length=100), tool: str = Query('', max_length=100)):
+        principal = auth.panel(request)
+        return runtime.session_activity.sessions(principal, limit=limit, offset=offset, q=q.strip(), state=state, project=project, tool=tool)
 
     @app.get("/api/call-log/{identifier}")
     @database_endpoint(store)
     def call_log_detail(identifier: str, request: Request):
         principal = auth.panel(request)
+        if identifier.startswith(('act_', 'gwc_')):
+            return runtime.session_activity.detail(identifier, principal)
         original = runtime.operation(identifier, principal)
         row = public_row({key: value for key, value in original.items() if key not in {"result", "output"}})
+        row.update(kind='native', sessions=runtime.session_activity.session_refs('native', identifier, principal),
+                   resources=runtime.session_activity.resources('native', identifier, principal, original.get('project_id')),
+                   observations=runtime.session_activity.observations('native', identifier, principal))
         sections = {}
         any_clipped = any_scrubbed = False
         for field, budget in (("args_summary", 12000), ("output", 32768), ("result", 32768), ("error", 4000), ("transport_error", 2000)):

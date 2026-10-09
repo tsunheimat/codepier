@@ -2,6 +2,7 @@
 from typing import Literal
 from pydantic import Field, model_validator
 from shared.computer_contracts import ComputerArgs
+from shared.audit_redaction import redact_text
 
 
 class ResourceAssociation(ComputerArgs):
@@ -26,6 +27,9 @@ class ConversationIdentity(ComputerArgs):
             raise ValueError('Conversation metadata cannot contain control characters')
         if not self.conversation_identifier.strip():
             raise ValueError('A real client-supplied identifier is required')
+        if redact_text(self.conversation_identifier) != self.conversation_identifier:
+            raise ValueError('Credentials are not conversation identifiers')
+        self.label = redact_text(self.label)
         self.platform = self.platform.lower()
         return self
 
@@ -61,10 +65,10 @@ class Conversations(ComputerArgs):
 
 def register(Tool, tools, schemas):
     tools['conversations'] = Tool(Conversations, 'read',
-        'Index this authenticated connection’s conversations and associate permitted resource/operation references. '
+        'Read this authenticated connection’s Audit session associations and associate permitted resource/operation references. '
         'Optional platform, client-supplied identifier, label and original HTTPS URL only; never stores transcripts, '
         'goals or progress. Host openai/session can correlate calls but is not a ChatGPT URL ID. '
-        'Without metadata, continue normal tool use or explicitly associate a real client identifier.', local=True)
+        'Audit correlates host metadata automatically; no manual registration or URL is required. Without metadata, continue normal tool use; Audit shows unassociated activity.', local=True)
     schemas['conversations'] = {'type': 'object', 'additionalProperties': True, 'properties': {
         'conversations': {'type': 'array', 'items': {'type': 'object'}},
         'conversation': {'type': 'object'}, 'next_offset': {'type': ['integer', 'null']},

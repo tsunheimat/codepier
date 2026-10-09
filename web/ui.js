@@ -40,7 +40,7 @@ function uiTrapTab(e, root) {
   }
 }
 const uiMobileMedia = matchMedia('(max-width:900px)');
-const uiDockPages = new Set(['access', 'resources', 'native', 'conversations']);
+const uiDockPages = new Set(['access', 'resources', 'native', 'audit']);
 function uiSyncNavigation() {
   const current = ['integrations', 'artifacts'].includes(S.page) ? 'resources' : S.page;
   $$('[data-nav]').forEach((b) => {
