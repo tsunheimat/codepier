@@ -45,8 +45,12 @@ Associations are SQLite records and survive Hub close/reopen. Admission links na
 
 The detail panel displays permitted existing operations, with a bounded first 100 references; native records open the original operation viewer. MCP calls retain their private gateway `call_id` and recovery API. A supplied URL enables **Return to original conversation**. There is no generic API for obtaining a chat client's messages.
 
-## Retired workflow compatibility
+## Workflow removal
 
-`#workflows` redirects to `#conversations/archive`. Historical workflow records, original steps/summaries, event history and replay receipts remain unchanged. `workflows_list`, `workflows_get` and the old read-only handoff shape remain callable for historical reads, including their workspace/query facades. Creation/progress updates return an explicit `WORKFLOW_RETIRED` error and do not alter stored archives.
+The workflow/archive subsystem has been removed. `/#conversations/archive` and `/#workflows` no longer resolve to an archive. No `workflows_*` tool, workspace `workflow_*`/`handoff` operation, project-query workflow facade, workflow sharing API, or `rd://workflow` guidance alias is supported. Unknown tools and unsupported operation arguments receive the normal protocol errors; there is no compatibility read service or `WORKFLOW_RETIRED` write handler.
 
-Legacy workflow operations are absent from the normal tool help/index and advertised operation enums. `rd://conversations` is the current guidance resource; reading the old `rd://workflow` URI returns the current guidance. No new workflow is required to submit, query, cancel or audit an operation. Existing source baselines, immutable reviews, validation receipts, artifacts, browser/computer sessions and native CLI functionality retain their own contracts.
+`workspace_status` and `project_query(operation="dashboard")` read authorized recent operation receipts only. They reject the removed `workflow_id`, `workflow_cursor` and `evidence_offset` arguments and return no workflow, steps, progress, checkpoint evidence or archive pagination. Use `task_query` for existing operation status/history and `process(operation="cancel")` for cancellation.
+
+Fresh stores create no workflow tables. On upgrade, any existing `workflows`, `workflow_events` and `workflow_replays` tables, indexes and rows remain inert and unchanged; startup neither deletes nor migrates them, and no product API reads or writes them. They are not converted to conversations. Existing IAM migration and Personal Space safety checks continue to preserve populated historical Spaces. No live reset or data deletion is required.
+
+`rd://conversations` is the current guidance resource. Source baselines, immutable reviews, validation receipts, artifacts, browser/computer sessions, native CLI, audit and operation idempotency retain their own contracts. Stable identities, Profiles, grants and consent ceilings remain supported.

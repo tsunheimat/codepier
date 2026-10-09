@@ -564,8 +564,7 @@ function uiManagementLayout(page) {
       : S.page === 'resources' && S.resourceTab === 'mcp'
         ? 'mcp-gateway'
         : S.page;
-  if (!['identity', 'members', 'identity-admin', 'profiles', 'roles', 'mcp-gateway'].includes(area))
-    return;
+  if (!['identity', 'members', 'profiles', 'roles', 'mcp-gateway'].includes(area)) return;
   const host = $('#profiles-page,#roles-page,#gateway-page,#access-content', page) || page;
   host.classList.add('management-page');
   const panels = $$(':scope > .panel', host);
@@ -598,7 +597,13 @@ function uiManagementLayout(page) {
     const input = document.createElement('input');
     input.type = 'search';
     const filters = S.managementFilters || (S.managementFilters = {});
-    const filterKey = S.page + ':' + area + ':' + index;
+    const filterKey =
+      S.page +
+      ':' +
+      area +
+      ':' +
+      (area === 'identity' ? (S.identityTab || 'account') + ':' : '') +
+      index;
     input.id = 'management-filter-' + S.page + '-' + area + '-' + index;
     input.value = filters[filterKey] || '';
     input.placeholder = '搜索名称、范围或标识';

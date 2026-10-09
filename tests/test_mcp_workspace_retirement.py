@@ -35,10 +35,8 @@ def test_saved_workspace_resource_is_small_inert_retirement_notice(uri):
     ('open_workspace', {'project': 'P'}),
     ('workspace', {'operation': 'open', 'project': 'P'}),
     ('project_query', {'operation': 'open', 'project': 'P'}),
-    ('workflows_get', {'workflow_id': 'a' * 32}),
-    ('workspace', {'operation': 'workflow_get', 'options': {'workflow_id': 'a' * 32}}),
 ])
-def test_project_and_workflow_results_no_longer_attach_workspace_bindings(name, args):
+def test_project_results_no_longer_attach_workspace_bindings(name, args):
     result = {'content': [], 'structuredContent': {'project_id': 'p'}, '_meta': {'existing': 'preserved'}}
     assert mcp_apps.attach(result.copy(), name, args, result['structuredContent'],
                            lambda: 'https://hub.example') == result

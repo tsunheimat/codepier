@@ -69,7 +69,7 @@ def main():
                   window.fetch = async (path,options={}) => { const r=await window.__fixtureFetch(path,options); if(r.transport_error)throw new TypeError('Injected temporary transport failure'); return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}}); };
                   window.EventSource=class { constructor(){setTimeout(()=>this.onopen?.(),20);} close(){} };
                 }''')
-                for asset in ('ui.js','workflows.js','insights.js','skills.js'):
+                for asset in ('ui.js','product.js','insights.js','skills.js'):
                     page.add_script_tag(content=(Path(__file__).resolve().parent.parent/'web'/asset).read_text())
                 source=(Path(__file__).resolve().parent.parent/'web/app.js').read_text()
                 source=source.replace('location.origin',json.dumps(s.url)).replace('location.protocol',"'http:'")

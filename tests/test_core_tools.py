@@ -288,7 +288,7 @@ async def test_complete_capability_discovery_and_no_unmapped_public_tool(runtime
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('name,operation,options', [
-    ('workspace', 'workflow_create', {'title': 'Title', 'goal': 'Goal'}),
+    ('workspace', 'worktree_create', {'label': 'Isolated worktree'}),
     ('edit', 'checkpoint', {}),
     ('write', 'import', {'path': 'file', 'file': {'file_id': 'x', 'download_url': 'https://example.invalid/file'}}),
     ('process', 'validate', {'command': 'true'}),

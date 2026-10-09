@@ -45,7 +45,6 @@ def test_readonly_project_discovery_is_reachable(operation):
     ('skills_list', {'project': 'Visible'}),
     ('skills_read', {'project': 'Visible', 'skill_id': 'a' * 64}),
     ('open_workspace', {'project': 'Visible', 'capture_baseline': False}),
-    ('workflows_get', {'project': 'Visible', 'workflow_id': 'a' * 32}),
 ])
 def test_readonly_project_hints_use_query(backend, arguments):
     name, call = public_call(backend, arguments)

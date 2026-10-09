@@ -299,8 +299,8 @@ def make_iam_router(auth,runtime):
     @router.put('/share/{kind}/{identifier}')
     @database_endpoint(store)
     def share(kind:str,identifier:str,request:Request,body:ShareEdit):
-        table={'workflow':'workflows','artifact':'artifacts'}.get(kind)
-        if not table:raise DevError('INVALID_RESOURCE','只支持共享工作流或产物，不共享交互会话',400)
+        table={'artifact':'artifacts'}.get(kind)
+        if not table:raise DevError('INVALID_RESOURCE','只支持共享产物，不共享交互会话',400)
         with store.lock,store.db:
             store.db.execute('BEGIN IMMEDIATE');p=auth.panel(request,True)
             row=store.one(f'SELECT * FROM {table} WHERE id=? AND space_id=?',(identifier,p.space_id))

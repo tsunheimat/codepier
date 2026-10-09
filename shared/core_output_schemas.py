@@ -207,9 +207,7 @@ def build_core_output_schemas(legacy, *, include_queries=False):
         *variants('projects_resolve', 'open_workspace', 'project_context',
                   'skills_list', 'skills_read', 'tasks_list', 'execution_info',
                   'readiness_get', 'fs_tree', 'workspace_status', 'worktrees_create',
-                  'worktrees_list', 'worktrees_remove', 'workflows_create',
-                  'workflows_list', 'workflows_get', 'workflows_update',
-                  'workflows_handoff', 'lsp_status')]
+                  'worktrees_list', 'worktrees_remove', 'lsp_status')]
 
     # Core text reads use offset/next_offset, unlike the private fs_read tool.
     file_meta = {'operation_id': STR, 'path': STR, 'sha256': STR, 'bytes': INT,
@@ -303,7 +301,7 @@ def build_core_output_schemas(legacy, *, include_queries=False):
         result['project_query'] = union([project_list, help_index, help_detail, *variants(
             'fs_tree', 'skills_list', 'skills_read',
             'open_workspace', 'tasks_list', 'execution_info', 'readiness_get',
-            'workspace_status', 'workflows_list', 'workflows_get')])
+            'workspace_status')])
         result['task_query'] = union([process[0], *variants(
             'diagnostics_get', 'activity_list')])
     return {name: factor(schema) for name, schema in result.items()}

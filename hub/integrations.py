@@ -1,4 +1,4 @@
-"""Hub-owned admission, compact handoff and authorized timing evidence."""
+"""Hub-owned admission and authorized timing evidence."""
 from __future__ import annotations
 import hashlib,hmac,json,secrets,time
 from shared.util import DevError
@@ -48,17 +48,6 @@ class HubIntegrations:
         else:phase='needs_review'
         self.store.execute('UPDATE integration_admission SET paused=?,phase=?,updated=? WHERE project=? AND last_operation=?',
             (int(paused),phase,time.time(),op['project_id'],op['id']))
-
-    def handoff(self,args,principal):
-        row=self.runtime.workflows.get({'workflow_id':args['workflow_id'],'before_event_id':None,'event_limit':5},principal)
-        return {'workflow_id': row['workflow_id'], 'version': row['version'], 'project': row['project_alias'],
-                'original_goal': row['goal'], 'state': row['state'], 'summary': row['summary'],
-                'completed': [s for s in row['steps'] if s['state'] == 'completed'],
-                'remaining': [s for s in row['steps'] if s['state'] not in {'completed','skipped'}],
-                'pending_or_uncertain': [], 'recent_validation_operations': [], 'recent_review_operations': [],
-                'mapping_changed': row['mapping_changed'], 'next_step': None, 'next': {},
-                'retired': True, 'execution_started': False,
-                'trust': '历史工作流仅供读取；保存的摘要不证明当前代码状态。Conversations 只关联资源和操作。'}
 
     def begin(self,principal,project,name,metadata):
         meaningful=name not in SAFE and name not in {'operations_get','operations_wait','operations_list','activity_list','diagnostics_get','operations_trace'}

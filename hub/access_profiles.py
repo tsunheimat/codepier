@@ -1,6 +1,6 @@
 """Owner-managed, stable access identities. Profiles only cap a grant's consent.
 
-The grant, not the profile, continues to own operations, workflows and leases.
+The grant, not the profile, continues to own operations and leases.
 A ChatGPT conversation/project name is never an authorization input.
 """
 from __future__ import annotations

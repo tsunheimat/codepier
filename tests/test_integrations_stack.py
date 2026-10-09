@@ -38,7 +38,7 @@ def integrated_stack(tmp_path_factory):
 
 def resolved(s,name,args=None,*,panel=False,expect='succeeded'):
     args={'project':'Imago',**(args or {})}
-    if name not in {'activity_list','workflows_handoff'}:args.setdefault('idempotency_key',uuid.uuid4().hex)
+    if name not in {'activity_list'}:args.setdefault('idempotency_key',uuid.uuid4().hex)
     public_name, public_args = public_call(name, args)
     result=s.call(name,args) if panel else s.mcp(public_name,public_args)['structuredContent']
     if result.get('pending'):
@@ -255,20 +255,6 @@ def test_activity_is_real_timing_not_model_thinking_and_is_scoped(integrated_sta
     own=s.mcp('process',{'operation':'activity','project':'Imago'},token_value=grant['token'])['structuredContent']['activities']
     assert all(row['tool']=='process' and row['window_key'] is None for row in own)
     s.client.delete('/api/grants/'+grant['grant_id'])
-
-
-def test_handoff_preserves_goal_and_does_not_start_execution(integrated_stack):
-    s=integrated_stack
-    from tests.historical_workflows import seed_workflow
-    from hub.store import Store
-    store=Store(s.hubdir)
-    try:
-        grant=store.one('SELECT * FROM grants WHERE id=?',(s.grant,))
-        created=seed_workflow(store,project_id=s.project['id'],user_id=grant['user_id'],grant_id=s.grant,goal='Keep original intent')
-    finally:store.close()
-    result=s.mcp('workspace',{'operation':'handoff','options':{'workflow_id':created['workflow_id']}})['structuredContent']
-    assert result['original_goal']=='Keep original intent' and not result['execution_started']
-    assert result['retired'] and result['remaining'] and result['next']=={}
 
 
 def test_local_owner_control_is_loopback_authenticated_and_journaled(integrated_stack):

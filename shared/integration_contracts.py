@@ -27,9 +27,6 @@ class ProjectArgs(Strict):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 class WorkspaceStatus(ProjectArgs):
-    workflow_id: str = Field(default='', pattern=OPTIONAL_ID, description='Legacy historical workflow selection only; no active task or progress tracking.')
-    workflow_cursor: str = Field(default='', max_length=512)
-    evidence_offset: int = Field(default=0, ge=0, le=4096)
     limit: int = Field(default=12, ge=1, le=20)
 
 class Mutation(ProjectArgs):
@@ -110,9 +107,6 @@ class ValidationAccept(Mutation):
     decision: Literal['accept', 'reject']
     note: str = Field(default='', max_length=2000)
 
-class Handoff(Strict):
-    workflow_id: str = Field(pattern=ID)
-
 class Activity(Strict):
     project: str = Field(min_length=1, max_length=100)
     before_id: int | None = Field(default=None, ge=1)
@@ -141,7 +135,7 @@ class BrowserClose(Mutation):
     lease_id: str = Field(pattern=ID)
 
 SPECS = {
-    'workspace_status': (WorkspaceStatus, 'read', 'Read a bounded project dashboard of authorized existing operations. Legacy workflow selection reads historical archives only. No logs, model runs, filesystem scan or implicit acceptance. Historical validation is not current verification.', False, True),
+    'workspace_status': (WorkspaceStatus, 'read', 'Read a bounded project dashboard of authorized existing operations. No logs, model runs, filesystem scan or implicit acceptance. Historical validation is not current verification.', False, True),
     'download_artifact': (DownloadArtifact, 'write', 'Save a native host file into an unused project-relative path. Streamed with size/SHA checks, trusted HTTPS sources and anchored destination directories. No automatic extraction or execution. Pass the host file object directly.', False, False),
     'lsp_status': (ProjectArgs, 'read', 'Inspect locally configured language servers without starting them. Availability is not a successful semantic query.', False, False),
     'lsp_query': (LspQuery, 'execute', 'Query a configured, owner-approved language server for real definitions/references/types/diagnostics/call hierarchy. Starts a bounded process, no arbitrary server command or workspace edits. Explicit execute permission and local project opt-in required.', False, False),
@@ -152,7 +146,6 @@ SPECS = {
     'validations_get': (ValidationGet, 'read', 'Read one bound verification receipt and freshly compare its source fingerprint. Distinguishes passed, failed, stale and unverified. Does not rerun the command.', False, False),
     'validations_list': (ProjectArgs, 'read', 'List recent verification receipts; historical passes are not current validation. Use validations_get for a fresh check.', False, False),
     'validations_accept': (ValidationAccept, 'write', 'Panel-owner-only acceptance or rejection of an exact verification after a fresh source check. MCP callers cannot accept their own work.', True, False),
-    'workflows_handoff': (Handoff, 'read', 'Read a retired workflow archive in the legacy response shape. No continuation, progress update, replay or model run is started.', False, True),
     'activity_list': (Activity, 'read', 'Read authorized MCP request timing and explicit continuity gaps. Response-to-next-call gap is not model thinking time. Arguments and outputs are not recorded here.', False, True),
     'readiness_get': (ProjectArgs, 'read', 'Inspect Agent readiness, effective execution policy, source/runtime drift, language and browser capabilities. Unperformed end-to-end checks stay unverified; never starts a model.', False, False),
     'integration_control': (Control, 'execute', 'Panel-owner-only project admission pause/resume and verified cancellation of owned processes. Status and receipt recovery remain available. Does not disable the Agent connection.', True, False),
@@ -177,7 +170,7 @@ def output_schema(name):
     obj={'type':'object','additionalProperties':True};array={'type':'array','items':obj}
     nullable_number={'type':['number','null']};nullable_string={'type':['string','null']}
     fields={
-      'workspace_status': {'project':string,'project_id':string,'workspace_id':string,'observed_at':{'type':'number'},'device_online':boolean,'workflow':{'type':['object','null']},'workflows':array,'evidence':array,'recent_operations':array,'next_workflow_cursor':nullable_string,'next_evidence_offset':{'type':['integer','null']},'execution_started':{'const':False}},
+      'workspace_status': {'project':string,'project_id':string,'workspace_id':string,'observed_at':{'type':'number'},'device_online':boolean,'recent_operations':array,'root':nullable_string,'recent_window_limited':boolean,'scope_note':string,'execution_started':{'const':False}},
       'download_artifact': {'path':string,'bytes':integer,'sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'created':boolean,'overwritten':boolean,'extracted':boolean,'executed':boolean},
       'lsp_status': {'servers':array,'starts_process':boolean,'semantic_queries_available':boolean,'column_unit':string,'note':string},
       'lsp_query': {'action':string,'language':string,'backend':{'const':'lsp'},'precision':{'const':'semantic'},'items':array,'source_sha256':nullable_string,'source_current':boolean,'truncated':boolean,'omitted':integer,'column_unit':string,'text':string,'diagnostics_fresh':boolean},
@@ -188,7 +181,6 @@ def output_schema(name):
       'validations_get': {'validation_id':string,'label':string,'state':string,'historical_state':string,'source_current':boolean,'current':obj,'accepted_current':boolean,'decision':{'type':['object','null']}},
       'validations_list': {'validations':array,'limit':integer,'note':string},
       'validations_accept': {'validation_id':string,'state':string,'current':obj,'decision':obj,'accepted_current':boolean},
-      'workflows_handoff': {'workflow_id':string,'version':integer,'project':string,'original_goal':string,'state':string,'summary':string,'completed':array,'remaining':array,'pending_or_uncertain':array,'recent_validation_operations':array,'recent_review_operations':array,'mapping_changed':boolean,'next_step':nullable_string,'next':obj,'execution_started':boolean,'trust':string},
       'activity_list': {'activities':array,'next_before_id':{'type':['integer','null']},'write_errors':integer,'timing_note':string,'correlation_note':string},
       'readiness_get': {'build':obj,'execution':obj,'admission':obj,'language_servers':obj,'browser':obj,'capabilities':{'type':'array','items':string},'checks':array,'local_control':boolean,'note':string},
       'integration_control': {'paused':boolean,'scope':string,'updated':nullable_number,'connection_preserved':boolean,'native_sessions_automatically_stopped':boolean,'action':string,'cancel_requested':{'type':'array','items':string},'stopped_verified':{'type':'array','items':string},'unconfirmed':{'type':'array','items':string},'non_cancellable':array,'native':array,'complete':boolean},
@@ -199,7 +191,7 @@ def output_schema(name):
       'browser_close': {'lease_id':string,'released':boolean,'tab_cleanup_confirmed':boolean,'other_tabs_touched':boolean},
     }
     required={
-      'workspace_status':['project','project_id','workspace_id','observed_at','workflow','workflows','evidence','recent_operations','execution_started'],
+      'workspace_status':['project','project_id','workspace_id','observed_at','recent_operations','execution_started'],
       'download_artifact':['path','bytes','sha256','created','overwritten','extracted','executed'],
       'lsp_status':['servers','starts_process','semantic_queries_available'],
       'lsp_query':['action','language','backend','precision','items','source_current','truncated','omitted','column_unit'],
@@ -208,7 +200,6 @@ def output_schema(name):
       'validation_run':['validation_id','state','before','after','exit_code','execution_operation_id'],
       'validations_get':['validation_id','state','historical_state','source_current','current','accepted_current'],
       'validations_list':['validations','limit'], 'validations_accept':['validation_id','decision','accepted_current'],
-      'workflows_handoff':['workflow_id','version','project','original_goal','remaining','pending_or_uncertain','mapping_changed','next','execution_started'],
       'activity_list':['activities','next_before_id','timing_note'],
       'readiness_get':['build','execution','admission','checks','local_control'],
       'integration_control':['paused','scope','connection_preserved'],
@@ -230,6 +221,7 @@ def register(Tool, tools, schemas):
 TOOL_TITLES = {
     'project_query': '查询项目', 'task_query': '查询执行记录',
     'projects_list': '查找项目', 'projects_resolve': '查找项目',
+    'tasks_run': '任务回执',
     'open_workspace': '项目概览', 'project_context': '读取项目', 'workspace_status': '任务状态',
     'fs_tree': '查看目录', 'fs_read': '读取文件', 'fs_read_many': '批量读取文件',
     'fs_search': '搜索代码', 'fs_mkdir': '创建目录', 'fs_preview': '预览改动',
@@ -243,8 +235,6 @@ TOOL_TITLES = {
     'worktrees_create': '创建工作目录', 'worktrees_list': '查看工作目录', 'worktrees_remove': '移除工作目录',
     'validation_run': '验证回执', 'validations_get': '核对验证', 'validations_list': '查看验证',
     'readiness_get': '检查就绪状态', 'execution_info': '检查执行能力', 'activity_list': '查看活动',
-    'workflows_create': '建立任务', 'workflows_list': '查找任务', 'workflows_get': '任务概览',
-    'workflows_update': '保存进度', 'workflows_handoff': '恢复任务', 'tasks_run': '任务回执',
 }
 
 
@@ -261,7 +251,7 @@ def decorate(definition):
     definition['_meta']['securitySchemes'] = schemes
     # Keep existing app instances able to read tools, without opening a new card.
     if name in {'project_query', 'task_query', 'workspace', 'process', 'read', 'write', 'operations_get', 'operations_wait', 'readiness_get', 'validations_get', 'fs_tree', 'download_artifact',
-                'open_workspace', 'show_changes', 'workflows_get'}:
+                'open_workspace', 'show_changes'}:
         definition['_meta']['ui'] = {'visibility':['model','app']}
         definition['_meta']['openai/widgetAccessible'] = True
     if name in APP_ONLY_TOOLS:

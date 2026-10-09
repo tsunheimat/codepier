@@ -18,7 +18,7 @@ CodePier 是自托管的开发工具连接层。**Hub** 提供 MCP 接口和管�
 
 客户端连接展示实际资源权限、期限和停用/撤销状态。固定连接保留首次同意上限；动态连接须明确同意未来角色变化。稳定 Profile 与 Grant/Token 身份留在高级设置，私有历史隔离保持。
 
-Conversations 只保存对话标识、可选原网址及资源/操作关联，不保存聊天正文或任务进度。旧工作流作为只读历史保留。设置路径、兼容入口和升级行为见 [资源与访问模型](docs/RESOURCE_MODEL.md)、[对话关联](docs/CONVERSATIONS.md)。
+Conversations 只保存对话标识、可选原网址及资源/操作关联，不保存聊天正文或任务进度。旧工作流、历史归档入口及兼容 API 已移除；已有执行回执、取消、审计与幂等记录继续独立保留。账号与身份统一在 `/#identity`，管理员额外可见 Users 与 SSO。设置路径、兼容入口和升级行为见 [资源与访问模型](docs/RESOURCE_MODEL.md)、[对话关联](docs/CONVERSATIONS.md)。
 
 Devices / Agents 放在 Resources；Project 详情打开该项目的开发工具与文件产物；成员与角色使用/委派分配放在 Access。新安装直接建立正常 Personal Space，不创建 Legacy 默认空间；现有空兼容容器按完整引用检查退役，已有业务资料保留原空间。见 [Personal Space 与导航](docs/PERSONAL_SPACES.md)。
 
@@ -183,7 +183,7 @@ https://hub.example.com/mcp
 
 只读发现和专项参数优先使用 `project_query` 的 `help` 操作；捕获基线、创建 worktree仍使用 `workspace`。文件修改使用读取时取得的 SHA 检查冲突；新建文件使用 `expected_sha256="new"`。`exec` 是非交互式命令入口，不提供 PTY/stdin 会话。独立命令可以并行，访问相同文件或服务时应显式声明资源；这些锁不约束外部编辑器或人工操作。
 
-ChatGPT 内的项目选择和任务看板已移除；直接在聊天中使用工具即可。项目上下文、旧工作流历史、执行回执、附件导入和网页管理面板继续保留；新工作使用对话资源关联。旧 `workbench` 调用返回迁移提示，更新后请刷新客户端工具目录。
+ChatGPT 内的项目选择和任务看板已移除；直接在聊天中使用工具即可。项目上下文、执行回执、附件导入和网页管理面板继续保留；新工作使用对话资源关联。旧 `workbench` 调用返回迁移提示，更新后请刷新客户端工具目录。
 
 支持能力协商的客户端可使用 MCP 2026 Tasks 查询和取消原生 `exec`；未声明能力的客户端继续使用持久回执。取消确认不代表进程已停止，也不保证远端 SSH 副作用回滚。工具升级后需要刷新客户端目录。完整协议范围、参数和示例见 [MCP 工具参考](docs/CORE_TOOLS.md)。
 

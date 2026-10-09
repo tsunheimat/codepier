@@ -46,7 +46,7 @@ Hub 会继续复核已投递操作的项目映射和授权。连接明确声明 
 在已安装开发依赖的虚拟环境中运行：
 
 ```sh
-python3 -m pytest -q tests/test_coding_workflow.py tests/test_coding_integration.py tests/test_agentdock_workflows.py tests/test_reliability.py
+python3 -m pytest -q tests/test_coding_workflow.py tests/test_coding_integration.py tests/test_workflow_removal.py tests/test_reliability.py
 python3 -m pytest -q tests/test_operation_continuation.py tests/test_operation_continuation_integration.py
 python3 -m pytest -q tests/test_recovery_integration.py::test_actual_pytest_survives_running_hub_crash_without_restart
 ```

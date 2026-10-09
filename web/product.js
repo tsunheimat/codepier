@@ -6,7 +6,7 @@ window.CodePierProduct = (() => {
       ? S.resourceTab || 'projects'
       : S.page === 'access'
         ? S.accessTab || 'roles'
-        : S.conversationTab || 'index';
+        : 'index';
   function intent() {
     const login = S.session,
       space = S.space_id,
@@ -284,40 +284,21 @@ window.CodePierProduct = (() => {
       )
       .join('') || '<p>暂无对话关联。</p>';
   async function conversations() {
-    const tab = S.conversationTab || 'index';
-    let body;
-    if (tab === 'archive') {
-      const result = await tool('workflows_list', {
-        limit: 20,
-        project: '',
-        state: '',
-        cursor: S.archiveCursor || '',
-      });
-      S.archiveNext = result.next_cursor;
-      body = `<p class="form-note">旧工作流与事件按原权限保留，只供历史读取。不会更新进度；取消操作仍在操作回执中处理。</p>${result.workflows.map((w) => `<article class="grant-row"><div><strong>${esc(w.title)}</strong><p>${esc(w.project_alias)} · ${esc(timeText(w.updated))}</p></div><button class="btn small" data-archive-detail="${esc(w.workflow_id)}">查看历史记录</button></article>`).join('') || empty('没有旧工作流记录。')}<button class="btn ghost" id="archive-next" ${result.next_cursor ? '' : 'disabled'}>下一页</button>`;
-    } else {
-      await loadBasics();
-      const [vps, gw] = await Promise.all([vpsInventory(), api('/api/mcp-gateway')]);
-      const options = [
-        ...S.projects.map((p) => ({ type: 'project', id: p.id, name: p.alias })),
-        ...vps.map((v) => ({ type: 'vps', id: v.id, name: v.name })),
-        ...gw.bindings.map((b) => ({ type: 'mcp', id: b.id, name: b.alias })),
-      ];
-      const filter = S.conversationFilter || {};
-      const q = new URLSearchParams({ offset: String(S.conversationOffset || 0), ...filter });
-      const result = await api('/api/conversations?' + q);
-      S.conversationNext = result.next_offset;
-      body = `<label class="field">按资源筛选<select id="conversation-resource"><option value="">全部资源</option>${options.map((r) => `<option value="${r.type}|${esc(r.id)}" ${filter.resource_type === r.type && filter.resource_id === r.id ? 'selected' : ''}>${esc(r.type)} · ${esc(r.name)}</option>`).join('')}</select></label><div class="actions"><button class="btn primary" id="conversation-create">关联已有对话</button>${filter.resource_id ? '<button class="btn ghost" id="conversation-clear">清除资源筛选</button>' : ''}</div><p class="form-note">宿主提供 session 元数据时自动关联。匿名 ChatGPT session ID 用于关联调用；原对话网址须另外提供。这里不保存聊天正文、回答或进度；继续在原客户端阅读回答和发出指令。</p>${conversationRows(result.conversations)}<div class="pagination"><button class="btn ghost" id="conversation-prev" ${S.conversationOffset || 0 ? '' : 'disabled'}>上一页</button><button class="btn ghost" id="conversation-next" ${result.next_offset !== null ? '' : 'disabled'}>下一页</button></div>`;
-    }
-    return `<div id="conversations-page">${heading('对话关联', 'CONVERSATIONS', '一条对话可使用多个资源；同一资源可出现在不同对话中。')}${tabs(
-      'conversations',
-      tab,
-      [
-        ['index', '对话索引'],
-        ['archive', '旧工作流历史'],
-      ],
-    )}${section(tab === 'archive' ? '历史归档' : '对话与资源', body)}</div>`;
+    await loadBasics();
+    const [vps, gw] = await Promise.all([vpsInventory(), api('/api/mcp-gateway')]);
+    const options = [
+      ...S.projects.map((p) => ({ type: 'project', id: p.id, name: p.alias })),
+      ...vps.map((v) => ({ type: 'vps', id: v.id, name: v.name })),
+      ...gw.bindings.map((b) => ({ type: 'mcp', id: b.id, name: b.alias })),
+    ];
+    const filter = S.conversationFilter || {};
+    const q = new URLSearchParams({ offset: String(S.conversationOffset || 0), ...filter });
+    const result = await api('/api/conversations?' + q);
+    S.conversationNext = result.next_offset;
+    const body = `<label class="field">按资源筛选<select id="conversation-resource"><option value="">全部资源</option>${options.map((r) => `<option value="${r.type}|${esc(r.id)}" ${filter.resource_type === r.type && filter.resource_id === r.id ? 'selected' : ''}>${esc(r.type)} · ${esc(r.name)}</option>`).join('')}</select></label><div class="actions"><button class="btn primary" id="conversation-create">关联已有对话</button>${filter.resource_id ? '<button class="btn ghost" id="conversation-clear">清除资源筛选</button>' : ''}</div><p class="form-note">宿主提供 session 元数据时自动关联。匿名 ChatGPT session ID 用于关联调用；原对话网址须另外提供。这里不保存聊天正文、回答或进度；继续在原客户端阅读回答和发出指令。</p>${conversationRows(result.conversations)}<div class="pagination"><button class="btn ghost" id="conversation-prev" ${S.conversationOffset || 0 ? '' : 'disabled'}>上一页</button><button class="btn ghost" id="conversation-next" ${result.next_offset !== null ? '' : 'disabled'}>下一页</button></div>`;
+    return `<div id="conversations-page">${heading('对话关联', 'CONVERSATIONS', '一条对话可使用多个资源；同一资源可出现在不同对话中。')}${section('对话与资源', body)}</div>`;
   }
+
   async function conversationDetail(id) {
     const current = intent();
     const login = S.session,
@@ -446,15 +427,10 @@ window.CodePierProduct = (() => {
         S.conversationOffset = 0;
         renderPage(false);
       };
-    if ($('#archive-next'))
-      $('#archive-next').onclick = () => {
-        S.archiveCursor = S.archiveNext;
-        renderPage(false);
-      };
   }
   document.addEventListener('click', async (e) => {
     const b = e.target.closest(
-      '[data-product-tab],[data-resource-detail],[data-project-tools],[data-project-artifacts],[data-conversation-detail],[data-archive-detail],[data-project-mcp],[data-connection-profile],[data-connection-consent],[data-legacy-grant]',
+      '[data-product-tab],[data-resource-detail],[data-project-tools],[data-project-artifacts],[data-conversation-detail],[data-project-mcp],[data-connection-profile],[data-connection-consent],[data-legacy-grant]',
     );
     if (!b || b.disabled || b.dataset.productArea === 'detail') return;
     try {
@@ -462,9 +438,7 @@ window.CodePierProduct = (() => {
       else if (b.dataset.productArea) {
         if (!panelDialogs.requestClose(null, { navigation: true })) return;
         const area = b.dataset.productArea;
-        S[
-          area === 'resources' ? 'resourceTab' : area === 'access' ? 'accessTab' : 'conversationTab'
-        ] = b.dataset.productTab;
+        S[area === 'resources' ? 'resourceTab' : 'accessTab'] = b.dataset.productTab;
         await navigate(area);
       } else if (b.dataset.projectTools) {
         if (!panelDialogs.requestClose(null, { navigation: true })) return;
@@ -511,14 +485,6 @@ window.CodePierProduct = (() => {
             closeModal(d);
             await renderPage(false);
           });
-      } else if (b.dataset.archiveDetail) {
-        const w = await tool('workflows_get', { workflow_id: b.dataset.archiveDetail });
-        modal(
-          '历史记录 · ' + w.title,
-          `<p>只读归档；不再更新步骤或进度。</p><p>${esc(w.goal)}</p><pre class="product-wrap">${esc(json({ steps: w.steps, summary: w.summary, events: w.events }))}</pre>`,
-          '',
-          true,
-        );
       }
     } catch (err) {
       toast(err.message, true);

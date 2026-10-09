@@ -57,8 +57,7 @@ def test_multiple_resources_and_concurrent_conversations_never_share_active_proj
         expected={ids[i] for i,c in enumerate(cases) if c[0]==row['conversation_identifier']}
         assert {x['id'] for x in detail['operations']}==expected
         assert detail['original_url']=='' and detail['platform']=='chatgpt'
-    assert app.state.store.one('SELECT count(*) AS n FROM workflows')['n']==0
-    assert app.state.store.one('SELECT count(*) AS n FROM workflow_events')['n']==0
+    assert not app.state.store.all("SELECT name FROM sqlite_master WHERE name LIKE 'workflow%'")
     columns={x['name'] for x in app.state.store.all('PRAGMA table_info(conversations)')}
     assert not columns & {'steps','goal','progress','summary','next_action','checkpoints','transcript'}
     assert app.state.runtime.conversations.write_errors==0
@@ -172,7 +171,7 @@ def test_conversations_survive_actual_hub_close_reopen_and_preserve_receipt(tmp_
         assert detail['operations'][0]['id']==operation
         assert value(rpc(client,grant['token'],'exec',args,{'openai/session':'persistent'}))['operation_id']==operation
         assert app2.state.store.one('SELECT count(*) AS n FROM operations')['n']==1
-        assert app2.state.store.one('SELECT count(*) AS n FROM workflows')['n']==0
+        assert not app2.state.store.all("SELECT name FROM sqlite_master WHERE name LIKE 'workflow%'")
 
 
 def test_remote_mcp_calls_correlate_without_exposing_other_account(gw):

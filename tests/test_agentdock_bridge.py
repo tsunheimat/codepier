@@ -12,7 +12,7 @@ def test_bridge_catalog_is_derived_not_duplicated():
     assert IDEMPOTENT_TOOLS == {n for n,t in TOOLS.items() if 'idempotency_key' in t.model.model_fields}
 
 
-@pytest.mark.parametrize('name',['project_context','workflows_create','workflows_update'])
+@pytest.mark.parametrize('name',['project_context','fs_write','tasks_run'])
 def test_new_tool_transport_retries_keep_same_key_and_original_request(name):
     original={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':name,'arguments':{}}}
     saved=copy.deepcopy(original)
@@ -30,7 +30,7 @@ def test_new_tool_transport_retries_keep_same_key_and_original_request(name):
     assert prepare_request(prepared)==prepared
 
 
-@pytest.mark.parametrize('name',['workflows_get','workflows_list','operations_wait','operations_get','projects_resolve'])
+@pytest.mark.parametrize('name',['artifacts_get','artifacts_list','operations_wait','operations_get','projects_resolve'])
 def test_keyless_tools_remain_keyless(name):
     req={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':name,'arguments':{}}}
     assert prepare_request(req)==req

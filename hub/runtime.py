@@ -22,7 +22,6 @@ from pydantic import ValidationError
 from hub.store import Store
 from hub.computer_approvals import ComputerApprovals
 from shared.computer_diagnostics import safe_detail
-from hub.workflows import Workflows
 from hub.diagnostics import Diagnostics
 from hub.call_log import operation_summary
 from hub.artifacts import ArtifactService
@@ -96,7 +95,6 @@ class Runtime:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
-        self.workflows = Workflows(self)
         from hub.integrations import HubIntegrations
         self.integrations = HubIntegrations(self)
         from hub.vps import VPSService
@@ -468,8 +466,6 @@ class Runtime:
         from shared.integration_contracts import ADMIN_TOOLS, REMOTE_TOOLS as INTEGRATION_REMOTE_TOOLS
         if name in ADMIN_TOOLS and not principal.admin:
             raise DevError('OWNER_REQUIRED', '此操作只允许面板主理人执行', 403)
-        if name == 'workflows_handoff':
-            return self.integrations.handoff(args, principal)
         if name == 'activity_list':
             return self.integrations.activity(args, principal)
         if name == "get_profile":
@@ -500,15 +496,6 @@ class Runtime:
             result = self.artifacts.list(args, principal)
         elif name == "operations_list":
             result = self.list_operations(args, principal)
-        elif name in {"workflows_create", "workflows_update"}:
-            method = self.workflows.create if name == "workflows_create" else self.workflows.update
-            result = method(args, principal)
-            self.publish("workflow", {"id": result["workflow_id"], "state": result["state"], "version": result["version"]})
-            return result
-        elif name == "workflows_get":
-            result = self.workflows.get(args, principal)
-        elif name == "workflows_list":
-            result = self.workflows.list(args, principal)
         elif name in {"operations_get", "operations_wait"}:
             if name == "operations_wait":
                 return DeferredCall("wait", args)
@@ -543,7 +530,7 @@ class Runtime:
             if name == "computer_session_close" and args.get("force") and not principal.instance_admin:
                 raise DevError("COMPUTER_FORCE_DENIED", "只有面板管理员可以强制停止其他会话", 403)
             return DeferredCall("dispatch", args, project)
-        self.store.audit(principal.actor, name, args.get("project", args.get("operation_id", args.get("workflow_id", ""))))
+        self.store.audit(principal.actor, name, args.get("project", args.get("operation_id", "")))
         return result
 
     async def cancel(self, id, principal):

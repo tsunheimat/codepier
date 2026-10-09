@@ -148,7 +148,7 @@ def test_configured_task_and_nonzero_exit(core_stack):
     assert result['structuredContent']['state'] == 'failed'
 
 
-def test_advanced_workflow_review_backup_search_and_validation(core_stack):
+def test_advanced_review_backup_search_validation_and_removed_workflow(core_stack):
     stack = core_stack
     help, _ = call(stack, 'workspace', {'operation': 'help', 'tool': 'process', 'action': 'validate'})
     assert help['scope'] == 'execute' and 'command' in help['inputSchema']['properties']
@@ -160,7 +160,7 @@ def test_advanced_workflow_review_backup_search_and_validation(core_stack):
     history, _ = call(stack, 'read', {'operation': 'history', 'options': {'path': 'core-batch.txt'}})
     assert history
     retired=stack.mcp('workspace',{'project':'Imago','operation':'workflow_create','options':{'title':'Retired','goal':'No tracking'},'idempotency_key':uuid.uuid4().hex})
-    assert retired['isError'] and retired['structuredContent']['error']['code']=='WORKFLOW_RETIRED'
+    assert retired['isError'] and retired['structuredContent']['error']['code']=='INVALID_ARGUMENTS'
     artifact, _ = call(stack, 'write', {'operation': 'artifact', 'options': {'path': 'core-batch.txt'}, 'idempotency_key': uuid.uuid4().hex})
     listed, _ = call(stack, 'read', {'operation': 'artifacts'})
     assert artifact['artifact_id'] in json.dumps(listed)

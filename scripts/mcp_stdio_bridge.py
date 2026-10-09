@@ -260,15 +260,13 @@ def main():
                 params = request.get("params", {}) if isinstance(request, dict) else {}
                 arguments = params.get("arguments", {}) if isinstance(params, dict) else {}
                 key = arguments.get("idempotency_key") if isinstance(arguments, dict) else None
-                workflow_id = arguments.get("workflow_id") if isinstance(arguments, dict) else None
-                workflow_call = isinstance(params.get("name"), str) and params["name"].startswith("workflows_")
-                recovery_tool = ("workflows_get" if workflow_id else "workflows_list") if workflow_call else "operations_list"
-                message = "Hub authorization rejected; renew the bridge PAT" if status in (401, 403) else f"Transport retries exhausted. The request may already be saved. Recover via {recovery_tool} or resend the identical arguments with the SAME idempotency_key; never start another mutation/task with a new key."
+                recovery_tool = "task_query"
+                message = "Hub authorization rejected; renew the bridge PAT" if status in (401, 403) else f"Transport retries exhausted. The request may already be saved. Recover via {recovery_tool}(operation='list', idempotency_key=the_original_key) or resend the identical arguments with the SAME idempotency_key; never start another mutation/task with a new key."
                 print(f"Bridge failure: {type(exc).__name__}; HTTP={status}", file=sys.stderr)
                 if isinstance(request, dict) and "id" in request:
                     emit_error(request["id"], -32000, message,
                                {"retryable": status is None or status in RETRY_STATUSES,
-                                "idempotency_key": key, "next": recovery_tool, **({"workflow_id": workflow_id} if workflow_call and workflow_id else {})})
+                                "idempotency_key": key, "next": recovery_tool})
     return 0
 
 

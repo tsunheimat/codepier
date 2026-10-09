@@ -44,15 +44,15 @@ def test_operation_request_key_is_scoped_to_space_and_replay_stays_stable(team):
     assert b['owner'].get('/api/operations/'+right['operation_id']).status_code==404
 
 
-def test_workflow_request_key_is_scoped_to_space_and_survives_restart(team):
+def test_inert_historical_replay_keys_survive_restart(team):
     app,b=team
     args={'project':'same-alias','title':'Review','goal':'Test only','idempotency_key':'shared-tab-workflow-key'}
     from tests.historical_workflows import seed_workflow
     left=seed_workflow(app.state.store,project_id='project-team',user_id='owner',space_id='team',actor='panel:owner',key=args['idempotency_key'])
     right=seed_workflow(app.state.store,project_id='project-legacy',user_id='owner',space_id='legacy',actor='panel:owner',key=args['idempotency_key'])
     assert left['workflow_id']!=right['workflow_id']
-    assert must(tool(b['owner'],'workflows_get',{'workflow_id':left['workflow_id']}))['retired']
-    assert must(tool(b['legacy'],'workflows_get',{'workflow_id':right['workflow_id']}))['retired']
+    assert tool(b['owner'],'workflows_get',{'workflow_id':left['workflow_id']}).status_code == 404
+    assert tool(b['legacy'],'workflows_get',{'workflow_id':right['workflow_id']}).status_code == 404
     # Opening the migrated DB again must NOT recreate the obsolete global index.
     second=Store(app.state.store.directory)
     try:

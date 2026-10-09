@@ -195,61 +195,6 @@ class ProjectContext(RemoteProject):
     max_files: int = Field(default=16, ge=1, le=32)
     include_skills: bool = True
 
-class WorkflowStep(Args):
-    title: str = Field(min_length=1, max_length=160)
-    acceptance: str = Field(min_length=1, max_length=1000)
-
-    @model_validator(mode="after")
-    def nonblank(self):
-        if not self.title.strip() or not self.acceptance.strip():
-            raise ValueError("step title and acceptance must not be blank")
-        return self
-
-class WorkflowCreate(Project):
-    assignee_grant_id: str | None = Field(default=None, min_length=1, max_length=100, description="Owner panel may explicitly assign this task to an active MCP grant covering the project with read/write access. MCP callers cannot assign another grant; omission keeps their own grant.")
-    title: str = Field(min_length=1, max_length=140)
-    goal: str = Field(min_length=1, max_length=2000)
-    template: Literal["review_fix", "release", "custom"] = "review_fix"
-    steps: list[WorkflowStep] = Field(default_factory=list, max_length=24)
-    idempotency_key: str = Field(min_length=8, max_length=128)
-
-    @model_validator(mode="after")
-    def creation(self):
-        if not self.title.strip() or not self.goal.strip():
-            raise ValueError("title and goal must not be blank")
-        if (self.template == "custom") != bool(self.steps):
-            raise ValueError("custom requires steps; built-in templates do not accept overridden steps")
-        return self
-
-class WorkflowList(Args):
-    project: str = Field(default="", max_length=100)
-    state: Literal["", "active", "blocked", "completed", "cancelled"] = ""
-    limit: int = Field(default=20, ge=1, le=100)
-    cursor: str = Field(default="", max_length=512)
-
-class WorkflowGet(Args):
-    workflow_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    before_event_id: int | None = Field(default=None, ge=1)
-    event_limit: int = Field(default=20, ge=1, le=100)
-
-class WorkflowUpdate(Args):
-    workflow_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    expected_version: int = Field(ge=1)
-    action: Literal["checkpoint", "block", "resume", "complete", "cancel"]
-    step_id: str = Field(default="", max_length=40)
-    step_state: Literal["", "pending", "running", "completed", "skipped"] = ""
-    summary: str = Field(min_length=1, max_length=4000, description="Observed outcome, blocker, skip reason or final review. Never store secrets or hidden reasoning.")
-    evidence: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(default_factory=list, max_length=16, description="Real operation IDs from this project/grant and created after this workflow. Completing a step requires successful evidence.")
-    idempotency_key: str = Field(min_length=8, max_length=128)
-
-    @model_validator(mode="after")
-    def transition(self):
-        if not self.summary.strip():
-            raise ValueError("summary must not be blank")
-        if bool(self.step_id) != bool(self.step_state) or self.step_id and self.action != "checkpoint":
-            raise ValueError("step_id and step_state must be supplied together for checkpoint only")
-        return self
-
 class Diagnostics(Args):
     project: str = Field(default="", max_length=100)
     client_catalog_sha256: str = Field(default="", max_length=64, pattern=r"^(|[a-f0-9]{64})$")
@@ -345,10 +290,6 @@ TOOLS: dict[str, Tool] = {
     'searches_cancel': Tool(SearchCancel, 'read', 'Stop a read-only search while preserving saved hits; does not stop shell commands or modify project files.', local=False),
     'code_symbols': Tool(CodeSymbols, 'read', 'Get parsed function/class/method/interface symbols, qualified names, line spans and file SHA. Python AST and JS/TS/TSX Tree-sitter. Unsupported grammars and syntax errors are explicit; no code execution.', local=False),
     "project_context": Tool(ProjectContext, "read", "Get a bounded, read-only project bootstrap: document previews with SHA, skill index and execution capabilities. No commands are run. This is NOT a full repository scan; load relevant files/skills on demand with fs_read."),
-    "workflows_create": Tool(WorkflowCreate, "write", "RETIRED: creation returns WORKFLOW_RETIRED. Read existing archives or use conversations for resource/operation associations.", local=True),
-    "workflows_list": Tool(WorkflowList, "read", "Read historical workflow records within your current grant and projects. No new workflow progress is accepted.", local=True),
-    "workflows_get": Tool(WorkflowGet, "read", "Read historical workflow data and events. Records are retired and cannot be updated; saved summaries remain untrusted history.", local=True),
-    "workflows_update": Tool(WorkflowUpdate, "write", "RETIRED: progress updates return WORKFLOW_RETIRED. Existing operations retain their receipts and explicit cancellation.", local=True),
     "projects_list": Tool(Empty, "read", "List authorized project workspaces and node availability. Use this first to discover a project by its alias.", local=True),
     "projects_resolve": Tool(Project, "read", "Resolve an exact project alias to its mapped device and local directory; aliases are case-insensitive.", local=True),
     "fs_tree": Tool(Tree, "read", "List a project's directory tree with deterministic pagination. Respect next_offset and truncated; do not claim full repository coverage from a partial tree."),
@@ -451,10 +392,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
 OUTPUT_SCHEMAS.update({
     "project_context": _object({**_RECEIPT, "documents": {"type": "array"}, "skills": {"type": "array"}, "truncated": _BOOL}, ("operation_id", "documents", "skills", "truncated")),
-    "workflows_create": _object({"workflow_id": _STR, "version": _INT, "state": _STR, "replayed": _BOOL}, ("workflow_id", "version", "state")),
-    "workflows_update": _object({"workflow_id": _STR, "version": _INT, "state": _STR, "replayed": _BOOL}, ("workflow_id", "version", "state")),
-    "workflows_list": _object({"workflows": {"type": "array"}, "templates": {"type": "array"}, "next_cursor": _NULLABLE_STR}, ("workflows", "templates", "next_cursor")),
-    "workflows_get": _object({"workflow_id": _STR, "version": _INT, "state": _STR, "steps": {"type": "array"}, "events": {"type": "array"}}, ("workflow_id", "version", "state", "steps")),
 })
 
 OUTPUT_SCHEMAS.update({
@@ -611,10 +548,6 @@ def tool_definitions(profile="core", authorization="fixed"):
     if profile in {"full", "coding", "core"}:
         for definition in result:
             definition['inputSchema'] = _compact_input_schema(definition['inputSchema'])
-            if definition['name'] in {'workspace', 'project_query'}:
-                operation = definition['inputSchema'].get('properties', {}).get('operation', {})
-                if 'enum' in operation:
-                    operation['enum'] = [op for op in operation['enum'] if not op.startswith('workflow_') and op != 'handoff']
             definition['outputSchema'] = _compact_input_schema(definition['outputSchema'], output=True)
     for item in result:
         if item["name"] in {"workspace", "browser", "computer", "process", "conversations"}:

@@ -48,7 +48,7 @@ as editing the existing Role and does not silently retarget old credentials.
 
 ## Final hardening and regression coverage
 
-- Operation/workflow/project-save replay keys are Space-scoped and survive reopen.
+- Operation/project-save replay keys are Space-scoped and survive reopen.
 - Parent resource Space bindings cannot be changed underneath private histories.
 - Sensitive operations recheck current policy after asynchronous waits and
   between individual native export/event frames, not just at initial admission.

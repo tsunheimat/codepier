@@ -1,5 +1,7 @@
 # CodePier resource/access/conversation redesign delivery
 
+> Historical redesign report. Its workflow archive preservation and compatibility directions are superseded by [workflow removal](CONVERSATIONS.md#workflow-removal) and the consolidated [account area](RESOURCE_MODEL.md#consent-administration-and-identity). The test results below describe that earlier revision, not the current tree.
+
 Verified on 2026-10-07 in the local checkout `/mnt/vibe-coding-share/develop/codepier`.
 
 - Starting revision: `5410d26ba583900f8dc2361fe06bda26276a43a6`.

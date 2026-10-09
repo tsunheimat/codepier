@@ -424,19 +424,6 @@ def test_settings_and_first_role_auth_challenge(api):
         assert 'scope="'+scope+'"' in reply.headers['WWW-Authenticate']
 
 
-def test_workflow_permissions_are_per_resource_even_in_update_metadata(api):
-    app,client,_=api
-    r,p,t=setup_role(client,project_rules=[{'actions':['read','write'],'projects':['project']}])
-    from tests.historical_workflows import seed_workflow
-    created=seed_workflow(app.state.store,project_id='project',user_id='owner',grant_id=t['grant_id'])
-    add_project(app)
-    must(update_role(client,r,project_rules=[{'actions':['read'],'all_projects':True},{'actions':['read','write'],'projects':['future']}]))
-    workflow=data(call(client,t['token'],'workflows_get',{'workflow_id':created['workflow_id']}))
-    assert workflow['can_update'] is False
-    error(call(client,t['token'],'workflows_update',{'workflow_id':created['workflow_id'],'expected_version':workflow['version'],
-        'action':'checkpoint','summary':'Must not overwrite','idempotency_key':'workflow-role-update-1'}),'WORKFLOW_RETIRED')
-
-
 def test_schema6_upgrade_keeps_fixed_grants_profiles_and_master_key(api,tmp_path):
     import sqlite3
     from hub.store import Store

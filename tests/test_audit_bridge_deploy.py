@@ -285,3 +285,22 @@ def test_agent_installer_resolves_inputs_from_callers_directory(tmp_path, pairin
     assert arguments[-6:] == ["--pairing-file", pairing if pairing.startswith("~") else str(caller / pairing),
                               "--allow", root if root.startswith("~") else str(caller / root),
                               "--shell", "full"]
+
+
+def test_transport_failure_points_to_current_receipt_query(monkeypatch, tmp_path, capsys):
+    from shared.contracts import TOOLS, tool_definitions
+    original = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
+        'name': 'exec', 'arguments': {'project': 'P', 'command': 'echo fixture', 'idempotency_key': 'original-receipt-key'}}}
+    calls = []
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(400)
+    assert run_bridge(monkeypatch, tmp_path, (json.dumps(original) + '\n').encode(), handler) == 0
+    reply = json.loads(capsys.readouterr().out)
+    recovery = reply['error']['data']
+    assert recovery['next'] == 'task_query'
+    assert recovery['next'] in {tool['name'] for tool in tool_definitions()}
+    assert recovery['idempotency_key'] == 'original-receipt-key'
+    TOOLS[recovery['next']].model.model_validate({'operation': 'list', 'idempotency_key': recovery['idempotency_key']})
+    assert len(calls) == 1 and calls[0]['params']['arguments'] == original['params']['arguments']
+    assert 'workflow' not in json.dumps(reply)

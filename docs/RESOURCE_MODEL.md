@@ -27,6 +27,8 @@ Project/VPS and Project/MCP associations describe relationships. They never gran
 
 ## Consent, administration and identity
 
+The single **Account / Identity** navigation entry is `/#identity`. **My Account** contains Space selection/creation/invitations, linked login identities, re-authentication and browser sessions. Instance administrators additionally have **Users** (`/#identity/users`) and **SSO** (`/#identity/sso`) tabs. Users manages accounts; SSO manages OIDC providers, discovery, group mappings and reconciliation. The former `/#identity-admin` bookmark resolves to the SSO tab. There is no standalone admin page. Space ownership alone does not enable these tabs, and direct API calls retain instance-admin checks. Space membership/role administration remains under **Access → Members**.
+
 New Bearer connections default to **fixed**. Their paired resource/action policy is frozen at creation and intersected with current role policy, Profile ceilings, current account rights and resource/local gates. Role additions, new projects, new VPS and new MCP tools do not expand them. Fixed MCP consent also pins the approved tool definitions; publishing changed definitions requires a new explicit connection. Disabled or removed role assignments, disabled identities/resources, revoked grants and expired credentials are rechecked.
 
 **Dynamic** connections require an unchecked, explicit consent control for future role changes. Within this consent, later explicitly configured resources/actions follow the role; `all_projects` and `created_projects` are separate explicit selectors. There is no wildcard VPS permission or MCP tool rule. External MCP use requires separate per-grant consent; approving an account or associating resources never creates that consent.
@@ -44,8 +46,8 @@ New fixed connections snapshot resource-use rules. Existing device-read/project-
 - `GET/POST /api/client-connections` provides the consolidated connection view and atomic stable-identity/grant creation. Creation takes a role version, explicit consent mode and idempotency key. A replay returns the original grant ID; the token is displayed only on the first response, never persisted as plaintext for replay.
 - `GET /api/resources/{project|vps|mcp}/{id}` collects type-specific configuration and permitted existing records. MCP IDs here identify approved bindings.
 - `PUT /api/projects/{id}/mcp-services` associates approved bindings, with an expected-association check. VPS association APIs retain their existing concurrency checks.
-- Existing bookmarks `#projects`, `#vps`, `#mcp-gateway`, `#roles`, `#connect` and `#profiles` open their corresponding consolidated tabs. `#workflows` opens **Conversations → Old workflow history**.
-- [Conversations](CONVERSATIONS.md) replaces active workflow tracking. Legacy read tools remain callable, and valid create/update calls return `WORKFLOW_RETIRED`. Original execution receipts, state queries, cancellation, auditing and operation idempotency remain independent.
+- Existing bookmarks `#projects`, `#vps`, `#mcp-gateway`, `#roles`, `#connect` and `#profiles` open their corresponding consolidated tabs.
+- [Conversations](CONVERSATIONS.md) indexes resource and operation associations. The retired workflow/archive subsystem, its routes and its compatibility tools are removed. Original execution receipts, state queries, cancellation, auditing and operation idempotency remain independent.
 
 ## Upgrade and rollback
 

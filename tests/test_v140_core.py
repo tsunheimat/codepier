@@ -18,7 +18,7 @@ from shared.build_info import BuildIdentity,source_identity
 from shared.contracts import TOOLS
 from shared.util import DevError, VERSION
 from tests.test_audit_agent import local_agent
-from tests.test_agentdock_workflows import env,operation,call
+from tests.operation_fixture import env,operation,call
 
 
 def args(name,**values):

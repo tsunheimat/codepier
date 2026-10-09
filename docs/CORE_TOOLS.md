@@ -1,6 +1,6 @@
 # MCP 资源工具与对话关联
 
-CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`vps`、`browser`、`computer`。增加 `conversations`，用于持久对话、资源与操作引用索引，不保存正文或进度。旧工作流 read API 继续供历史读取，create/update 明确返回 `WORKFLOW_RETIRED`。其他旧独立 MCP 工具入口调用仍返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
+CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`vps`、`browser`、`computer`。增加 `conversations`，用于持久对话、资源与操作引用索引，不保存正文或进度。旧工作流及其 read/create/update/handoff 兼容操作已移除。其他旧独立 MCP 工具入口调用仍返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
 
 身份工具 `get_profile`、`get_access_context` 额外提供稳定身份和实时权限摘要。经明确同意的动态角色连接还可使用已审核的外部 MCP 工具及 `gateway_call_get` 回执查询，详见 [MCP 网关](MCP_GATEWAY.md)。
 
@@ -16,9 +16,9 @@ CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edi
 
 ## 只读查询
 
-ChatGPT 内的项目选择与任务看板已移除。`workbench` 不再出现在工具目录，旧调用按既有迁移约定返回 `TOOL_REMOVED`，提示改用 `project_query`。旧工作区资源仅返回无脚本、无工具调用的退役说明，不再列入资源目录。网页管理面板、项目上下文、工作流、原操作及证据存储不受影响。
+ChatGPT 内的项目选择与任务看板已移除。`workbench` 不再出现在工具目录，旧调用按既有迁移约定返回 `TOOL_REMOVED`，提示改用 `project_query`。旧工作区资源仅返回无脚本、无工具调用的退役说明，不再列入资源目录。网页管理面板、项目上下文、原操作及证据存储不受影响。
 
-`project_query` 只允许 `list/open/help/tree/skills/skill/tasks/status/readiness/dashboard`（旧 workflow 查询仅供兼容归档）；`open` 不允许捕获基线。项目和任务仍必须明确选择，所有调用复用实时授权。`task_query` 只允许 `list/get/wait/trace/diagnostics/activity`，读取原操作，不执行、取消或重跑。参数及返回结构与对应的 `workspace`、`process` 操作一致；任务查询指 CodePier 已有操作回执，并非 MCP 标准 Tasks 协议。
+`project_query` 只允许 `list/open/help/tree/skills/skill/tasks/status/readiness/dashboard`；`open` 不允许捕获基线。项目和任务仍必须明确选择，所有调用复用实时授权。`task_query` 只允许 `list/get/wait/trace/diagnostics/activity`，读取原操作，不执行、取消或重跑。参数及返回结构与对应的 `workspace`、`process` 操作一致；任务查询指 CodePier 已有操作回执，并非 MCP 标准 Tasks 协议。
 
 只读发现从 `project_query` 开始，目录和技能读取无需调用混合工具。公开回执的等待、补读和追踪继续指向 `task_query`，保留原操作编号；捕获基线仍使用 `workspace`，显式取消仍使用 `process`。这些路由不改变实际授权，也不能保证宿主不再出现取消或拒绝提示。
 
@@ -76,7 +76,7 @@ Task 绑定原 operation、Space、用户和确切创建 grant，每次查询/�
 | `browser` | `status/open/snapshot/action/close` |
 | `computer` | `status/apps/open/observe/action/close` |
 
-这些操作保留原有约束：改动快照不可变、备份恢复需 SHA、产物需要授权并有有效期、工作目录有所有权、工作流证据需绑定真实操作、验证结果检查源码版本。LSP 可能启动本机进程，仍需要执行权限。独立的管理员控制/验收行为不开放给 MCP。
+这些操作保留原有约束：改动快照不可变、备份恢复需 SHA、产物需要授权并有有效期、工作目录有所有权、验证结果检查源码版本。LSP 可能启动本机进程，仍需要执行权限。独立的管理员控制/验收行为不开放给 MCP。
 
 例：
 

@@ -137,7 +137,7 @@ def _migrate(db):
         if statement.strip():
             db.execute(statement)
     tables = ('devices', 'projects', 'vps_connections', 'access_roles', 'access_profiles',
-              'grants', 'operations', 'artifacts', 'workflows', 'audit')
+              'grants', 'operations', 'artifacts', 'audit')
     legacy_needed = any(db.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() for table in ('users', *tables))
     if legacy_needed:
         db.execute("INSERT OR IGNORE INTO spaces(id,label,kind,created) VALUES('legacy','Personal / Legacy','legacy',strftime('%s','now'))")
@@ -149,7 +149,7 @@ def _migrate(db):
         db.execute(f'CREATE INDEX IF NOT EXISTS {table}_space ON {table}(space_id)')
     _add(db, 'grants', {'identity_id': 'TEXT REFERENCES external_identities(id)',
                          'user_epoch': 'INTEGER NOT NULL DEFAULT 1'})
-    for table in ('operations', 'artifacts', 'workflows'):
+    for table in ('operations', 'artifacts'):
         _add(db, table, {'visibility': "TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private','space'))"})
     _add(db, 'oauth_requests', {'bound_user_id': 'TEXT', 'bound_session_hash': 'TEXT', 'space_id': 'TEXT'})
     _rebuild(db, 'projects', [('alias_key TEXT UNIQUE NOT NULL', 'alias_key TEXT NOT NULL')])
@@ -174,7 +174,7 @@ def _migrate(db):
             db.execute(f'UPDATE {table} SET owner_user_id=? WHERE owner_user_id IS NULL AND space_id=\'legacy\'', (owner,))
         for table in ('access_roles', 'access_profiles', 'grants'):
             db.execute(f'UPDATE {table} SET owner_user_id=user_id WHERE owner_user_id IS NULL')
-        for table in ('operations', 'artifacts', 'workflows', 'audit'):
+        for table in ('operations', 'artifacts', 'audit'):
             db.execute(f'''UPDATE {table} SET owner_user_id=COALESCE(
                 (SELECT id FROM users WHERE 'panel:'||username={table}.actor),
                 (SELECT user_id FROM grants WHERE 'mcp:'||grants.id||':'||grants.label={table}.actor),?)
@@ -192,7 +192,7 @@ def _migrate(db):
     relations = [('projects','device_id','devices'), ('access_profiles','role_id','access_roles'),
                  ('grants','profile_id','access_profiles'), ('grants','role_id','access_roles'),
                  ('operations','project_id','projects'), ('operations','device_id','devices'), ('operations','grant_id','grants'),
-                 ('workflows','project_id','projects'), ('workflows','device_id','devices'), ('workflows','grant_id','grants'), ('artifacts','project_id','projects'), ('artifacts','device_id','devices'), ('artifacts','grant_id','grants'),
+                 ('artifacts','project_id','projects'), ('artifacts','device_id','devices'), ('artifacts','grant_id','grants'),
                  ('role_assignments','role_id','access_roles'), ('group_mappings','role_id','access_roles'), ('native_ownership','project_id','projects'), ('native_ownership','device_id','devices'), ('native_upload_ownership','project_id','projects')]
     for child, column, parent in relations:
         for event in ('INSERT', 'UPDATE'):
@@ -218,14 +218,6 @@ def migrate_v9(db):
     """Scope replay identity and freeze resource boundaries, preserving receipts."""
     db.execute('DROP INDEX IF EXISTS op_idem')
     db.execute('CREATE UNIQUE INDEX op_idem ON operations(space_id,actor,idem) WHERE idem IS NOT NULL')
-    default = " DEFAULT 'legacy'" if db.execute("SELECT 1 FROM spaces WHERE id='legacy'").fetchone() else ''
-    _add(db, 'workflow_replays', {'space_id': f'TEXT NOT NULL{default} REFERENCES spaces(id)'})
-    db.execute('UPDATE workflow_replays SET space_id=(SELECT space_id FROM workflows WHERE id=workflow_replays.workflow_id)')
-    _rebuild(db, 'workflow_replays', [('PRIMARY KEY(actor,idem)', 'PRIMARY KEY(space_id,actor,idem)')])
-    for event in ('INSERT', 'UPDATE'):
-        db.execute(f"""CREATE TRIGGER IF NOT EXISTS iam_workflow_replays_{event.lower()} BEFORE {event} ON workflow_replays
-          WHEN (SELECT space_id FROM workflows WHERE id=NEW.workflow_id)<>NEW.space_id
-          BEGIN SELECT RAISE(ABORT,'cross-space workflow receipt'); END""")
     # Retain pre-v9 project-save receipts under their verified Space. Their
     # old digest already binds the human/grant, so only the namespace changes.
     for entry in db.execute("SELECT key,value FROM meta WHERE key LIKE 'project_save:%'").fetchall():
@@ -246,7 +238,7 @@ def migrate_v9(db):
     # security boundary of existing histories and grants; require an explicit,
     # separately designed transfer transaction rather than in-place retargeting.
     for table in ('devices','projects','vps_connections','access_roles','access_profiles',
-                  'grants','operations','workflows','artifacts','native_ownership','native_upload_ownership'):
+                  'grants','operations','artifacts','native_ownership','native_upload_ownership'):
         db.execute(f"""CREATE TRIGGER IF NOT EXISTS iam_{table}_space_immutable BEFORE UPDATE OF space_id ON {table}
           WHEN NEW.space_id<>OLD.space_id
           BEGIN SELECT RAISE(ABORT,'resource Space is immutable'); END""")

@@ -101,7 +101,8 @@ def test_mcp_protocol_and_catalog(stack):
     resources=stack.rpc('resources/list').json()['result']['resources']
     assert {r['uri'] for r in resources}=={'rd://projects','rd://conversations','ui://codepier/changes-v1.html'}
     current=stack.rpc('resources/read',{'uri':'rd://conversations'}).json()['result']['contents'][0]['text']
-    assert stack.rpc('resources/read',{'uri':'rd://workflow'}).json()['result']['contents'][0]['text']==current
+    assert 'Conversations' in current
+    assert stack.rpc('resources/read',{'uri':'rd://workflow'}).json()['error']['code'] == -32002
     assert 'Imago' in stack.rpc('resources/read',{'uri':'rd://projects'}).text
     assert stack.rpc('prompts/get',{'name':'review_project','arguments':{'project':'Imago'}}).json()['result']['messages']
     assert stack.mcp('read',{'project':'Imago','path':'README.md'})['structuredContent']['content'].startswith('# Imago')

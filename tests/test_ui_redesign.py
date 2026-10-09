@@ -9,7 +9,7 @@ from playwright.sync_api import expect, sync_playwright
 
 PAGES = {
     'overview': '控制总览', 'devices': '资源', 'projects': '资源',
-    'workbench': '远程工作台', 'workflows': '对话关联', 'audit': '操作审计',
+    'workbench': '远程工作台', 'conversations': '对话关联', 'audit': '操作审计',
     'connect': '访问', 'diagnostics': '运行诊断', 'artifacts': '产物交付',
     'settings': '系统设置',
 }
@@ -25,7 +25,7 @@ def login(page, stack, route='overview'):
 
 def navigate(page, name):
     area, tab = {'projects':('resources','projects'), 'devices':('resources','devices'),
-                 'connect':('access','connections'), 'workflows':('conversations','archive')}.get(name,(name,None))
+                 'connect':('access','connections')}.get(name,(name,None))
     if name == 'artifacts':
         page.evaluate("navigate('artifacts')")  # authorized secondary cross-project overview
         expect(page.locator('#page h1')).to_have_text(PAGES[name])

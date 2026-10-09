@@ -12,7 +12,7 @@ import uuid
 from urllib.parse import quote
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
-from hub.workflows import encode_cursor, decode_cursor
+from shared.cursors import encode_cursor, decode_cursor
 from hub import iam
 from shared.util import DevError
 

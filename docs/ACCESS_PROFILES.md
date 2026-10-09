@@ -44,7 +44,7 @@ Profile 增加项目或 execute/computer **不会超出旧 grant 原来的同意
 
 `access_profiles.id` 使用随机、不可编辑、不可回收的 `prf_…` 标识。管理页支持创建、编辑、停用和重新启用，不提供删除后重用 ID。名称在同一 owner 内唯一。创建使用幂等键；更新使用乐观版本检查；更改均写入审计。
 
-OAuth/PAT 的 `grants.profile_id` 绑定身份；固定模式使用 Profile 上限，角色模式绑定 `role_id` 并读取实时规则。原来的 `grant_id` 仍然拥有操作、工作流、审阅、浏览器租约和桌面会话。
+OAuth/PAT 的 `grants.profile_id` 绑定身份；固定模式使用 Profile 上限，角色模式绑定 `role_id` 并读取实时规则。原来的 `grant_id` 仍然拥有操作、审阅、浏览器租约和桌面会话。
 
 **两个连接即使选同一个 Profile，也不会因此互读原 grant 的私有操作，或接管它的桌面会话。** 重新连接保持身份 ID，不等于重新连接后自动继承旧 grant 的历史。面板管理员仍可通过原管理接口查看记录。
 

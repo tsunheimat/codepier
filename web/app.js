@@ -17,9 +17,8 @@ const nav = [
   ['diagnostics', 'activity', '运行诊断', '08'],
   ['integrations', 'network', '开发工具', '12'],
   ['artifacts', 'download', '产物交付', '09'],
-  ['identity', 'key', '我的账号', '16'],
+  ['identity', 'key', '账号与身份', '16'],
   ['members', 'shield', '空间成员', '17'],
-  ['identity-admin', 'shield', '身份管理', '18'],
   ['settings', 'settings', '系统设置', '10'],
 ];
 const S = {
@@ -148,13 +147,11 @@ function clearSpaceSnapshots() {
     integrations: null,
     projectToolsRoute: null,
     artifactRoute: null,
-    workflow: null,
     resourceTab: null,
     accessTab: null,
-    conversationTab: null,
+    identityTab: null,
     conversationOffset: 0,
     conversationFilter: null,
-    archiveCursor: '',
     delivery: null,
     vps: [],
     vpsQuery: '',
@@ -296,13 +293,10 @@ const tool = (name, args = {}) => {
     !name.startsWith('projects_') &&
     ![
       'conversations',
-      'workflows_get',
-      'workflows_list',
       'diagnostics_get',
       'artifacts_get',
       'artifacts_list',
       'activity_list',
-      'workflows_handoff',
     ].includes(name);
   const arguments_ = { ...args };
   if (remote && !arguments_.idempotency_key) arguments_.idempotency_key = 'panel-' + uid();
@@ -443,7 +437,7 @@ function renderShell() {
   const groups = [
     ['CodePier', ['resources', 'access', 'conversations']],
     ['工具与记录', ['native', 'workbench', 'audit']],
-    ['管理', ['overview', 'identity', 'identity-admin', 'diagnostics', 'settings']],
+    ['管理', ['overview', 'identity', 'diagnostics', 'settings']],
   ];
   const navigation = groups
     .map(
@@ -767,7 +761,6 @@ function connectEvents() {
       overview: ['operation', 'device', 'project'],
       devices: ['device', 'project'],
       projects: ['device', 'project'],
-      workflows: ['workflow', 'project', 'device'],
       vps: ['vps', 'project', 'device'],
     };
     if (dependencies[S.page]?.includes(m.type)) {
@@ -801,8 +794,8 @@ function productHash(page) {
     ? 'resources/' + (S.resourceTab || 'projects')
     : page === 'access'
       ? 'access/' + (S.accessTab || 'roles')
-      : page === 'conversations' && S.conversationTab === 'archive'
-        ? 'conversations/archive'
+      : page === 'identity' && ['users', 'sso'].includes(S.identityTab)
+        ? 'identity/' + S.identityTab
         : page;
 }
 function canonicalPage(page) {
@@ -828,15 +821,16 @@ function canonicalPage(page) {
     };
     return 'integrations';
   }
+  if (page === 'identity-admin') page = 'identity/sso';
+  if (page === 'identity') S.identityTab = 'account';
   const [area, tab] = page.split('/');
   const allowed = {
     resources: ['projects', 'devices', 'vps', 'mcp'],
     access: ['roles', 'connections', 'members', 'advanced'],
-    conversations: ['index', 'archive'],
+    identity: ['account', 'users', 'sso'],
   };
   if (tab && allowed[area]?.includes(tab)) {
-    S[area === 'resources' ? 'resourceTab' : area === 'access' ? 'accessTab' : 'conversationTab'] =
-      tab;
+    S[area === 'resources' ? 'resourceTab' : area === 'access' ? 'accessTab' : 'identityTab'] = tab;
     return area;
   }
   const aliases = {
@@ -848,18 +842,13 @@ function canonicalPage(page) {
     roles: ['access', 'roles'],
     connect: ['access', 'connections'],
     profiles: ['access', 'advanced'],
-    workflows: ['conversations', 'archive'],
     terminal: ['native', ''],
   };
   const route = aliases[page];
   if (!route) return page;
   if (route[1])
     S[
-      route[0] === 'resources'
-        ? 'resourceTab'
-        : route[0] === 'access'
-          ? 'accessTab'
-          : 'conversationTab'
+      route[0] === 'resources' ? 'resourceTab' : route[0] === 'access' ? 'accessTab' : 'identityTab'
     ] = route[1];
   return route[0];
 }
@@ -867,8 +856,16 @@ async function navigate(page) {
   S.vpsIntent = (S.vpsIntent || 0) + 1;
   page = canonicalPage(page);
   if (!S.session || !$('#page') || !nav.some((x) => x[0] === page)) return;
-  if (page !== S.page && $('.modal') && !panelDialogs.requestClose(null, { navigation: true }))
+  const identityTab = $('#page [data-identity-tab][aria-pressed="true"]')?.dataset.identityTab;
+  if (
+    (page !== S.page || (page === 'identity' && identityTab && identityTab !== S.identityTab)) &&
+    $('.modal') &&
+    !panelDialogs.requestClose(null, { navigation: true })
+  ) {
+    if (S.page === 'identity' && identityTab) S.identityTab = identityTab;
+    history.replaceState(null, '', location.pathname + location.search + '#' + productHash(S.page));
     return;
+  }
   if (
     S.page === 'workbench' &&
     S.work.dirty &&
@@ -916,7 +913,7 @@ async function renderPage(showLoading = true) {
     $('#page').innerHTML = '<div class="skeleton" role="status" aria-label="正在加载页面"></div>';
   try {
     let html = '';
-    if (['identity', 'members', 'identity-admin'].includes(page)) {
+    if (['identity', 'members'].includes(page)) {
       html = await CodePierIdentity.html(page);
     } else if (page === 'resources') {
       html = await CodePierProduct.resources(seq);
@@ -941,9 +938,6 @@ async function renderPage(showLoading = true) {
       await loadBasics();
       if (!S.work.project && S.projects.length) S.work.project = S.projects[0].id;
       html = workbenchHTML();
-    } else if (page === 'workflows') {
-      await loadBasics();
-      html = await workflowsHTML(seq);
     } else if (page === 'audit') {
       html = await auditHTML(seq);
     } else if (page === 'mcp-gateway') {
@@ -984,14 +978,13 @@ async function renderPage(showLoading = true) {
       CP.dom.replacePage($('#page'), html);
     else $('#page').innerHTML = html;
     uiPageReady(showLoading, presentation);
-    if (['identity', 'members', 'identity-admin'].includes(page)) CodePierIdentity.bind();
+    if (['identity', 'members'].includes(page)) CodePierIdentity.bind();
     if (page === 'mcp-gateway') CodePierGateway.bind();
     if (page === 'roles') CodePierRoles.bind();
     if (page === 'profiles') CodePierProfiles.bind();
     if (['resources', 'access', 'conversations'].includes(page)) CodePierProduct.bind();
     if (page === 'vps') bindVps();
     if (page === 'workbench') bindWorkbench();
-    if (page === 'workflows') bindWorkflows();
     if (page === 'audit') bindAudit();
     if (page === 'integrations') CodePierIntegrations.bind();
     if (page === 'diagnostics') bindDiagnostics();
@@ -2590,16 +2583,18 @@ window.addEventListener('beforeunload', (e) => {
 });
 window.addEventListener('hashchange', () => {
   const previousContext = productHash(S.page);
-  const before = JSON.stringify([S.resourceTab, S.accessTab, S.conversationTab]);
+  const before = JSON.stringify([S.resourceTab, S.accessTab, S.identityTab]);
   const page = canonicalPage(location.hash.slice(1));
+  if (nav.some((n) => n[0] === page) && location.hash.slice(1) !== productHash(page))
+    history.replaceState(null, '', location.pathname + location.search + '#' + productHash(page));
   if (
     (page !== S.page ||
       (['integrations', 'artifacts'].includes(page) &&
         location.hash.slice(1) !== previousContext) ||
-      before !== JSON.stringify([S.resourceTab, S.accessTab, S.conversationTab])) &&
+      before !== JSON.stringify([S.resourceTab, S.accessTab, S.identityTab])) &&
     nav.some((n) => n[0] === page)
   )
-    navigate(page);
+    navigate(location.hash.slice(1));
 });
 setInterval(updateClock, 1000);
 (async () => {

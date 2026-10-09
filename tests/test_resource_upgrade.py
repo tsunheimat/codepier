@@ -28,7 +28,7 @@ def test_additive_upgrade_preserves_resource_credentials_policies_and_histories(
     from hub.auth import Auth
     auth=Auth(store)
     grant=auth.issue_grant(Principal('panel:admin','owner',{'read','execute'},[],admin=True,space_id='legacy'),'old client',['read','execute'],['p'],profile_id='prf_old',profile_version=1)
-    archived=seed_workflow(store,project_id='p',user_id='owner',grant_id=grant['grant_id'],key='historical-replay')
+    seed_workflow(store,project_id='p',user_id='owner',grant_id=grant['grant_id'],key='historical-replay')
     # Existing remote account ciphertext is preserved, with no network discovery.
     store.execute('INSERT INTO gateway_connectors(id,space_id,label,endpoint,protocol,networks,created) VALUES(?,?,?,?,?,?,?)',('service','legacy','Existing service','https://service.invalid/mcp','auto','[]',now))
     store.execute('INSERT INTO gateway_accounts(id,connector_id,space_id,owner_user_id,label,sharing,secret,created) VALUES(?,?,?,?,?,?,?,?)',
@@ -63,7 +63,5 @@ def test_additive_upgrade_preserves_resource_credentials_policies_and_histories(
         assert runtime.vps.list({'project':'','offset':0,'limit':50},caller)['vps']==[]
         op=upgraded.one('SELECT * FROM operations WHERE id=?',(opid,))
         assert runtime.permission_error(op,request)  # Association-only queued SSH cannot gain new authority.
-        historical=runtime.workflows.get({'workflow_id':archived['workflow_id'],'before_event_id':None,'event_limit':20},caller)
-        assert historical['retired'] and historical['can_update'] is False
         assert upgraded.one('SELECT value FROM meta WHERE key="resource_model_schema"')['value']=='1'
     finally:upgraded.close()

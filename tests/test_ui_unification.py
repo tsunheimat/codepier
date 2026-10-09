@@ -38,7 +38,7 @@ MANAGEMENT_ROUTES = (
     "devices",
     "projects",
     "workbench",
-    "workflows",
+    "conversations",
     "audit",
     "connect",
     "diagnostics",

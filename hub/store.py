@@ -42,12 +42,6 @@ CREATE TABLE IF NOT EXISTS operation_events (id INTEGER PRIMARY KEY AUTOINCREMEN
 CREATE INDEX IF NOT EXISTS operation_events_lookup ON operation_events(operation_id,id);
 CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, device_id TEXT NOT NULL, grant_id TEXT, actor TEXT NOT NULL, root TEXT NOT NULL, name TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, created REAL NOT NULL, expires REAL NOT NULL, source_operation_id TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS artifacts_scope ON artifacts(grant_id,project_id,created DESC,id DESC);
-CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, device_id TEXT NOT NULL, root TEXT NOT NULL, actor TEXT NOT NULL, grant_id TEXT, title TEXT NOT NULL, goal TEXT NOT NULL, template TEXT NOT NULL, state TEXT NOT NULL, steps TEXT NOT NULL, summary TEXT NOT NULL, version INTEGER NOT NULL, created REAL NOT NULL, updated REAL NOT NULL);
-CREATE INDEX IF NOT EXISTS workflow_recent ON workflows(created DESC,id DESC);
-CREATE INDEX IF NOT EXISTS workflow_scope ON workflows(grant_id,project_id,state,created DESC,id DESC);
-CREATE TABLE IF NOT EXISTS workflow_events (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id), action TEXT NOT NULL, summary TEXT NOT NULL, evidence TEXT NOT NULL, at REAL NOT NULL, version INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS workflow_event_recent ON workflow_events(workflow_id,id DESC);
-CREATE TABLE IF NOT EXISTS workflow_replays (actor TEXT NOT NULL, idem TEXT NOT NULL, fingerprint TEXT NOT NULL, workflow_id TEXT NOT NULL REFERENCES workflows(id), receipt TEXT NOT NULL, PRIMARY KEY(actor,idem));
 """
 
 class Store:
@@ -221,7 +215,7 @@ class Store:
         # from a denied cross-Space request. Also avoid loading operation bodies
         # just to audit a thin status read.
         tables = {'operation': 'operations', 'project': 'projects', 'device': 'devices',
-                  'profile': 'access_profiles', 'role': 'access_roles', 'workflow': 'workflows',
+                  'profile': 'access_profiles', 'role': 'access_roles',
                   'artifact': 'artifacts', 'grant': 'grants', 'vps': 'vps_connections'}
         if target_kind is not None and target_kind not in tables:
             raise ValueError('Unknown audit target kind')

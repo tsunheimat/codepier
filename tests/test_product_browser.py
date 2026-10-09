@@ -98,14 +98,19 @@ def test_resources_role_connection_conversation_flow(stack,chat_browser_pool,tmp
     finally:page.close()
 
 
-def test_old_workflow_hash_opens_archive_and_tools_panel_has_no_progress_entry(stack,chat_browser_pool):
+@pytest.mark.parametrize('route', ['workflows', 'conversations/archive'])
+def test_removed_routes_expose_no_archive_and_tools_keep_receipts(stack,chat_browser_pool,route):
     page=chat_browser_pool('chromium').new_page()
+    calls=[]
+    page.on('request', lambda request: calls.append(request.post_data or '') if request.method=='POST' else None)
     try:
-        page.goto(stack.url+'/#workflows');page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
+        page.goto(stack.url+'/#'+route);page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
+        expect(page.locator('#resources-page')).to_be_visible()
+        assert page.evaluate('S.page')=='resources'
+        page.evaluate("navigate('conversations')")
         expect(page.locator('#conversations-page')).to_be_visible()
-        expect(page.locator('#page')).to_contain_text('只供历史读取')
-        assert page.evaluate('S.conversationTab')=='archive'
-        assert not page.locator('[data-wf-action=create]').count()
+        assert not page.locator('[data-product-tab=archive],[data-archive-detail]').count()
+        assert 'workflows_' not in ''.join(calls)
         page.evaluate("navigate('integrations')");expect(page.locator('[data-i-tab=overview]')).to_be_visible()
         assert not page.locator('[data-i-tab=handoff],[data-i-action=new-workflow]').count()
         page.reload();expect(page.locator('[data-i-tab=overview]')).to_be_visible()

@@ -95,7 +95,6 @@ window.CodePierIdentity = (() => {
     const choice = $('#iam-active-space');
     if (choice) choice.onchange = () => switchSpace(choice.value);
     if (!admin()) $$('[data-nav="members"]').forEach((n) => (n.hidden = true));
-    if (!me?.instance_admin) $$('[data-nav="identity-admin"]').forEach((n) => (n.hidden = true));
   }
   async function switchSpace(id) {
     window.CodePierGateway?.reset();
@@ -202,19 +201,41 @@ window.CodePierIdentity = (() => {
     });
   }
   async function html(page) {
-    me = await api('/api/iam/me');
+    const login = S.session,
+      space = S.space_id,
+      seq = S.renderSeq;
+    const currentView = () => login === S.session && space === S.space_id && seq === S.renderSeq;
+    const identity = await api('/api/iam/me');
+    if (!currentView()) return '';
+    me = identity;
     S.identity = me;
-    if (page === 'identity') {
+    const tab = S.identityTab || 'account';
+    const tabs = () =>
+      `<nav class="product-tabs" aria-label="账号与身份">${[
+        ['account', 'My Account · 我的账号'],
+        ...(me.instance_admin
+          ? [
+              ['users', 'Users · 用户'],
+              ['sso', 'SSO · 单点登录'],
+            ]
+          : []),
+      ]
+        .map(
+          ([id, label]) =>
+            `<button class="btn ${id === tab ? 'primary' : 'ghost'}" data-identity-tab="${id}" aria-pressed="${id === tab}">${label}</button>`,
+        )
+        .join('')}</nav>`;
+    const accountHeader = (actions = '') =>
+      heading('账号与身份', 'ACCOUNT / IDENTITY', me.display_name, actions) + tabs();
+    if (page === 'identity' && tab === 'account') {
       const [sessionData, providerData] = await Promise.all([
         api('/api/iam/sessions'),
         api('/api/auth/providers'),
       ]);
+      if (!currentView()) return '';
       providers = providerData.providers;
       return (
-        heading(
-          '我的账号',
-          'IDENTITY / SPACES',
-          me.display_name,
+        accountHeader(
           `<button class="btn primary" data-iam="new-space">新建团队空间</button><button class="btn" data-iam="accept-invite">接受邀请</button>`,
         ) +
         `<section class="panel"><div class="panel-head"><h2>空间</h2></div><div class="panel-body"><p class="form-note">空间选择仅作用于当前标签页。MCP 连接固定绑定授权空间，不会跟随这里的切换。</p>${me.spaces.map((s) => `<div class="grant-row"><div><h3>${esc(s.label)}</h3><small>${esc(levels[s.level])} · ${s.kind === 'team' ? '团队空间' : '个人空间'}</small></div><button class="btn small" data-iam-space="${esc(s.id)}">${s.id === S.space_id ? '当前空间' : '进入空间'}</button></div>`).join('') || empty('目前没有可用空间。')}${(me.disabled_spaces || []).map((s) => `<div class="grant-row"><span>${esc(s.label)} · 已停用</span><button class="btn" data-iam-restore="${esc(s.id)}">恢复空间</button></div>`).join('')}</div></section>` +
@@ -231,6 +252,7 @@ window.CodePierIdentity = (() => {
           api(`/api/iam/spaces/${sid}/assignments`),
           api(`/api/iam/spaces/${sid}/invites`),
         ]);
+      if (!currentView()) return '';
       members = out[0].members;
       roles = out[1].roles;
       assignments = out[2].assignments;
@@ -247,21 +269,29 @@ window.CodePierIdentity = (() => {
         `<section class="panel"><div class="panel-head"><h2>邀请</h2></div><div class="panel-body">${invites.map((i) => `<div class="grant-row"><span>${esc(levels[i.level])} · ${i.used_by ? '已使用' : '未使用'} · ${esc(timeText(i.expires))}</span><button class="btn danger small" data-iam-invite="${esc(i.id)}">撤销</button></div>`).join('') || empty('没有邀请。')}</div></section>`
       );
     }
-    if (!me.instance_admin) return uiPermissionState('身份管理', '需要实例管理员权限。');
-    const out = await Promise.all([api('/api/iam/users'), api('/api/iam/oidc/providers')]);
-    users = out[0].users;
-    providers = out[1].providers;
+    if (!me.instance_admin)
+      return accountHeader() + uiPermissionState('管理权限', 'Users 和 SSO 需要实例管理员权限。');
+    if (tab === 'users') {
+      const out = await api('/api/iam/users');
+      if (!currentView()) return '';
+      users = out.users;
+      return (
+        accountHeader() +
+        `<section class="panel"><div class="panel-head"><h2>用户</h2></div><div class="panel-body">${users.map((u) => `<div class="grant-row"><div><strong>${esc(u.display_name || u.username)}</strong><p>${u.active ? '有效' : '已停用'} · ${u.instance_admin ? '实例管理员' : '普通用户'} · ${u.local_login ? '本地登录' : '外部登录'}</p><small class="mono">${esc(u.id)}</small></div><button class="btn small" data-iam-user="${esc(u.id)}">管理</button></div>`).join('')}</div></section>`
+      );
+    }
+    const out = await api('/api/iam/oidc/providers');
+    if (!currentView()) return '';
+    providers = out.providers;
     return (
-      heading(
-        '身份管理',
-        'INSTANCE / IDENTITY',
-        'OIDC 只负责认证；CodePier 管理角色和资源授权。',
+      accountHeader(
         `<button class="btn" data-iam="sync">校验群组权限</button><button class="btn primary" data-iam="new-provider">添加 OIDC 提供者</button>`,
       ) +
-      `<section class="panel"><div class="panel-head"><h2>身份提供者</h2></div><div class="panel-body">${providers.map((p) => `<div class="grant-row"><div><h3>${esc(p.label)} · ${p.enabled ? '已启用' : '已停用'}</h3><p class="iam-wrap">${esc(p.issuer)}</p><small>加入策略：${esc(p.admission)} · 权限校验窗口 ${p.freshness_seconds} 秒</small></div><div class="actions"><button class="btn small" data-iam-provider="${esc(p.id)}">编辑</button><button class="btn small" data-iam-check="${esc(p.id)}">测试发现</button><button class="btn small" data-iam-mappings="${esc(p.id)}">群组映射</button></div></div>`).join('') || empty('没有 OIDC 提供者。本地恢复登录继续有效。')}</div></section>` +
-      `<section class="panel"><div class="panel-head"><h2>用户</h2></div><div class="panel-body">${users.map((u) => `<div class="grant-row"><div><strong>${esc(u.display_name || u.username)}</strong><p>${u.active ? '有效' : '已停用'} · ${u.instance_admin ? '实例管理员' : '普通用户'} · ${u.local_login ? '本地登录' : '外部登录'}</p><small class="mono">${esc(u.id)}</small></div><button class="btn small" data-iam-user="${esc(u.id)}">管理</button></div>`).join('')}</div></section>`
+      '<p class="form-note">OIDC 负责认证；CodePier 管理角色和资源授权。这里的设置作用于整个实例。</p>' +
+      `<section class="panel"><div class="panel-head"><h2>身份提供者</h2></div><div class="panel-body">${providers.map((p) => `<div class="grant-row"><div><h3>${esc(p.label)} · ${p.enabled ? '已启用' : '已停用'}</h3><p class="iam-wrap">${esc(p.issuer)}</p><small>加入策略：${esc(p.admission)} · 权限校验窗口 ${p.freshness_seconds} 秒</small></div><div class="actions"><button class="btn small" data-iam-provider="${esc(p.id)}">编辑</button><button class="btn small" data-iam-check="${esc(p.id)}">测试发现</button><button class="btn small" data-iam-mappings="${esc(p.id)}">群组映射</button></div></div>`).join('') || empty('没有 OIDC 提供者。本地恢复登录继续有效。')}</div></section>`
     );
   }
+
   function memberEdit(userId) {
     const old = members.find((m) => m.user_id === userId && m.source === 'manual');
     form(
@@ -393,12 +423,19 @@ window.CodePierIdentity = (() => {
     const login = S.session,
       space = S.space_id,
       page = S.page,
+      tab = S.identityTab,
       intent = (S.modalIntent = (S.modalIntent || 0) + 1);
     const [mapping, targets] = await Promise.all([
       api('/api/iam/oidc/providers/' + id + '/mappings'),
       api('/api/iam/oidc/targets'),
     ]);
-    if (login !== S.session || space !== S.space_id || page !== S.page || intent !== S.modalIntent)
+    if (
+      login !== S.session ||
+      space !== S.space_id ||
+      page !== S.page ||
+      tab !== S.identityTab ||
+      intent !== S.modalIntent
+    )
       return;
     const existing = mapping.mappings
       .map(
@@ -476,6 +513,16 @@ window.CodePierIdentity = (() => {
     );
   }
   function bind() {
+    $$('[data-identity-tab]').forEach((button) => {
+      button.onclick = () => {
+        if (button.dataset.identityTab === (S.identityTab || 'account')) return;
+        return navigate(
+          button.dataset.identityTab === 'account'
+            ? 'identity'
+            : 'identity/' + button.dataset.identityTab,
+        );
+      };
+    });
     $$('[data-iam-space]').forEach(
       (x) => (x.onclick = () => busy(x, () => switchSpace(x.dataset.iamSpace))),
     );
@@ -540,13 +587,15 @@ window.CodePierIdentity = (() => {
           busy(x, async () => {
             const login = S.session,
               space = S.space_id,
-              page = S.page;
+              page = S.page,
+              tab = S.identityTab;
             const intent = (S.modalIntent = (S.modalIntent || 0) + 1);
             const out = await post('/api/iam/oidc/providers/' + x.dataset.iamCheck + '/check');
             if (
               login !== S.session ||
               space !== S.space_id ||
               page !== S.page ||
+              tab !== S.identityTab ||
               intent !== S.modalIntent
             )
               return;

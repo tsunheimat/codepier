@@ -222,17 +222,9 @@ window.CodePierIntegrations = (() => {
         ...(read ? { signal: controller.signal } : {}),
       });
     function argsFor(name, args) {
-      if (
-        [
-          'workflows_handoff',
-          'workflows_get',
-          'operations_get',
-          'operations_wait',
-          'operations_list',
-        ].includes(name)
-      )
+      if (['operations_get', 'operations_wait', 'operations_list'].includes(name))
         return { ...args };
-      if (['activity_list', 'workflows_list'].includes(name)) return { project, ...args };
+      if (['activity_list'].includes(name)) return { project, ...args };
       return { ...target(), ...args };
     }
     function resolveReply(r, name) {
@@ -349,10 +341,7 @@ window.CodePierIntegrations = (() => {
           );
           return current() ? r : null;
         }
-        const remote =
-          !['activity_list', 'workflows_list', 'workflows_handoff', 'workflows_get'].includes(
-            name,
-          ) && !name.startsWith('operations_');
+        const remote = !['activity_list'].includes(name) && !name.startsWith('operations_');
         let r = resolveReply(
           await call(name, {
             ...context,

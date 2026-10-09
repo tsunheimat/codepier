@@ -115,4 +115,4 @@ def test_editorial_implementation_has_no_fake_metrics_or_hidden_mobile_primary()
     assets = check_web_assets(ROOT, VERSION)
     for asset in ['tokens.css','styles.css','workspace.css','app.js','chat.css','chat.js','computer.css','product.js']:
         assert asset in assets, asset
-    assert 'workflows.js' not in assets  # Conversations renders the read-only historical archive.
+    assert 'workflows.js' not in assets  # Conversations contains only current associations.

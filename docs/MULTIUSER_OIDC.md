@@ -101,7 +101,7 @@ Migration is transactional to schema **10**. It retains existing user, resource,
 Profile, Role and grant IDs, Token hashes, device credentials and encryption key.
 Legacy resources enter `legacy`; later OIDC users get a separate personal Space
 and do not automatically become members of Legacy. Project aliases become unique
-per Space. Operation/workflow request keys are also Space-scoped, including after
+per Space. Operation request keys are also Space-scoped, including after
 reopening the database. Cross-Space references and in-place resource Space changes
 are rejected; renaming a resource is not a way to move it across a security boundary.
 
@@ -164,7 +164,7 @@ account ownership; identity is exactly `(issuer, sub)`.
 
 ### CodePier panel
 
-Open **身份管理** (Identity administration) as the instance administrator, then
+Open **账号与身份 → SSO** (`/#identity/sso`) as the instance administrator, then
 **添加 OIDC 提供者**. Initially leave enrollment closed/disabled.
 
 | Field | Meaning |
@@ -211,7 +211,7 @@ transactions, not successful or already-consumed callbacks. Consumed rows are
 retained temporarily for replay/link-race checks, but no longer consume these
 slots. The separate 30-requests/minute socket-IP OAuth throttle still applies.
 
-Link the existing recovery administrator through **我的账号 -> 关联提供者** while
+Link the existing recovery administrator through **账号与身份 → My Account → 关联提供者** while
 recently signed in. Linking requires fresh IdP authentication and will not merge
 an account simply because emails match. Test with a separate ordinary account.
 Only then enable `jit` for general enrollment, preferably with a required group.
@@ -256,13 +256,13 @@ this setting the previous behavior remains: new identities are refused with
 `BOOTSTRAP_REQUIRED` until a local administrator exists.
 
 Instance authority still cannot be granted by an IdP group after bootstrap; promote
-further administrators in **身份管理**. Keep a local recovery administrator: `python -m
+further administrators in **账号与身份 → Users** (`/#identity/users`). Keep a local recovery administrator: `python -m
 hub init` adds one whenever no local-login account exists (see Recovery), so an IdP
 outage cannot lock the instance.
 
 ## Team Spaces, invitations and shared configurable Roles
 
-1. Under **我的账号**, create a team Space. Select it in **当前空间**.
+1. Under **账号与身份 → My Account**, create a team Space. Select it in **当前空间**.
 2. Under **空间成员**, issue a one-time invitation to an already signed-in human,
    or configure a verified provider group mapping. The invitation secret is shown
    only once; accepting it does not share the inviter's session or credentials.
@@ -377,14 +377,14 @@ New management route groups:
 - `/api/iam/users` for instance administrators; `/sessions` for the current human.
 - `/api/iam/oidc/providers`, provider `/mappings`, `/oidc/reconcile`.
 - `/api/iam/oidc/{provider}/link`, `/api/iam/identities/{identity}` for explicit linking.
-- `/api/iam/share/{workflow|artifact}/{id}` for sharing one's own records with a Space.
+- `/api/iam/share/artifact/{id}` for sharing one's own records with a Space.
 
 Updates use returned `version`/`expected_version`; creates that support an
 idempotency key require it. Handle a conflict by reading current state, not
 blindly overwriting another administrator's changes. Last-owner and last-local-
 recovery-admin protections apply inside the mutation transaction.
 
-Private histories remain private even when humans share a Role. Workflow/artifact
+Private histories remain private even when humans share a Role. Artifact
 sharing is explicit and still requires resource access. Interactive native,
 browser and desktop sessions are not made public through that sharing endpoint.
 Dashboard counts, audit/export, lists, search/downloads, approvals and SSE events

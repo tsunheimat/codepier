@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Consolidate account/identity navigation at `/#identity` with My Account, administrator-only Users and SSO tabs; old identity-admin bookmarks resolve to SSO.
+- Remove retired workflow/archive UI, routes, compatibility tools and guidance, workflow sharing and dashboard archive fields. Fresh storage omits workflow tables; existing rows remain inert without deletion or conversion. Conversations, execution receipts, cancellation, audit, artifacts and consent/grant security remain independent.
+
 ## Unreleased — resource and access restructure
 
 - Place execution nodes under Resources, Space membership/assignment under Access, and project Development Tools / Artifacts in resource details with contextual deep links and original operation recovery.

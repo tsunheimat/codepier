@@ -39,8 +39,6 @@ class ToolRouter:
                     self.gateway.secret)
 
     def resolve(self, principal, name):
-        if name in {'workflows_list', 'workflows_get', 'workflows_handoff', 'workflows_create', 'workflows_update'}:
-            return ToolRoute('native', name)
         if name in REPLACED_MCP_TOOLS:
             raise DevError('TOOL_REMOVED', '旧工具已移除，请使用 ' + REPLACED_MCP_TOOLS[name], 404)
         if name in ADMIN_TOOLS:

@@ -14,15 +14,15 @@ from playwright.sync_api import expect
 from tests.test_ui_unification import _login, _navigate, _prepare_native_fixture
 
 ROUTES = (
-    'overview','devices','projects','vps','workbench','workflows','audit','connect',
+    'overview','devices','projects','vps','workbench','conversations','audit','connect',
     'profiles','roles','mcp-gateway','diagnostics','integrations','artifacts',
-    'identity','members','identity-admin','settings','native',
+    'identity','identity/users','identity/sso','members','settings','native',
 )
 
 
 @pytest.mark.parametrize('scheme', ['light','dark'])
 @pytest.mark.parametrize('width,height', [(1440,1000),(390,844)])
-def test_all_nineteen_routes_reflow_in_each_theme(stack, chat_browser_pool, tmp_path, scheme, width, height):
+def test_all_management_routes_reflow_in_each_theme(stack, chat_browser_pool, tmp_path, scheme, width, height):
     _prepare_native_fixture(stack)
     context = chat_browser_pool('chromium').new_context(
         viewport={'width':width,'height':height},color_scheme=scheme,reduced_motion='reduce')

@@ -21,7 +21,7 @@ def iam_page(iam_browser,request,stack):
     page=context.new_page();errors=[]
     page.on('pageerror',lambda err:errors.append(str(err)))
     page.goto(stack.url+'/#identity');page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
-    expect(page.locator('#page h1')).to_have_text('我的账号')
+    expect(page.locator('#page h1')).to_have_text('账号与身份')
     yield page,errors
     assert not errors,errors
     context.close()
@@ -75,7 +75,7 @@ def test_provider_form_is_closed_by_default_and_does_not_echo_secret(iam_page,st
 def test_user_invitation_lifecycle_and_shared_role_assignment_ui(iam_page,stack):
     page,errors=iam_page
     space=stack.must(stack.client.post('/api/iam/spaces',json={'label':'Shared team','idempotency_key':uuid.uuid4().hex}))
-    page.reload();expect(page.locator('#page h1')).to_have_text('我的账号')
+    page.reload();expect(page.locator('#page h1')).to_have_text('账号与身份')
     page.locator('[data-iam-space="'+space['id']+'"]').click()
     expect(page.locator('#iam-active-space')).to_have_value(space['id'])
     page.evaluate("navigate('members')")

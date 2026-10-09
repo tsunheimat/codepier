@@ -2514,145 +2514,6 @@ input[type='checkbox'] {
   border-radius: 3px;
 }
 
-/* Workflows, diagnostics, deliveries, and skills */
-.workflow-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
-  gap: 18px;
-}
-
-.workflow-card {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 13px;
-  padding: 20px;
-
-  border: 0;
-
-  background: var(--ui-panel);
-}
-
-.workflow-card .card-top {
-  margin: 0;
-}
-
-.workflow-card h2 {
-  font-size: 21px;
-  overflow-wrap: anywhere;
-
-  font-family: var(--ui-display-font);
-
-  font-weight: 700;
-}
-
-.workflow-goal {
-  display: -webkit-box;
-  min-height: 3.6em;
-  overflow: hidden;
-  color: var(--ui-muted);
-  font-size: var(--ui-text-sm);
-  line-height: 1.8;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.workflow-progress,
-.workflow-card-foot,
-.workflow-detail-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.workflow-progress strong {
-  font: 750 30px var(--ui-font);
-}
-
-.workflow-progress small {
-  font: 11px var(--ui-font);
-}
-
-.workflow-card progress {
-  width: 100%;
-  height: 5px;
-  margin-top: auto;
-  accent-color: var(--ui-text);
-}
-
-.workflow-card-foot {
-  margin-top: 7px;
-}
-
-.workflow-detail-meta {
-  margin-bottom: 14px;
-  color: var(--ui-muted);
-  font-size: var(--ui-text-sm);
-}
-
-.workflow-summary {
-  margin: 12px 0;
-  font-size: var(--ui-text-sm);
-  line-height: 1.8;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.workflow-steps {
-  margin: 16px 0;
-}
-
-.workflow-step {
-  padding: 18px 0;
-  border-bottom: 1px solid var(--ui-line);
-}
-
-.workflow-step-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.workflow-step-head h3 {
-  min-width: 110px;
-  flex: 1;
-  font-size: 13px;
-}
-
-.workflow-step > p {
-  margin: 10px 0;
-  font-size: var(--ui-text-sm);
-  line-height: 1.8;
-}
-
-.workflow-evidence-list {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.workflow-evidence {
-  max-width: 100%;
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.workflow-history {
-  margin-top: 18px;
-}
-
-.workflow-history article {
-  padding: 14px 0;
-  border-bottom: 1px solid var(--ui-line);
-}
-
-.workflow-history summary,
 .context-document summary {
   padding: 12px 0;
   font-size: var(--ui-text-sm);
@@ -3181,27 +3042,6 @@ input[type='checkbox'] {
 /* Section identity is a cover, never a warning color. */
 .top-right > .icon-btn {
   background: var(--ui-panel);
-}
-.workflow-card .card-top {
-  border-radius: 999px;
-  padding: 7px 10px;
-  background: var(--ui-cover-task);
-  color: var(--ui-cover-text);
-}
-.workflow-card .card-top .eyebrow {
-  color: var(--ui-cover-task-muted);
-}
-.workflow-card .workflow-card-foot .btn {
-  background: var(--ui-text);
-  color: var(--ui-panel);
-  border-color: transparent;
-}
-.workflow-card[data-workflow-state='completed'] .card-top {
-  background: var(--ui-surface);
-  color: var(--ui-text);
-}
-.workflow-card[data-workflow-state='completed'] .card-top .eyebrow {
-  color: var(--ui-muted);
 }
 @media (min-width: 901px) {
   .page-head h1 {
@@ -4119,10 +3959,6 @@ button.ui-busy {
     min-width: 0;
   }
 
-  .workflow-card {
-    padding: 20px;
-  }
-
   .login-screen {
     display: block;
     padding: 12px;
@@ -4795,8 +4631,7 @@ body:has(.modal) #toasts {
   width: 760px;
 }
 .modal-editor[data-editor-form='vps-form'],
-.modal-editor[data-editor-form='project-form'],
-.modal-editor[data-editor-form='workflow-update-form'] {
+.modal-editor[data-editor-form='project-form'] {
   width: 880px;
 }
 @media (max-width: 640px) {
