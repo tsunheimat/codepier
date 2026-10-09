@@ -59,7 +59,7 @@ def test_panel_real_validation_semantics_navigation_and_draft_retention(integrat
         f.locator('button[type=submit]').click();expect(page.locator('#i-result')).to_contain_text('fixture: str',timeout=15000)
         tab(page,'browser');expect(page.locator('#i-browser-status')).to_contain_text('未连接')
         tab(page,'overview')
-        expect(page.get_by_role('button',name='打开对话关联')).to_be_visible()
+        expect(page.get_by_role('button',name='查看会话活动')).to_be_visible()
         expect(page.locator('[data-i-tab="handoff"]')).to_have_count(0)
         tab(page,'setup');expect(page.locator('[href="/static/browser-extension.zip"]')).to_be_visible()
         with page.expect_download() as download:

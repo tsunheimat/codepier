@@ -127,8 +127,16 @@ def test_pending_receipt_revalidates_membership_after_wait(team,monkeypatch):
     original=runtime.store.one
     # Revoke in the asynchronous waiting interval, not before submission.
     async def run():
+        admitted = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        admit = runtime._admit_operation
+        def observe_admission(*args, **kwargs):
+            receipt = admit(*args, **kwargs)
+            loop.call_soon_threadsafe(admitted.set)
+            return receipt
+        monkeypatch.setattr(runtime, '_admit_operation', observe_admission)
         async def revoke():
-            await asyncio.sleep(.002)
+            await admitted.wait()
             runtime.store.execute("INSERT INTO membership_blocks VALUES('team','alice',1)")
         revocation=asyncio.create_task(revoke())
         try:
@@ -137,7 +145,9 @@ def test_pending_receipt_revalidates_membership_after_wait(team,monkeypatch):
             assert caught.value.code=='SPACE_FORBIDDEN'
             identifier=caught.value.details['operation_id']
             assert original('SELECT id FROM operations WHERE id=?',(identifier,))
-        finally:await revocation
+        finally:
+            if not revocation.done():revocation.cancel()
+            await asyncio.gather(revocation, return_exceptions=True)
     asyncio.run(run())
 
 

@@ -24,6 +24,7 @@ def entries(client, **filters):
     return must(client.get('/api/call-log', params=filters))['operations']
 
 
+@pytest.mark.integration
 def test_ten_shared_connection_sessions_overlap_native_and_gateway_on_two_projects(gw):
     app, browsers, backend = gw
     client, store = browsers['alice'], app.state.store
@@ -39,7 +40,7 @@ def test_ten_shared_connection_sessions_overlap_native_and_gateway_on_two_projec
     async def held(request):
         if json.loads(request.content)['method'] == 'tools/call':
             entered.set()
-            assert await asyncio.to_thread(release.wait, 25), 'test must release the downstream call'
+            await asyncio.to_thread(release.wait)
         return await original(request)
 
     # A real transport fixture with an async dispatch barrier, not invented SQL

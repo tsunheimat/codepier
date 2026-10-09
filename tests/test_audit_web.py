@@ -42,6 +42,8 @@ const context = vm.createContext({document, console, URLSearchParams, AbortContr
 const source=fs.readFileSync(process.argv[2],'utf8');
 vm.runInContext(fs.readFileSync('web/core/bundle.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/ui.js','utf8'),context);
+vm.runInContext(fs.readFileSync('web/call-log.js','utf8'),context);
+context.CodePierCallLog=context.window.CodePierCallLog;
 vm.runInContext(source,context);
 vm.runInContext(fs.readFileSync('web/identity.js','utf8'),context);
 context.CodePierIdentity=context.window.CodePierIdentity;
