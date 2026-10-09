@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import asyncio
+import anyio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from functools import partial
@@ -266,13 +267,17 @@ class Store:
         try:
             return await asyncio.shield(future)
         except asyncio.CancelledError:
-            while not future.done():
-                try:
-                    await asyncio.shield(future)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
+            # ASGI uses AnyIO level cancellation: an already-cancelled scope
+            # cancels every new await. Shield the drain so it can suspend instead
+            # of spinning, while still tolerating explicit asyncio Task.cancel().
+            with anyio.CancelScope(shield=True):
+                while not future.done():
+                    try:
+                        await asyncio.shield(future)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
             # Retrieve a failing job's exception without masking cancellation.
             if not future.cancelled():
                 future.exception()

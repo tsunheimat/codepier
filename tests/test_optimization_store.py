@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 
+import anyio
 import pytest
 
 from hub.store import Store
@@ -145,6 +146,73 @@ async def test_cancelled_database_phase_drains_before_releasing_admission(store)
         await first
     assert not admission.locked()
     assert store.one("SELECT value FROM meta WHERE key='cancel-durable'")["value"] == "yes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_fails", [False, True])
+async def test_level_cancellation_drains_without_repeated_cancel_delivery(store, job_fails):
+    entered, release = threading.Event(), threading.Event()
+    admission = asyncio.Lock()
+    cancellation_seen = asyncio.Event()
+    settled = asyncio.Event()
+    state = {}
+    executions = []
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+
+    class ObservedTask(asyncio.Task):
+        cancel_requests = 0
+
+        def cancel(self, *args, **kwargs):
+            self.cancel_requests += 1
+            if self is state.get("task"):
+                cancellation_seen.set()
+            return super().cancel(*args, **kwargs)
+
+    def write_job():
+        executions.append(1)
+        entered.set()
+        assert release.wait(5)
+        store.execute("INSERT INTO meta VALUES ('level-cancel-durable','yes')")
+        if job_fails:
+            raise ValueError("failure after durable write")
+
+    async def admitted():
+        state["task"] = asyncio.current_task()
+        async with admission:
+            with anyio.CancelScope() as scope:
+                state["scope"] = scope
+                try:
+                    await store.run(write_job)
+                except asyncio.CancelledError:
+                    state["caller_cancelled"] = True
+                    raise
+        settled.set()
+
+    loop.set_task_factory(lambda loop, coro, **kwargs: ObservedTask(coro, loop=loop, **kwargs))
+    try:
+        async with anyio.create_task_group() as group:
+            group.start_soon(admitted)
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                state["scope"].cancel()
+                await cancellation_seen.wait()
+                # Count actual cancellation deliveries across scheduler turns,
+                # without relying on machine speed or a wall-clock threshold.
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                observed = state["task"].cancel_requests, admission.locked(), settled.is_set()
+            finally:
+                release.set()
+    finally:
+        release.set()
+        loop.set_task_factory(previous_factory)
+
+    assert observed == (1, True, False)
+    assert executions == [1]
+    assert state["caller_cancelled"] and settled.is_set()
+    assert not admission.locked()
+    assert store.one("SELECT value FROM meta WHERE key='level-cancel-durable'")["value"] == "yes"
 
 
 @pytest.mark.asyncio
