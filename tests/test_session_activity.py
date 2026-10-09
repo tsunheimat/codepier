@@ -184,6 +184,22 @@ def test_gateway_return_is_not_downstream_job_completion_and_private_result_is_r
     assert b['alice'].get('/api/call-log/' + identifier).status_code == 403
 
 
+def test_gateway_arguments_do_not_impersonate_native_resource_references(gw):
+    app, b, backend = gw
+    binding = publish(b, account(b, connector(b)))
+    r = role(b['owner'], label='reader', project_rules=[{'actions': ['read'], 'projects': ['project-team']}],
+             connector_rules=[{'binding_id': binding['id'], 'tools': ['run']}])
+    assign(b['owner'], r, 'alice')
+    g = must(connection(b['alice'], r, 'role', confirm_external_mcp=True), 201)
+    response = rpc(b['alice'], g['token'], 'kiln__run', {'project': 'same-alias'}, {'openai/session': 'external-target'})
+    assert response.json()['result']['isError']  # Strict downstream schema rejects this argument.
+    assert backend.effects == 0
+    observed = sessions(b['alice'])['sessions'][0]['current'][0]
+    assert observed['state'] == 'failed'
+    assert observed['resources'] == [{'type': 'mcp', 'id': binding['id'], 'name': 'Fixture / kiln'}]
+    assert not app.state.store.all('SELECT * FROM operations')
+
+
 def test_same_host_identifier_does_not_cross_grants_or_space_and_cannot_change_permissions(team):
     app, b = team
     r = role(b['owner'], label='reader', project_rules=[{'actions': ['read'], 'projects': ['project-team']}])

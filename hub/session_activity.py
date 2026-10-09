@@ -61,7 +61,16 @@ class SessionActivity:
                 (identifier, principal.space_id, principal.user_id, principal.grant_id, conversation, correlation,
                  method, name(params.get('name'), method), name(args.get('operation') or args.get('action')),
                  principal.actor, request_id(), now, now))
-            self.observe(identifier, principal, args)
+            from shared.contracts import TOOLS
+            from hub.gateway.catalog import STATUS_TOOL
+            tool_name = params.get('name')
+            if method != 'tools/call' or isinstance(tool_name, str) and tool_name in TOOLS:
+                self.observe(identifier, principal, args)
+            elif tool_name == STATUS_TOOL:
+                self.observe(identifier, principal, {'call_id': args.get('call_id')})
+            # External tool argument names belong to that server. A field named
+            # "project" or "operation_id" is not a native CodePier reference.
+            # Gateway resolution/admission supplies its authorized binding.
         return {'id': identifier, 'session_id': conversation, 'correlation': correlation, 'state': 'running', 'error_code': '', 'finished': False}
 
     def observe(self, identifier, principal, args):
