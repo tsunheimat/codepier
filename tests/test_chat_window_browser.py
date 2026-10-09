@@ -64,8 +64,14 @@ def test_refresh_history_retains_focused_row_and_scroll(chat_page):
     p=chat_page
     p.evaluate("window.rows=Array.from({length:35},(_,i)=>({id:'s'+i,mode:'chat',provider:'pi',title:'Conversation '+i,status:'running'}));chatList()")
     expect(p.locator('.chat-session')).to_have_count(35)
-    p.locator('[data-session-id="s15"]').focus()
+    # WebKit can apply focus scrolling on a later render. Establish a visible,
+    # nonzero starting position before testing what a history refresh retains.
+    row=p.locator('[data-session-id="s15"]')
+    row.scroll_into_view_if_needed()
+    expect(row).to_be_in_viewport(ratio=1)
+    row.focus()
     p.evaluate("window.focused=$('[data-session-id=\"s15\"]');window.historyY=$('#chat-history').scrollTop")
+    assert p.evaluate('historyY')>0
     p.evaluate('chatList()')
     assert p.evaluate('document.activeElement===focused')
     assert p.evaluate("$('#chat-history').scrollTop")==p.evaluate('historyY')
