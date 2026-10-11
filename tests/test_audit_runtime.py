@@ -39,6 +39,8 @@ class Socket:
         self.hello = hello or {"type": "hello", "delivery_protocol": 2, "journal_id": "journal-one"}
         self.before_hello, self.after_ready = before_hello, after_ready
         self.incoming = asyncio.Queue()
+        self.receiving = asyncio.Event()
+        self.acknowledgements = asyncio.Queue()
         self.packets = []
         self.closed = False
         self.first = True
@@ -52,6 +54,8 @@ class Socket:
     async def send_text(self, packet):
         data = self.channel.unpack(packet)
         self.packets.append(data)
+        if data["type"] == "ack":
+            self.acknowledgements.put_nowait(data)
         if data["type"] == "ready" and self.after_ready:
             self.after_ready()
 
@@ -61,6 +65,7 @@ class Socket:
             if self.before_hello:
                 self.before_hello()
             return self.channel.pack(self.hello)
+        self.receiving.set()
         item = await self.incoming.get()
         if item is None:
             raise WebSocketDisconnect()
@@ -69,6 +74,23 @@ class Socket:
     async def close(self, **kwargs):
         self.closed = True
         self.incoming.put_nowait(None)
+
+    async def wait_for(self, awaitable, reader):
+        # DB phases run on Store's worker. Wait for actual socket progress,
+        # without busy-polling or imposing a one-second latency requirement.
+        waiter = asyncio.create_task(awaitable)
+        try:
+            done, _ = await asyncio.wait({waiter, reader}, timeout=10,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if reader in done:
+                await reader
+                pytest.fail("Agent socket exited before the fixture exchange completed")
+            if waiter not in done:
+                pytest.fail(f"Agent socket exchange timed out; packets={self.packets!r}")
+            return waiter.result()
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
 
 
 async def until(predicate):
@@ -258,13 +280,20 @@ async def test_malformed_result_does_not_poison_agent_outbox(runtime, result):
     receipt = await r.invoke("fs_read", {"project": "Project", "path": "README.md"}, p)
     socket = Socket(secret)
     reader = asyncio.create_task(r.agent_socket(socket, "dev"))
-    await until(lambda: r.online("dev"))
-    socket.incoming.put_nowait({"type": "result", "id": receipt["operation_id"], "result": result})
-    await until(lambda: any(item["type"] == "ack" for item in socket.packets))
-    assert r.online("dev")
-    assert r.operation(receipt["operation_id"], p)["state"] == "needs_review"
-    await socket.close()
-    await reader
+    try:
+        # online() becomes true before registration finishes; receive_text's
+        # second call proves the authenticated receive loop is ready.
+        await socket.wait_for(socket.receiving.wait(), reader)
+        assert r.online("dev")
+        socket.incoming.put_nowait({"type": "result", "id": receipt["operation_id"], "result": result})
+        assert await socket.wait_for(socket.acknowledgements.get(), reader) == {
+            "type": "ack", "id": receipt["operation_id"]}
+        assert r.online("dev")
+        assert r.operation(receipt["operation_id"], p)["state"] == "needs_review"
+        assert r.operation(receipt["operation_id"], p)["result"]["error"]["code"] == "INVALID_AGENT_RESULT"
+    finally:
+        await socket.close()
+        await asyncio.wait_for(reader, 10)
 
 
 @pytest.mark.asyncio
