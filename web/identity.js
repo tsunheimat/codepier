@@ -211,15 +211,7 @@ window.CodePierIdentity = (() => {
     S.identity = me;
     const tab = S.identityTab || 'account';
     const tabs = () =>
-      `<nav class="product-tabs" aria-label="账号与身份">${[
-        ['account', 'My Account · 我的账号'],
-        ...(me.instance_admin
-          ? [
-              ['users', 'Users · 用户'],
-              ['sso', 'SSO · 单点登录'],
-            ]
-          : []),
-      ]
+      `<nav class="product-tabs" aria-label="账号与身份">${navigationTabs('identity')
         .map(
           ([id, label]) =>
             `<button class="btn ${id === tab ? 'primary' : 'ghost'}" data-identity-tab="${id}" aria-pressed="${id === tab}">${label}</button>`,

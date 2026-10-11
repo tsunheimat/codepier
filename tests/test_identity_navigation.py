@@ -98,6 +98,8 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
         assert page.locator('.sidebar [data-nav=identity]').count() == 1
         assert not page.locator('[data-nav=identity-admin]').count()
         assert page.locator('[data-identity-tab]').count() == (3 if user == 'owner' else 1)
+        assert page.locator('.sidebar [data-nav-subtabs=identity] button').count() == (3 if user == 'owner' else 1)
+        expect(page.locator('.sidebar [data-nav="identity/account"]')).to_have_attribute('aria-current', 'page')
         expect(page.locator('[data-iam=new-space]')).to_be_visible()
         expect(page.locator('[data-iam=accept-invite]')).to_be_visible()
         expect(page.locator('[data-iam-session]').first).to_be_visible()
@@ -112,6 +114,7 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
                 expect(page.locator('.permission-state')).to_be_visible()
                 assert not page.locator('[data-iam-user],[data-iam-provider],[data-iam=sync]').count()
                 assert page.locator('[data-identity-tab]').count() == 1
+                assert not page.locator('.sidebar [data-nav="identity/users"],.sidebar [data-nav="identity/sso"]').count()
             assert ('GET', '/api/iam/users') not in requests[start:]
             assert ('GET', '/api/iam/oidc/providers') not in requests[start:]
             expect(page).to_have_url(origin + '/#identity/sso')

@@ -29,11 +29,7 @@ window.CodePierCallLog = (() => {
       ? `<span class="badge ${esc(r.state)}">${esc({ completed: '外部调用已返回', returned: '调用已返回', tool_error: '工具报错', rejected: '未发送 / 已拒绝' }[r.state])}</span>`
       : badge(r.state);
   const tabs = (mode) =>
-    `<div class="tabs audit-tabs" aria-label="审计视图">${[
-      ['operations', '全部操作'],
-      ['sessions', '按会话'],
-      ['events', '全部事件'],
-    ]
+    `<div class="tabs audit-tabs" aria-label="审计视图">${navigationTabs('audit')
       .map(
         ([v, label]) =>
           `<button class="${mode === v ? 'active' : ''}" data-action="audit-mode" data-mode="${v}">${label}</button>`,

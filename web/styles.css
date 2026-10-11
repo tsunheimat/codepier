@@ -360,6 +360,46 @@ pre {
   display: none;
 }
 
+.nav-group {
+  display: grid;
+  gap: 2px;
+}
+
+.nav-subtabs {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 4px 22px;
+  padding-left: 9px;
+  border-left: 1px solid var(--ui-line);
+}
+
+.nav-subtabs[hidden] {
+  display: none;
+}
+
+.nav .nav-subtabs button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.nav-subtabs button > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.nav-subtabs button.active::after {
+  flex: none;
+}
+
+@media (max-width: 900px) {
+  .nav .nav-subtabs button {
+    min-height: 44px;
+  }
+}
+
 .side-bottom {
   margin-top: 0;
   padding-top: 12px;

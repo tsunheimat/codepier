@@ -55,12 +55,7 @@ window.CodePierProduct = (() => {
     return `<div id="resources-page">${heading('资源', 'RESOURCES', '先建立资源，再配置角色规则，最后连接客户端。')}${tabs(
       'resources',
       tab,
-      [
-        ['projects', 'Projects · 项目'],
-        ['devices', 'Devices / Agents · 执行节点'],
-        ['mcp', 'MCP Services · 服务'],
-        ['vps', 'VPS · SSH 连接'],
-      ],
+      navigationTabs('resources'),
     )}<p class="form-note">资源关联用于说明用途；每项资源的使用权限仍需明确授权。</p><div id="resource-content">${withoutHeading(body)}</div></div>`;
   }
   function permissionRows(c) {
@@ -115,12 +110,7 @@ window.CodePierProduct = (() => {
     return `<div id="access-page">${heading('访问', 'ACCESS', '角色定义资源规则；客户端连接保存明确同意和独立历史。')}${tabs(
       'access',
       tab,
-      [
-        ['roles', 'Roles · 角色'],
-        ['connections', 'Client Connections · 客户端连接'],
-        ...(CodePierIdentity.admin() ? [['members', 'Space Members · 成员与分配']] : []),
-        ['advanced', '高级身份与兼容接入'],
-      ],
+      navigationTabs('access'),
     )}<div id="access-content">${withoutHeading(body)}</div></div>`;
   }
   async function newConnection() {

@@ -10,6 +10,78 @@ from tests.test_iam_integration import team as team
 
 
 @pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+@pytest.mark.parametrize('width,height', [(1440, 1000), (390, 844)])
+def test_sidebar_subtabs_follow_routes_and_page_tabs(stack, chat_browser_pool, tmp_path, engine, width, height):
+    page = chat_browser_pool(engine).new_page(viewport={'width': width, 'height': height})
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+
+    def sidebar_click(route):
+        if width <= 900:
+            page.locator('.mobile-menu').click()
+        button = page.locator(f'.sidebar [data-nav="{route}"]')
+        button.click()
+        expect(button).to_have_attribute('aria-current', 'page')
+        if width <= 900:
+            expect(page.locator('.mobile-menu')).to_have_attribute('aria-expanded', 'false')
+
+    def selected(area, tab):
+        expect(page.locator(f'.sidebar [data-nav-subtabs="{area}"] .active')).to_have_attribute('data-nav-tab', tab)
+        expect(page.locator('.sidebar [data-nav-tab].active')).to_have_count(1)
+        expect(page.locator(f'.sidebar [data-nav="{area}"]')).to_have_class('active')
+
+    try:
+        page.goto(stack.url + '/#resources/projects')
+        page.fill('#username', 'admin'); page.fill('#password', stack.password); page.click('#login-form button')
+        expect(page.locator('#resources-page')).to_be_visible()
+        selected('resources', 'projects')
+        sidebar_click('resources/devices')
+        expect(page.locator('[data-product-tab=devices]')).to_have_attribute('aria-pressed', 'true')
+        expect(page).to_have_url(stack.url + '/#resources/devices')
+        page.locator('[data-product-tab=mcp]').click()
+        selected('resources', 'mcp')
+        page.go_back()
+        expect(page.locator('[data-product-tab=devices]')).to_have_attribute('aria-pressed', 'true')
+        selected('resources', 'devices')
+        page.go_forward()
+        expect(page.locator('[data-product-tab=mcp]')).to_have_attribute('aria-pressed', 'true')
+        selected('resources', 'mcp')
+        sidebar_click('resources/vps')
+        expect(page.locator('#vps-query')).to_be_visible()
+        page.reload()
+        expect(page.locator('#vps-query')).to_be_visible()
+        selected('resources', 'vps')
+        sidebar_click('resources/projects')
+        expect(page.locator('#project-query')).to_be_visible()
+        page.locator('#project-query').fill('retained-sidebar-filter')
+        page.evaluate('window.sidebarRenderSeq = S.renderSeq')
+        sidebar_click('resources/projects')
+        expect(page.locator('#project-query')).to_have_value('retained-sidebar-filter')
+        assert page.evaluate('S.renderSeq === sidebarRenderSeq')
+        for tab in ('roles', 'connections', 'members', 'advanced'):
+            sidebar_click('access/' + tab)
+            expect(page.locator(f'[data-product-area=access][data-product-tab={tab}]')).to_have_attribute('aria-pressed', 'true')
+            selected('access', tab)
+        for tab in ('account', 'users', 'sso'):
+            sidebar_click('identity/' + tab)
+            expect(page.locator(f'[data-identity-tab={tab}]')).to_have_attribute('aria-pressed', 'true')
+            selected('identity', tab)
+        for tab in ('operations', 'sessions', 'events'):
+            sidebar_click('audit/' + tab)
+            expect(page.locator(f'#page [data-mode={tab}]')).to_have_class('active')
+            selected('audit', tab)
+        if width <= 900:
+            page.locator('.mobile-menu').click()
+        else:
+            page.locator('.sidebar [data-nav="resources/projects"]').scroll_into_view_if_needed()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+        page.screenshot(path=str(tmp_path / f'sidebar-subtabs-{engine}-{width}.png'), full_page=True)
+        assert not errors, errors
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
 @pytest.mark.parametrize('width,height', [(1440,1000),(390,844)])
 def test_selected_tools_tab_does_not_replace_form_during_typing(integrated_stack,chat_browser_pool,engine,width,height):
     s=integrated_stack
@@ -288,6 +360,7 @@ def test_members_entry_is_admin_only_and_membership_assignment_gates_remain_real
         expect(page.locator('#access-page')).to_be_visible()
         expect(page.locator('#page')).to_contain_text('只有空间管理员')
         assert not page.locator('[data-product-area=access][data-product-tab=members]').count()
+        assert not page.locator('.sidebar [data-nav="access/members"]').count()
         assert not page.locator('[data-iam=invite],[data-iam=assign-role]').count()
         assert b['alice'].get('/api/iam/spaces/team/members').status_code==403
         assert b['alice'].post('/api/iam/spaces/team/invites',json={'level':'admin','days':1}).status_code==403

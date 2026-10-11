@@ -437,6 +437,39 @@ function renderLogin(configured = true) {
     }
   });
 }
+function navigationTabs(page) {
+  if (page === 'resources')
+    return [
+      ['projects', 'Projects · 项目'],
+      ['devices', 'Devices / Agents · 执行节点'],
+      ['mcp', 'MCP Services · 服务'],
+      ['vps', 'VPS · SSH 连接'],
+    ];
+  if (page === 'access')
+    return [
+      ['roles', 'Roles · 角色'],
+      ['connections', 'Client Connections · 客户端连接'],
+      ...(CodePierIdentity.admin() ? [['members', 'Space Members · 成员与分配']] : []),
+      ['advanced', '高级身份与兼容接入'],
+    ];
+  if (page === 'identity')
+    return [
+      ['account', 'My Account · 我的账号'],
+      ...(S.identity?.instance_admin
+        ? [
+            ['users', 'Users · 用户'],
+            ['sso', 'SSO · 单点登录'],
+          ]
+        : []),
+    ];
+  if (page === 'audit')
+    return [
+      ['operations', '全部操作'],
+      ['sessions', '按会话'],
+      ['events', '全部事件'],
+    ];
+  return [];
+}
 function renderShell() {
   const chosen = nav.find((x) => x[0] === S.page);
   const groups = [
@@ -450,7 +483,7 @@ function renderShell() {
         `<div class="nav-label">${label}</div>${ids
           .map((id) => {
             const [, ico, title, n] = nav.find((row) => row[0] === id);
-            return `<button class="${id === S.page ? 'active' : ''}" data-nav="${id}" ${id === S.page ? 'aria-current="page"' : ''}>${icon(ico)}<span>${title}</span><span class="nav-num">${n}</span></button>`;
+            return `<div class="nav-group"><button type="button" data-nav="${id}">${icon(ico)}<span>${title}</span><span class="nav-num">${n}</span></button><div class="nav-subtabs" data-nav-subtabs="${id}" role="group" aria-label="${title}" hidden></div></div>`;
           })
           .join('')}`,
     )
@@ -2620,6 +2653,13 @@ document.addEventListener('click', async (e) => {
   try {
     const navButton = e.target.closest('[data-nav]');
     if (navButton) {
+      if (navButton.hasAttribute('data-nav-tab')) {
+        if (navButton.classList.contains('active')) {
+          uiSetMenu(false, false);
+          return;
+        }
+        if (!panelDialogs.requestClose(null, { navigation: true })) return;
+      }
       await navigate(navButton.dataset.nav);
       return;
     }

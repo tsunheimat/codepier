@@ -43,8 +43,36 @@ const uiMobileMedia = matchMedia('(max-width:900px)');
 const uiDockPages = new Set(['access', 'resources', 'native', 'audit']);
 function uiSyncNavigation() {
   const current = ['integrations', 'artifacts'].includes(S.page) ? 'resources' : S.page;
+  $$('.sidebar [data-nav-subtabs]').forEach((group) => {
+    const page = group.dataset.navSubtabs;
+    const tabs = navigationTabs(page);
+    const key = JSON.stringify(tabs);
+    if (group.dataset.navItems !== key) {
+      group.innerHTML = tabs
+        .map(
+          ([tab, label]) =>
+            `<button type="button" data-nav="${page}/${tab}" data-nav-tab="${tab}"><span>${esc(label)}</span></button>`,
+        )
+        .join('');
+      group.dataset.navItems = key;
+    }
+    group.hidden = !tabs.length;
+  });
+  const selectedTab =
+    S.page === 'resources'
+      ? S.resourceTab || 'projects'
+      : S.page === 'access'
+        ? S.accessTab || 'roles'
+        : S.page === 'identity'
+          ? S.identityTab || 'account'
+          : S.page === 'audit'
+            ? S.auditMode || 'operations'
+            : '';
   $$('[data-nav]').forEach((b) => {
-    const chosen = b.dataset.nav === current;
+    const chosen = b.hasAttribute('data-nav-tab')
+      ? b.closest('[data-nav-subtabs]').dataset.navSubtabs === S.page &&
+        b.dataset.navTab === selectedTab
+      : b.dataset.nav === current;
     b.classList.toggle('active', chosen);
     if (chosen) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
