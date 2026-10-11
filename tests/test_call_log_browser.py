@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 HARNESS = r'''
 const S={session:{user_id:'owner'},page:'audit',auditMode:'operations',renderSeq:0,auditSource:'',auditStatus:'',auditQuery:'',auditOffset:0};
+// app.js supplies this dependency in the served panel; this harness only renders audit tabs.
+const navigationTabs=page=>{
+    if(page!=='audit')throw new Error('Unsupported fixture navigation page: '+page);
+    return [['operations','全部操作'],['sessions','按会话'],['events','全部事件']];
+};
 const ACTIVE_STATES=['queued','running','reconnecting','cancelling','unknown'];
 const TERMINAL_STATES=['succeeded','failed','cancelled','needs_review','interrupted'];
 const stateNames={running:'执行中',succeeded:'已完成',failed:'失败'};
