@@ -14,6 +14,7 @@ function agentExecutionHelp() {
   );
 }
 async function agentInstallSetup(device = null) {
+  if (device?.builtin) return toast('内置 Agent 由 Hub 部署管理，无需单独安装或修复。');
   const login = S.session;
   const dialog = modal(
     device ? '安装 / 修复 Agent · ' + device.name : '接入电脑',
@@ -102,6 +103,7 @@ async function agentInstallSetup(device = null) {
   };
 }
 function showAgentInstallCommand(device, options, pairing = null, autoGenerate = true) {
+  if (device.builtin) return toast('内置 Agent 由 Hub 部署管理，无需安装命令。');
   const login = S.session;
   const terminal = options.platform === 'windows' ? 'PowerShell' : '终端';
   const dialog = modal(
@@ -227,6 +229,8 @@ function agentLifecycleSummary(device) {
     latest = agent.latest_action,
     current = agent.version || device.info?.version || '—',
     target = agent.target_version || '—';
+  if (device.builtin)
+    return `<div class="device-lifecycle"><div class="device-version"><div><small>Agent 版本</small><strong>${esc(current)}</strong></div><span class="badge purple">Built-in · 内置</span></div><p class="lifecycle-note">内置 Agent 由 Hub 部署管理，随 Hub 启动；更新或重启请通过 Hub 部署完成，无需单独安装或卸载。</p><p class="lifecycle-note">此节点代表 Hub 运行环境（容器部署时为容器，而非宿主机）。默认不开放项目目录、Shell 或任务执行权限。</p></div>`;
   const managed = agent.managed && agent.service;
   const versionState = agent.update_available
     ? '<span class="badge running">可更新</span>'
@@ -251,6 +255,7 @@ function agentLifecycleSummary(device) {
   return `<div class="device-lifecycle"><div class="device-version"><div><small>Agent 版本</small><strong>${esc(current)}</strong>${target && target !== current ? `<span>→ ${esc(target)}</span>` : ''}</div>${versionState}</div><div class="lifecycle-badges">${service}${agent.status && agent.status !== 'ready' ? `<span class="badge running">${esc(agent.status)}</span>` : ''}</div>${brandState ? `<p class="lifecycle-note">${esc(brandState)}</p>` : ''}${latestText}${issue ? `<p class="lifecycle-note">${esc(issue)}</p>` : ''}</div>`;
 }
 function agentLifecycleButtons(device, compact = false) {
+  if (device.builtin) return '';
   const agent = device.agent || {},
     declared = Array.isArray(agent.actions) ? agent.actions : [],
     actions = device.online ? declared : [],
@@ -323,6 +328,7 @@ async function trackAgentLifecycle(operationId, device, action) {
   }
 }
 function agentLifecycleModal(device, action) {
+  if (device.builtin) return toast('内置 Agent 的生命周期由 Hub 部署管理。');
   const spec = AGENT_LIFECYCLE[action];
   if (!spec) return;
   const agent = device.agent || {},
@@ -401,6 +407,7 @@ function agentLifecycleModal(device, action) {
 }
 
 function showAgentMaintenanceCommands(device) {
+  if (device.builtin) return toast('内置 Agent 由 Hub 部署管理，无需管理命令。');
   const login = S.session,
     platform = device.info?.platform === 'Windows' ? 'windows' : 'posix';
   const body = `<form id="agent-command-form"><p>在这台节点自己的终端执行。升级保留原身份、配置、授权目录和历史，不需要重新配对；卸载会在终端要求确认，不删除安装目录之外的项目文件。</p><div class="field"><label>面板地址</label><input name="hub_url" required value="${esc(location.origin)}"></div><div class="field"><label>目标电脑系统</label><select name="platform"><option value="posix" ${platform === 'posix' ? 'selected' : ''}>Linux / macOS</option><option value="windows" ${platform === 'windows' ? 'selected' : ''}>Windows PowerShell</option></select></div><div class="field"><label>Agent 安装目录（可选）</label><input name="install_dir" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="留空使用当前用户的 .codepier-agent"><small>自定义安装时填写目标电脑上的绝对路径；不要填写项目目录。</small></div><p class="form-note">命令固定本次安装包校验值并检查节点身份，只适用于面板一键安装的受管 Agent。面板更新后旧命令可能失效，届时重新生成。复制不会执行任何操作。</p><div class="field"><label for="agent-command-upgrade">一键升级命令</label><textarea id="agent-command-upgrade" class="agent-install-command" rows="4" readonly spellcheck="false"></textarea><button class="btn small" type="button" data-copy-command="upgrade" disabled>复制升级命令</button></div><div class="field"><label for="agent-command-uninstall">一键卸载命令</label><textarea id="agent-command-uninstall" class="agent-install-command" rows="4" readonly spellcheck="false"></textarea><button class="btn small" type="button" data-copy-command="uninstall" disabled>复制卸载命令</button></div><p class="form-note">新版安装或升级后，还可以离线使用安装目录内的 agentctl uninstall（Windows：agentctl.ps1 uninstall）。卸载会删除 Agent 配置、密钥、日志和状态，请先备份需要的记录。</p><p id="agent-command-status" class="form-note" role="status"></p></form>`;

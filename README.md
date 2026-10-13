@@ -61,6 +61,8 @@ ChatGPT / MCP 客户端                 浏览器管理面板
 
 **Hub** 负责面板、认证、项目映射、MCP 接入和操作记录。**Agent** 负责实际访问文件、启动本机工具和执行命令。一台 Hub 可以连接多台 Agent，每个项目对应其中一台电脑上的实际目录。
 
+Hub 初始化管理员后，默认在该管理员的 Personal Space 登记一个 **CodePier Hub / 内置** 节点，并自动运行镜像内的 Agent。该节点默认不授权任何项目目录，也不开启 Shell 或任务；Docker / k3s 下代表 Hub 容器而非宿主节点。身份跨重启保留，删除后不自动重建；可通过 `HUB_BUILTIN_AGENT_ENABLED=false` 关闭运行。内置 Agent 随 Hub 部署维护，详见 [Hub 内置节点](docs/AGENT_INSTALL.md#hub-内置节点)。
+
 项目映射限制文件工具的访问范围，但**完整 Shell 不是项目目录沙箱**：命令使用 Agent 运行账号的系统权限。启用执行权限前，请确认该账号能够访问哪些文件和凭据。
 
 ## 平台与运行环境

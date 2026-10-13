@@ -13,6 +13,7 @@ services:
       HUB_DATA_DIR: /app/data
       HUB_PANEL_UPDATE_SOCKET: /run/codepier-updater/updater.sock
       HUB_PORT: "8765"
+      HUB_BUILTIN_AGENT_ENABLED: "${HUB_BUILTIN_AGENT_ENABLED:-true}"
       HUB_PUBLIC_URL: "${HUB_PUBLIC_URL:-http://127.0.0.1:8765}"
       MCP_PUBLIC_URL: "${MCP_PUBLIC_URL:-${HUB_PUBLIC_URL:-http://127.0.0.1:8765}}"
       HUB_QUEUE_TTL_SECONDS: "${HUB_QUEUE_TTL_SECONDS:-1800}"

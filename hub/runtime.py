@@ -11,6 +11,7 @@ import uuid
 from hub.access_profiles import effective_grant, refresh_profile_principal, current_profile, access_context
 from hub.roles import require_role, role_project_scopes, principal_grant
 from hub import iam
+from hub.builtin_agent import require_external_device
 from shared.role_contracts import ROLE_TOOLS
 from hub.principal import Principal, refresh_principal
 from hub.dispatch_plan import DeferredCall
@@ -90,6 +91,7 @@ class Connection:
 class Runtime:
     def __init__(self, store: Store):
         self.store = store
+        self.builtin_agent = None
         self._loop = None
         try:
             self._loop = asyncio.get_running_loop()
@@ -574,6 +576,7 @@ class Runtime:
         if name not in DEVICE_ACTIONS or principal.grant_id:
             raise DevError("INSUFFICIENT_SCOPE", "Agent 生命周期只能由有设备管理权限的面板用户操作", 403)
         iam.require_device(self.store, principal, device_id, manage=True)
+        require_external_device(self.store, device_id)
         device = self.store.one("SELECT id,name,enabled,info FROM devices WHERE id=?", (device_id,))
         if not device:
             raise DevError("NOT_FOUND", "设备不存在", 404)
@@ -644,14 +647,15 @@ class Runtime:
             # Resolve alias casing before identifying an unkeyed metadata query.
             args = {**args, "project": project["alias"]}
         principal = refresh_profile_principal(self.store, principal)
-        if project.get('id'):
-            self.authorize(principal, TOOLS[name].scope, project_id=project['id'])
-        elif name == 'system_validate' and not principal.admin:
-            self.authorize(principal, 'projects.create', device_id=project['device_id'], creation=project)
-        elif name in DEVICE_ACTIONS:
+        if name in DEVICE_ACTIONS:
             if principal.grant_id:
                 raise DevError('INSUFFICIENT_SCOPE', 'MCP 不允许设备生命周期操作', 403)
             iam.require_device(self.store, principal, project['device_id'], manage=True)
+            require_external_device(self.store, project['device_id'])
+        elif project.get('id'):
+            self.authorize(principal, TOOLS[name].scope, project_id=project['id'])
+        elif name == 'system_validate' and not principal.admin:
+            self.authorize(principal, 'projects.create', device_id=project['device_id'], creation=project)
         snapshot = {k: project[k] for k in ("id", "alias", "root", "mode", "allow_tasks") if k in project}
         if name in {"open_workspace", "show_changes", "apply_patch", "edit"}:
             snapshot["_coding_owner"] = "grant:" + principal.grant_id if principal.grant_id else principal.actor

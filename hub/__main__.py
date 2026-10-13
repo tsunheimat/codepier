@@ -76,6 +76,7 @@ def main():
         if not 1 <= args.port <= 65535:
             parser.error("端口范围应为 1–65535")
         os.environ["HUB_PORT"] = str(args.port)
+        os.environ["HUB_HOST"] = args.host
         try:
             HubConfig.from_env()
         except ConfigurationError as exc:

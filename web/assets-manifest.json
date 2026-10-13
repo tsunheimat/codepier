@@ -15,12 +15,12 @@
       "bytes": 8380
     },
     "agent-install.js": {
-      "sha256": "275b69ed4e92a99d36f09b845eb475c51dd21642caac98910921a0279a304be8",
-      "bytes": 27864
+      "sha256": "e3ac6fc5dfb9999faabb4a87ff98e23942091d531d7dc5800962370120b2938d",
+      "bytes": 28848
     },
     "app.js": {
-      "sha256": "2c890576fc74e82535d95eb20e2dd3da0415ea50a150a4b7664c0b097155478f",
-      "bytes": 126985
+      "sha256": "0bc1363931a1d937521ffef8701448102b2212cedd5864ab8eb6977ba20c649b",
+      "bytes": 128373
     },
     "appearance.js": {
       "sha256": "7fc8e8ffa85a4bb5836b8919cdf6ff12813cfb4a9e4736709f5858e5d8782bb1",

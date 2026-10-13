@@ -111,6 +111,8 @@ class HubConfig:
     # MCP/OAuth public origin. Keeping this separate makes the redirect URI
     # deterministic before an administrator or provider exists.
     oidc_public_url: str = ""
+    host: str = "0.0.0.0"
+    builtin_agent_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> HubConfig:
@@ -130,4 +132,6 @@ class HubConfig:
             raise ConfigurationError("CODEPIER_OIDC_BOOTSTRAP_ADMIN must be off or first-login")
         return cls(port=port, timezone=timezone, public_url=public_url, runtime=RuntimeConfig.from_env(),
                    oidc_seed=OIDCSeed.from_env(), oidc_public_url=oidc_public_url,
-                   oidc_bootstrap_admin=bootstrap == "first-login")
+                   oidc_bootstrap_admin=bootstrap == "first-login",
+                   host=os.getenv("HUB_HOST", "0.0.0.0"),
+                   builtin_agent_enabled=env_bool("HUB_BUILTIN_AGENT_ENABLED", True))

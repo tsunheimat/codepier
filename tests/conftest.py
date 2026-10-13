@@ -1,6 +1,15 @@
 import pytest
 from tests.support import running_stack
 
+
+@pytest.fixture(scope='session', autouse=True)
+def isolated_builtin_agent_default():
+    # TestClient has no listener. Dedicated built-in tests explicitly restore the
+    # production default; ordinary fixtures must not spawn extra retrying Agents.
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv('HUB_BUILTIN_AGENT_ENABLED', 'false')
+        yield
+
 @pytest.fixture(scope='module')
 def stack(tmp_path_factory):
     with running_stack(tmp_path_factory.mktemp('real-hub-agent')) as s:

@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from hub.db_worker import database_endpoint
 from hub import iam
 from hub.api.context import HubContext
+from hub.builtin_agent import builtin_device_id, is_builtin_device
 import json
 import time
 import uuid
@@ -20,6 +21,7 @@ def device_rows(store, runtime, principal):
         try: iam.require_device(store,principal,row['id'])
         except DevError: continue
         rows.append(row)
+    builtin_id = builtin_device_id(store)
     lifecycle_names = tuple(sorted(DEVICE_ACTIONS))
     for row in rows:
         try:
@@ -28,6 +30,7 @@ def device_rows(store, runtime, principal):
             info = {}
         if not isinstance(info, dict):
             info = {}
+        row["builtin"] = row["id"] == builtin_id
         row["can_manage"] = bool(principal.admin or row.get('owner_user_id')==principal.user_id)
         row["info"] = info
         row["online"] = runtime.online(row["id"])
@@ -64,6 +67,14 @@ def device_rows(store, runtime, principal):
             "can_uninstall": bool(row["enabled"] and row["online"] and "agent_uninstall" in actions),
             "latest_action": latest,
         }
+        if row["builtin"]:
+            row["agent"].update({
+                "update_available": False, "managed": True, "service": False,
+                "service_kind": "", "status": "", "last_error": "",
+                "reason": "内置 Agent 由 Hub 部署管理，随 Hub 启动；更新或重启请通过 Hub 部署完成，无需单独安装或卸载。",
+                "actions": [], "can_update": False, "can_restart": False,
+                "can_uninstall": False, "latest_action": None,
+            })
     return rows
 
 
@@ -74,6 +85,11 @@ def make_devices_router(context: HubContext):
     store, runtime, auth = context.store, context.runtime, context.auth
     config, maintenance = context.config, context.maintenance
     public_url, BASE = context.public_url, context.base
+
+    def wake_builtin(id):
+        supervisor = getattr(runtime, "builtin_agent", None)
+        if supervisor is not None and is_builtin_device(store, id):
+            store.after_commit(lambda: runtime.on_loop(supervisor.wake))
 
     @router.get("/api/devices")
     @database_endpoint(store)
@@ -115,6 +131,8 @@ def make_devices_router(context: HubContext):
                     store.execute("UPDATE devices SET enabled=? WHERE id=?", (int(body.enabled), id))
                 store.audit(principal.actor, "device.updated", id, detail=body.model_dump(exclude_none=True))
                 runtime.publish("device", {"id": id})
+                if body.enabled is not None:
+                    wake_builtin(id)
         await store.run(update)
         if body.enabled is False:
             await runtime.disconnect_device(id, "Disabled by owner")
@@ -133,6 +151,9 @@ def make_devices_router(context: HubContext):
                 store.execute("UPDATE devices SET secret=? WHERE id=?", (store.encrypt(secret), id))
                 url = store.one("SELECT value FROM meta WHERE key=?", ("device_hub_url:" + id,))
                 store.audit(principal.actor, "device.key_rotated", id)
+                if is_builtin_device(store, id):
+                    wake_builtin(id)
+                    return {"ok": True, "builtin": True}
                 return {"pairing": {"device_id": id, "name": row["name"], "secret": secret,
                                     "hub_url": url["value"] if url else public_url()}}
         result = await store.run(rotate)
@@ -152,6 +173,7 @@ def make_devices_router(context: HubContext):
                     raise DevError("DEVICE_HAS_PROJECTS", "请先移除这个设备的项目映射", 409)
                 store.execute("DELETE FROM devices WHERE id=?", (id,))
                 store.audit(principal.actor, "device.deleted", id)
+                wake_builtin(id)
         await store.run(remove)
         await runtime.disconnect_device(id, "Device removed")
         return {"ok": True}

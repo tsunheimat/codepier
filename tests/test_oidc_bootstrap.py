@@ -76,6 +76,22 @@ def test_first_sso_login_becomes_instance_admin_then_the_window_closes(tmp_path,
         assert store.one('SELECT count(*) AS n FROM iam_users WHERE instance_admin=1')['n']==1
 
 
+def test_builtin_device_uses_committed_first_sso_personal_space(tmp_path,monkeypatch):
+    from hub.builtin_agent import BuiltinAgent, ensure_identity
+    fake=Provider();seed_env(monkeypatch,fake)
+    app=fresh_app(tmp_path/'hub',fake)
+    with TestClient(app,raise_server_exceptions=True) as client:
+        store=app.state.store
+        assert ensure_identity(store) is None
+        admin,_=session_of(client,sso_login(client,fake,'builtin-first-admin'))
+        marker=ensure_identity(store)
+        assert marker['owner_user_id']==admin['id']
+        assert marker['space_id']==admin['default_space_id']
+        assert BuiltinAgent(store,app.state.runtime,app.state.config)._snapshot()['device_id']==marker['device_id']
+        sso_login(client,fake,'builtin-second-member')
+        assert ensure_identity(store)==marker
+
+
 def test_bootstrap_stays_closed_without_explicit_opt_in(tmp_path,monkeypatch):
     fake=Provider();seed_env(monkeypatch,fake,CODEPIER_OIDC_BOOTSTRAP_ADMIN=None)
     app=fresh_app(tmp_path/'hub',fake)

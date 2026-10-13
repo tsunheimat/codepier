@@ -1157,7 +1157,7 @@ function devicesHTML() {
         String(d.id || '')
           .slice(0, 12)
           .toUpperCase(),
-      )}</span></div></header><dl class="card-meta workspace-device-facts"><div><dt>平台 / 主机</dt><dd>${esc(info.platform || '等待上线')} · ${esc(info.hostname || '—')}</dd></div><div><dt>映射项目</dt><dd>${esc(d.project_count)} 个</dd></div><div><dt>最近心跳</dt><dd>${esc(d.last_seen ? shortTime(d.last_seen) : '未连接')}</dd></div><div><dt>授权目录</dt><dd>${roots.length} 个</dd></div></dl><div class="actions agent-card-actions workspace-device-actions">${agentLifecycleButtons(d, true)}<button class="btn ghost small" data-action="device-detail" data-id="${esc(d.id)}">${icon('settings')}完整管理</button><button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">${icon('folder')}映射项目</button></div>${agentLifecycleSummary(d)}<details class="device-roots workspace-device-roots"><summary>目录与权限 · ${roots.length}</summary><div class="device-root-list">${rootRows || '<p>设备上线后显示授权目录</p>'}</div></details><details class="device-raw workspace-device-raw"><summary>完整本机信息</summary><div class="code-box"><pre>${esc(json(info))}</pre></div></details></article>`;
+      )}</span></div></header><dl class="card-meta workspace-device-facts"><div><dt>平台 / 主机</dt><dd>${esc(info.platform || '等待上线')} · ${esc(info.hostname || '—')}</dd></div><div><dt>映射项目</dt><dd>${esc(d.project_count)} 个</dd></div><div><dt>最近心跳</dt><dd>${esc(d.last_seen ? shortTime(d.last_seen) : '未连接')}</dd></div><div><dt>授权目录</dt><dd>${roots.length} 个</dd></div></dl><div class="actions agent-card-actions workspace-device-actions">${agentLifecycleButtons(d, true)}<button class="btn ghost small" data-action="device-detail" data-id="${esc(d.id)}">${icon('settings')}完整管理</button><button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">${icon('folder')}映射项目</button></div>${agentLifecycleSummary(d)}<details class="device-roots workspace-device-roots"><summary>目录与权限 · ${roots.length}</summary><div class="device-root-list">${rootRows || (d.builtin ? '<p>内置节点默认不开放项目目录，也不会自动创建项目映射。</p>' : '<p>设备上线后显示授权目录</p>')}</div></details><details class="device-raw workspace-device-raw"><summary>完整本机信息</summary><div class="code-box"><pre>${esc(json(info))}</pre></div></details></article>`;
     })
     .join('');
   return (
@@ -1213,12 +1213,13 @@ function pairingModal(pairing, rePair = false) {
 async function deviceDetail(id) {
   const d = S.devices.find((device) => device.id === id);
   if (!d) return;
-  const uninstall = d.agent?.can_uninstall
-    ? `<button class="btn danger small" data-action="agent-uninstall" data-id="${esc(d.id)}">${icon('trash')}卸载本机 Agent</button>`
-    : '';
+  const uninstall =
+    !d.builtin && d.agent?.can_uninstall
+      ? `<button class="btn danger small" data-action="agent-uninstall" data-id="${esc(d.id)}">${icon('trash')}卸载本机 Agent</button>`
+      : '';
   const dialog = modal(
     '管理节点 · ' + d.name,
-    `<div class="field"><label>节点名称</label><input id="device-rename" value="${esc(d.name)}" maxlength="80"></div><dl class="kv device-kv"><dt>节点编号</dt><dd><code>${esc(d.id)}</code></dd><dt>连接状态</dt><dd>${d.enabled ? onlineBadge(d.online) : '<span class="badge failed">已停用</span>'}</dd><dt>最近连接</dt><dd>${esc(timeText(d.last_seen))}</dd><dt>平台 / 主机</dt><dd>${esc(d.info.platform || '等待上线')} · ${esc(d.info.hostname || '—')}</dd><dt>项目映射</dt><dd>${d.project_count} 个</dd></dl>${agentLifecycleSummary(d)}<section class="node-manage-section"><div class="node-section-head"><div><h3>Agent 生命周期</h3><p>更新先校验完整新运行时，面板记录结果后才切换；节点有任务执行时不会强行更新或重启。</p></div></div><div class="actions">${agentLifecycleButtons(d, false)}</div></section><section class="node-manage-section"><h3>开发工具配置</h3><p class="form-note">按项目连接语言服务与后台浏览器。只进入配置引导，不自动安装、授权或重启。</p><div class="actions">${
+    `<div class="field"><label>节点名称</label><input id="device-rename" value="${esc(d.name)}" maxlength="80"></div><dl class="kv device-kv"><dt>节点编号</dt><dd><code>${esc(d.id)}</code></dd><dt>连接状态</dt><dd>${d.enabled ? onlineBadge(d.online) : '<span class="badge failed">已停用</span>'}</dd><dt>最近连接</dt><dd>${esc(timeText(d.last_seen))}</dd><dt>平台 / 主机</dt><dd>${esc(d.info.platform || '等待上线')} · ${esc(d.info.hostname || '—')}</dd><dt>项目映射</dt><dd>${d.project_count} 个</dd></dl>${agentLifecycleSummary(d)}<section class="node-manage-section"><div class="node-section-head"><div><h3>Agent 生命周期</h3><p>${d.builtin ? '由 Hub 部署统一管理；停用、启用或轮换连接密钥仍可在此操作。' : '更新先校验完整新运行时，面板记录结果后才切换；节点有任务执行时不会强行更新或重启。'}</p></div></div><div class="actions">${agentLifecycleButtons(d, false)}</div></section><section class="node-manage-section"><h3>开发工具配置</h3><p class="form-note">按项目连接语言服务与后台浏览器。只进入配置引导，不自动安装、授权或重启。</p><div class="actions">${
       S.projects
         .filter((p) => p.device_id === d.id)
         .map(
@@ -1226,8 +1227,10 @@ async function deviceDetail(id) {
             `<button class="btn ghost small" data-devtools="setup" data-project="${esc(p.id)}">${esc(p.alias)} · 配置引导</button>`,
         )
         .join('') ||
-      `<button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">先添加项目映射</button>`
-    }</div></section><details class="device-raw"><summary>本机声明与能力</summary><div class="code-box"><pre>${esc(json(d.info))}</pre></div></details><p class="form-note">更换 IP / 端口：在目标电脑运行 <code>python -m agent configure --hub http://新IP:新端口</code>。面板不能越过本机配置增加授权目录。</p><section class="danger-zone"><div><h3>节点与凭据</h3><p>卸载只清理目标电脑上的 Agent；“移除面板记录”只删除 Hub 中的节点身份。两者都不会删除项目文件。</p></div><div class="actions">${uninstall}<button class="btn small" id="toggle-device">${d.enabled ? '停用节点' : '启用节点'}</button><button class="btn small" id="rotate-device">轮换连接密钥</button><button class="btn danger small" id="delete-device">仅移除面板记录</button></div></section>`,
+      (d.builtin
+        ? '<p class="form-note">内置节点默认不开放项目目录，也不会自动创建项目映射。</p>'
+        : `<button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">先添加项目映射</button>`)
+    }</div></section><details class="device-raw"><summary>本机声明与能力</summary><div class="code-box"><pre>${esc(json(d.info))}</pre></div></details><p class="form-note">${d.builtin ? '内置节点通过本机连接 Hub，连接配置由 Hub 自动维护；无需下载配对文件或在其他电脑安装。' : '更换 IP / 端口：在目标电脑运行 <code>python -m agent configure --hub http://新IP:新端口</code>。面板不能越过本机配置增加授权目录。'}</p><section class="danger-zone"><div><h3>节点与凭据</h3><p>${d.builtin ? '停用会停止内置 Agent，重新启用后自动连接。移除会停止内置 Agent 并持久保留删除决定，Hub 重启后不会自动重建此节点；不会删除项目文件。' : '卸载只清理目标电脑上的 Agent；“移除面板记录”只删除 Hub 中的节点身份。两者都不会删除项目文件。'}</p></div><div class="actions">${uninstall}<button class="btn small" id="toggle-device">${d.enabled ? '停用节点' : '启用节点'}</button><button class="btn small" id="rotate-device">轮换连接密钥</button><button class="btn danger small" id="delete-device">${d.builtin ? '移除内置节点' : '仅移除面板记录'}</button></div></section>`,
     buttons('rename-device', '保存名称'),
     true,
   );
@@ -1254,19 +1257,29 @@ async function deviceDetail(id) {
   $('#rotate-device', dialog).onclick = async () => {
     if (
       !confirm(
-        '旧连接密钥会立刻失效，在线 Agent 将断开。需要在目标电脑更新配置或重新执行安装命令。继续？',
+        d.builtin
+          ? '旧连接密钥会立刻失效，内置 Agent 将短暂断开，由 Hub 自动更新凭据并重新连接；无需下载配对文件或重新安装。继续？'
+          : '旧连接密钥会立刻失效，在线 Agent 将断开。需要在目标电脑更新配置或重新执行安装命令。继续？',
       )
     )
       return;
     await busy($('#rotate-device', dialog), async () => {
       const result = await post(`/api/devices/${id}/rotate`);
-      if (dialog.isConnected && $('.modal') === dialog) pairingModal(result.pairing, true);
+      if (dialog.isConnected && $('.modal') === dialog) {
+        if (result.builtin) {
+          closeModal(dialog);
+          toast('内置节点密钥已轮换；启用状态下将由 Hub 自动重新连接。');
+          await renderPage();
+        } else pairingModal(result.pairing, true);
+      }
     });
   };
   $('#delete-device', dialog).onclick = async () => {
     if (
       !confirm(
-        '仅移除面板中的节点身份？必须先移除它的项目映射；目标电脑上的 Agent 和项目文件都不会被删除。',
+        d.builtin
+          ? '移除内置节点将停止内置 Agent，并持久保留删除决定，Hub 重启后不会自动重建。必须先移除项目映射；项目文件不会被删除。继续？'
+          : '仅移除面板中的节点身份？必须先移除它的项目映射；目标电脑上的 Agent 和项目文件都不会被删除。',
       )
     )
       return;

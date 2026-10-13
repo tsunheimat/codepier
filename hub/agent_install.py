@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.crypto import digest, token
 from hub import iam
+from hub.builtin_agent import require_external_device
 from shared.util import DevError, VERSION, normalize_url, valid_json_value
 
 TICKET_SECONDS = 15 * 60
@@ -252,6 +253,7 @@ def make_agent_install_router(runtime, auth, source_root=None):
     def agent_commands(device_id: str, request: Request, body: AgentCommandInput):
         principal=auth.panel(request, True)
         iam.require_device(store,principal,device_id,manage=True)
+        require_external_device(store, device_id)
         if not store.one('SELECT id FROM devices WHERE id=?', (device_id,)):
             raise DevError('NOT_FOUND', '设备不存在', 404)
         try:
@@ -284,6 +286,7 @@ def make_agent_install_router(runtime, auth, source_root=None):
     def install_ticket(device_id: str, request: Request, body: InstallTicketInput):
         principal = auth.panel(request, True)
         iam.require_device(store,principal,device_id,manage=True)
+        require_external_device(store, device_id)
         try:
             hub_url = normalize_url(body.hub_url)
         except ValueError as exc:
@@ -313,6 +316,7 @@ def make_agent_install_router(runtime, auth, source_root=None):
     async def lifecycle_action(device_id: str, request: Request, body: DeviceLifecycleInput, action: str):
         principal = auth.panel(request, True)
         iam.require_device(store,principal,device_id,manage=True)
+        require_external_device(store, device_id)
         device = store.one('SELECT name FROM devices WHERE id=?', (device_id,))
         if not device:
             raise DevError('NOT_FOUND', '设备不存在', 404)
@@ -357,6 +361,7 @@ def make_agent_install_router(runtime, auth, source_root=None):
             secret = store.decrypt(device['secret'])
             if not hmac.compare_digest(digest(secret), ticket['secret_fingerprint']):
                 raise DevError('INSTALL_TICKET_INVALID', '设备密钥已变化，请重新生成安装命令', 401)
+            require_external_device(store, ticket['device_id'])
             pairing = {'device_id': ticket['device_id'], 'name': device['name'], 'secret': secret, 'hub_url': ticket['hub_url']}
             store.db.execute('DELETE FROM agent_install_tickets WHERE token_hash=?', (digest(enrollment_token),))
             store.db.execute('INSERT INTO audit(at,actor,action,target,status,detail,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?)',

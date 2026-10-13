@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse
 import asyncio
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import json
 import os
 import signal
@@ -12,6 +12,39 @@ from shared.util import atomic_json, VERSION
 from agent.config import validate_config
 
 DEFAULT = Path.home() / ".codepier-agent" / "config.json"
+
+
+@contextmanager
+def parent_stdin_guard(loop, stop):
+    """The managed parent's private pipe is authority, never a PID/state file.
+
+    A daemon reader works on POSIX and Windows. EOF requests graceful shutdown;
+    a bounded hard exit also releases the state lock if startup/the loop hangs.
+    Ordinary standalone Agent launches never enter this context.
+    """
+    import threading
+    finished = threading.Event()
+
+    def watch():
+        try:
+            while os.read(sys.stdin.fileno(), 1):
+                pass
+        except OSError:
+            pass
+        if finished.is_set():
+            return
+        try:
+            loop.call_soon_threadsafe(stop)
+        except RuntimeError:
+            pass
+        if not finished.wait(8):
+            os._exit(0)
+
+    threading.Thread(target=watch, name="agent-parent-liveness", daemon=True).start()
+    try:
+        yield
+    finally:
+        finished.set()
 
 
 def main():
@@ -32,6 +65,7 @@ def main():
     init.add_argument("--shell", choices=("full", "disabled"), help="新安装默认开启当前用户 Shell 和目录任务；disabled 同时关闭新目录任务。重新配对保持原权限")
     run_parser = sub.add_parser("run", help="连接并保持运行（前台诊断）")
     run_parser.add_argument("--supervised", action="store_true", help=argparse.SUPPRESS)
+    run_parser.add_argument("--parent-stdin", action="store_true", help=argparse.SUPPRESS)
     config = sub.add_parser("configure", help="修改地址、端口或目录授权；运行中的 Agent 会自动重连")
     config.add_argument("--hub")
     config.add_argument("--allow", action="append", help="替换授权目录列表")
@@ -176,15 +210,18 @@ def main():
         from agent.runner import Agent
         async def run():
             from agent.service_watchdog import is_supervised, watch_event_loop
-            with watch_event_loop() if args.supervised or is_supervised() else nullcontext():
-                agent = Agent(path)
-                loop = asyncio.get_running_loop()
-                for sig in (signal.SIGINT, signal.SIGTERM):
-                    try:
-                        loop.add_signal_handler(sig, lambda: asyncio.create_task(agent.stop()))
-                    except (NotImplementedError, RuntimeError):
-                        pass
-                await agent.run()
+            loop = asyncio.get_running_loop()
+            def stop():
+                asyncio.create_task(agent.stop())
+            with parent_stdin_guard(loop, stop) if args.parent_stdin else nullcontext():
+                with watch_event_loop() if args.supervised or is_supervised() else nullcontext():
+                    agent = Agent(path)
+                    for sig in (signal.SIGINT, signal.SIGTERM):
+                        try:
+                            loop.add_signal_handler(sig, stop)
+                        except (NotImplementedError, RuntimeError):
+                            pass
+                    await agent.run()
         try:
             asyncio.run(run())
         except KeyboardInterrupt:

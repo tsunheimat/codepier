@@ -20,6 +20,7 @@ from hub.gateway.service import Gateway
 from hub.gateway.registry import make_router as make_gateway_router
 from hub.auth import Auth
 from hub.config import HubConfig
+from hub.builtin_agent import BuiltinAgent
 from hub.runtime import Runtime
 from hub.store import Store
 from hub.http import BodyLimit, install_http_behaviors
@@ -68,22 +69,28 @@ def create_app(data_dir: str | None = None):
             return config.oidc_public_url or config.public_url
 
         oidc = OIDCService(auth, runtime, oidc_public_url, seed=config.oidc_seed, bootstrap_admin=config.oidc_bootstrap_admin)
+        builtin_agent = BuiltinAgent(store, runtime, config)
+        runtime.builtin_agent = builtin_agent
 
         @asynccontextmanager
         async def lifespan(app):
             try:
                 await runtime.start()
                 await oidc.start()
+                await builtin_agent.start()
                 yield
             finally:
                 try:
                     try:
-                        await oidc.stop()
+                        await builtin_agent.stop()
                     finally:
                         try:
-                            await runtime.gateway.close()
+                            await oidc.stop()
                         finally:
-                            await runtime.stop()
+                            try:
+                                await runtime.gateway.close()
+                            finally:
+                                await runtime.stop()
                 finally:
                     try:
                         await store.aclose()
