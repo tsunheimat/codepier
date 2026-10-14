@@ -65,7 +65,9 @@ def main():
     init.add_argument("--shell", choices=("full", "disabled"), help="新安装默认开启当前用户 Shell 和目录任务；disabled 同时关闭新目录任务。重新配对保持原权限")
     run_parser = sub.add_parser("run", help="连接并保持运行（前台诊断）")
     run_parser.add_argument("--supervised", action="store_true", help=argparse.SUPPRESS)
-    run_parser.add_argument("--parent-stdin", action="store_true", help=argparse.SUPPRESS)
+    parent_guard = run_parser.add_mutually_exclusive_group()
+    parent_guard.add_argument("--parent-stdin", action="store_true", help=argparse.SUPPRESS)
+    parent_guard.add_argument("--local-stdio", action="store_true", help=argparse.SUPPRESS)
     config = sub.add_parser("configure", help="修改地址、端口或目录授权；运行中的 Agent 会自动重连")
     config.add_argument("--hub")
     config.add_argument("--allow", action="append", help="替换授权目录列表")
@@ -83,6 +85,8 @@ def main():
     sub.add_parser("computer-resume", help="本机解除桌面紧急停止，仍需配置和原生权限")
     sub.add_parser("show", help="显示配置摘要，不显示密钥")
     args = parser.parse_args()
+    if args.command == "run" and args.local_stdio and not args.supervised:
+        parser.error("--local-stdio requires --supervised")
     from shared.brand_migration import default_base
     path = (Path(args.config).expanduser() if args.config else default_base()/'config.json').resolve()
     if args.command == "init":
@@ -207,21 +211,35 @@ def main():
             public["shell"] = {**public["shell"], "env": {k: "<redacted>" for k in public["shell"].get("env", {})}}
         print(json.dumps(public, ensure_ascii=False, indent=2))
     else:
-        from agent.runner import Agent
         async def run():
             from agent.service_watchdog import is_supervised, watch_event_loop
             loop = asyncio.get_running_loop()
+            agent = None
+            stopping = False
             def stop():
-                asyncio.create_task(agent.stop())
-            with parent_stdin_guard(loop, stop) if args.parent_stdin else nullcontext():
+                nonlocal stopping
+                stopping = True
+                if agent is not None:
+                    asyncio.create_task(agent.stop())
+            if args.local_stdio:
+                from shared.local_transport import StdioTransport
+                guard = StdioTransport.from_stdio(loop, stop)
+            else:
+                guard = parent_stdin_guard(loop, stop) if args.parent_stdin else nullcontext()
+            with guard:
                 with watch_event_loop() if args.supervised or is_supervised() else nullcontext():
+                    # In IPC mode reserve stdout and start the EOF guard even
+                    # before importing the execution engine or acquiring its lock.
+                    from agent.runner import Agent
                     agent = Agent(path)
+                    if stopping:
+                        await agent.stop()
                     for sig in (signal.SIGINT, signal.SIGTERM):
                         try:
                             loop.add_signal_handler(sig, stop)
                         except (NotImplementedError, RuntimeError):
                             pass
-                    await agent.run()
+                    await agent.run(local_transport=guard if args.local_stdio else None)
         try:
             asyncio.run(run())
         except KeyboardInterrupt:

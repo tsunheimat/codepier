@@ -203,6 +203,66 @@ async def test_authenticated_late_events_cannot_cross_key_rotation(runtime):
     assert r.operation(receipt["operation_id"], p)["result"] is None
 
 
+def mark_builtin(runtime, revision=0):
+    runtime.store.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('builtin_agent', json.dumps({
+        'version': 1, 'device_id': 'dev', 'owner_user_id': 'owner', 'space_id': 'legacy'})))
+    runtime.store.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('builtin_agent_roots', json.dumps({
+        'version': 1, 'revision': revision, 'roots': []})))
+
+
+@pytest.mark.asyncio
+async def test_builtin_identity_cannot_connect_over_websocket(runtime):
+    r, _, secret = runtime
+    mark_builtin(r)
+    socket = Socket(secret)
+    await r.agent_socket(socket, 'dev')
+    assert socket.closed and not hasattr(socket, 'channel') and not r.connections
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['hello', 'ready'])
+async def test_builtin_roots_changed_during_local_handshake_cannot_register(runtime, phase):
+    r, _, secret = runtime
+    mark_builtin(r)
+    socket = Socket(secret, **{'before_hello' if phase == 'hello' else 'after_ready': lambda: mark_builtin(r, 1)})
+    await r.agent_session(socket, 'dev', local_revision=0)
+    assert socket.closed and not r.connections
+    assert not r.store.one("SELECT id FROM audit WHERE action='device.connected'")
+
+
+@pytest.mark.asyncio
+async def test_builtin_root_revision_fences_dispatch_and_late_results(runtime):
+    r, p, secret = runtime
+    mark_builtin(r)
+    receipt = await r.invoke('fs_read', {'project': 'Project', 'path': 'README.md'}, p)
+    socket = Socket(secret)
+    reader = asyncio.create_task(r.agent_session(socket, 'dev', local_revision=0))
+    try:
+        await socket.wait_for(socket.receiving.wait(), reader)
+        assert r.online('dev') and r.connections['dev'].local_revision == 0
+        mark_builtin(r, 1)
+        assert not r.online('dev')
+        await r.deliver(receipt['operation_id'])
+        assert not [packet for packet in socket.packets if packet['type'] == 'call']
+        socket.incoming.put_nowait({'type': 'result', 'id': receipt['operation_id'],
+                                   'result': {'ok': True, 'data': {'content': 'stale roots'}}})
+        await asyncio.wait_for(reader, 10)
+        assert r.operation(receipt['operation_id'], p)['result'] is None
+        assert not r.connections
+    finally:
+        await socket.close()
+        reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_external_identity_cannot_use_local_session(runtime):
+    r, _, secret = runtime
+    socket = Socket(secret)
+    await r.agent_session(socket, 'dev', local_revision=0)
+    assert socket.closed and not r.connections and not hasattr(socket, 'channel')
+
+
 @pytest.mark.asyncio
 async def test_reconnect_outbox_cannot_bypass_journal_epoch_fence(runtime):
     r, p, secret = runtime

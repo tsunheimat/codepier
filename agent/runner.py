@@ -217,109 +217,114 @@ class Agent:
         ws_url = ("wss://" if base.startswith("https://") else "ws://") + base.split("://", 1)[1] + "/agent/ws/" + config["device_id"]
         async with websockets.connect(ws_url, open_timeout=15, ping_interval=20, ping_timeout=25,
                                       max_size=16 * 1024 * 1024, compression=None, proxy=None, close_timeout=3) as socket:
-            challenge = json.loads(await asyncio.wait_for(socket.recv(), 10))
-            if not isinstance(challenge, dict) or challenge.get("type") != "challenge":
-                raise ValueError("面板握手无效")
-            channel = SecureChannel(config["secret"], challenge["challenge"], config["device_id"], "agent")
-            await socket.send(channel.pack({"type": "hello", "name": config.get("name", platform.node()),
-                          "version": VERSION, "build": self.build.describe(), "platform": platform.system(), "hostname": platform.node(),
-                          "python": platform.python_version(), "roots": config["allowed_roots"], "capabilities": list(TOOLS),
-                          "management": self.lifecycle.describe(), "device_actions": self.lifecycle.actions(),
-                          "journal_id": self.journal.journal_id, "delivery_protocol": 2, "cancel_pending_protocol": 1, "native_security_protocol": 1, "native_protocol": 1, "native_chat_protocol": 3, **advertisement(self.build.catalog_sha256)}))
-            reply = channel.unpack(await asyncio.wait_for(socket.recv(), 10))
-            if reply.get("type") != "ready":
-                raise ValueError("面板未确认 Agent 身份")
-            self.hub_protocol = negotiate(reply)
-            if self.stop_event.is_set() or self.config is not config:
-                return
-            self.socket, self.channel = socket, channel
-            self.connection_number += 1
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S%z')}] [Agent] 已连接 {base}；设备 {self.config['device_id']}；授权目录 {len(self.config['allowed_roots'])} 个。", flush=True)
-            self.output_wake.set()
-            # heartbeat sends the outbox concurrently with the socket reader,
-            # so result ACKs are processed during backlog recovery.
-            heartbeat = asyncio.create_task(self.heartbeat())
-            native_sync = asyncio.create_task(self.native.sync())
-            try:
-                async for packet in socket:
-                    data = channel.unpack(packet)
-                    kind = data.get("type")
-                    if kind in {"call", "probe", "ack", "cancel", "cancel_pending"}:
-                        id = data.get("id", "")
-                        if not isinstance(id, str) or not id or len(id) > 100:
-                            raise ValueError("Invalid operation ID")
-                    if kind == "native_ack":
-                        offsets = data.get("offsets", {})
-                        if isinstance(offsets, dict):
-                            self.native.offsets.update({k: v for k, v in offsets.items() if isinstance(k,str) and type(v) is int and v >= 0})
+            await self.run_session(socket, config=config)
+
+    async def run_session(self, socket, *, config=None):
+        config = self.config if config is None else config
+        base = config["hub_url"] if not getattr(self, "local_transport", None) else "local stdio"
+        challenge = json.loads(await asyncio.wait_for(socket.recv(), 10))
+        if not isinstance(challenge, dict) or challenge.get("type") != "challenge":
+            raise ValueError("面板握手无效")
+        channel = SecureChannel(config["secret"], challenge["challenge"], config["device_id"], "agent")
+        await socket.send(channel.pack({"type": "hello", "name": config.get("name", platform.node()),
+                      "version": VERSION, "build": self.build.describe(), "platform": platform.system(), "hostname": platform.node(),
+                      "python": platform.python_version(), "roots": config["allowed_roots"], "capabilities": list(TOOLS),
+                      "management": self.lifecycle.describe(), "device_actions": self.lifecycle.actions(),
+                      "journal_id": self.journal.journal_id, "delivery_protocol": 2, "cancel_pending_protocol": 1, "native_security_protocol": 1, "native_protocol": 1, "native_chat_protocol": 3, **advertisement(self.build.catalog_sha256)}))
+        reply = channel.unpack(await asyncio.wait_for(socket.recv(), 10))
+        if reply.get("type") != "ready":
+            raise ValueError("面板未确认 Agent 身份")
+        self.hub_protocol = negotiate(reply)
+        if self.stop_event.is_set() or self.config is not config:
+            return
+        self.socket, self.channel = socket, channel
+        self.connection_number += 1
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S%z')}] [Agent] 已连接 {base}；设备 {self.config['device_id']}；授权目录 {len(self.config['allowed_roots'])} 个。", flush=True)
+        self.output_wake.set()
+        # heartbeat sends the outbox concurrently with the socket reader,
+        # so result ACKs are processed during backlog recovery.
+        heartbeat = asyncio.create_task(self.heartbeat())
+        native_sync = asyncio.create_task(self.native.sync())
+        try:
+            async for packet in socket:
+                data = channel.unpack(packet)
+                kind = data.get("type")
+                if kind in {"call", "probe", "ack", "cancel", "cancel_pending"}:
+                    id = data.get("id", "")
+                    if not isinstance(id, str) or not id or len(id) > 100:
+                        raise ValueError("Invalid operation ID")
+                if kind == "native_ack":
+                    offsets = data.get("offsets", {})
+                    if isinstance(offsets, dict):
+                        self.native.offsets.update({k: v for k, v in offsets.items() if isinstance(k,str) and type(v) is int and v >= 0})
+                    continue
+                if kind == "native_request":
+                    if self.lifecycle.handoff_pending:
+                        await self.send({"type":"native_reply", "request_id":data.get("request_id"), "result":{"ok":False,"error":{"code":"AGENT_MAINTENANCE","message":"CodePier 正在交接更新，请稍后重试"}}})
+                    elif len(self.transfer_tasks) >= 8:
+                        await self.send({"type":"native_reply", "request_id":data.get("request_id"), "result":{"ok":False,"error":{"code":"CLI_BUSY","message":"控制通道繁忙"}}})
+                    else:
+                        task = asyncio.create_task(self.native.handle(data, socket))
+                        self.transfer_tasks.add(task)
+                        task.add_done_callback(self.transfer_done)
+                    continue
+                if kind == "computer_approval_decision":
+                    self.computer_approvals.decide(data)
+                    continue
+                if kind == "artifact_read":
+                    request_id=data.get("request_id")
+                    if self.lifecycle.handoff_pending:
+                        await self.send({"type":"artifact_chunk","request_id":request_id,"result":{"ok":False,"error":{"code":"AGENT_MAINTENANCE","message":"CodePier 正在安全切换，请稍后重试"}}})
                         continue
-                    if kind == "native_request":
-                        if self.lifecycle.handoff_pending:
-                            await self.send({"type":"native_reply", "request_id":data.get("request_id"), "result":{"ok":False,"error":{"code":"AGENT_MAINTENANCE","message":"CodePier 正在交接更新，请稍后重试"}}})
-                        elif len(self.transfer_tasks) >= 8:
-                            await self.send({"type":"native_reply", "request_id":data.get("request_id"), "result":{"ok":False,"error":{"code":"CLI_BUSY","message":"控制通道繁忙"}}})
-                        else:
-                            task = asyncio.create_task(self.native.handle(data, socket))
-                            self.transfer_tasks.add(task)
-                            task.add_done_callback(self.transfer_done)
-                        continue
-                    if kind == "computer_approval_decision":
-                        self.computer_approvals.decide(data)
-                        continue
-                    if kind == "artifact_read":
-                        request_id=data.get("request_id")
-                        if self.lifecycle.handoff_pending:
-                            await self.send({"type":"artifact_chunk","request_id":request_id,"result":{"ok":False,"error":{"code":"AGENT_MAINTENANCE","message":"CodePier 正在安全切换，请稍后重试"}}})
+                    if not isinstance(request_id,str) or len(request_id)!=32:
+                        raise ValueError("Invalid artifact request ID")
+                    if len(self.transfer_tasks)>=4:
+                        await self.send({"type":"artifact_chunk","request_id":request_id,"result":{"ok":False,"error":{"code":"ARTIFACT_BUSY","message":"产物通道繁忙"}}})
+                    else:
+                        task=asyncio.create_task(self.send_artifact(data,socket))
+                        self.transfer_tasks.add(task)
+                        task.add_done_callback(self.transfer_done)
+                    continue
+                if kind == "call":
+                    if id not in self.jobs:
+                        task = asyncio.create_task(self.handle(data))
+                        self.jobs[id] = task
+                        task.add_done_callback(lambda done, key=id: self.job_done(key, done))
+                    else:
+                        await self.report_status(id)
+                elif kind == "probe":
+                    await self.report_status(data["id"])
+                elif kind == "ack":
+                    lifecycle_started = False
+                    if self.lifecycle.has_pending(data["id"]):
+                        try:
+                            lifecycle_started = await self.lifecycle.acknowledge(data["id"])
+                        except Exception as exc:
+                            # Keep the durable result in the outbox. A repeated Hub ACK
+                            # will retry the handoff without creating another operation.
+                            print(f"[Agent] 生命周期操作交接失败，将等待重试：{type(exc).__name__}", file=sys.stderr, flush=True)
                             continue
-                        if not isinstance(request_id,str) or len(request_id)!=32:
-                            raise ValueError("Invalid artifact request ID")
-                        if len(self.transfer_tasks)>=4:
-                            await self.send({"type":"artifact_chunk","request_id":request_id,"result":{"ok":False,"error":{"code":"ARTIFACT_BUSY","message":"产物通道繁忙"}}})
-                        else:
-                            task=asyncio.create_task(self.send_artifact(data,socket))
-                            self.transfer_tasks.add(task)
-                            task.add_done_callback(self.transfer_done)
-                        continue
-                    if kind == "call":
-                        if id not in self.jobs:
-                            task = asyncio.create_task(self.handle(data))
-                            self.jobs[id] = task
-                            task.add_done_callback(lambda done, key=id: self.job_done(key, done))
-                        else:
-                            await self.report_status(id)
-                    elif kind == "probe":
-                        await self.report_status(data["id"])
-                    elif kind == "ack":
-                        lifecycle_started = False
-                        if self.lifecycle.has_pending(data["id"]):
-                            try:
-                                lifecycle_started = await self.lifecycle.acknowledge(data["id"])
-                            except Exception as exc:
-                                # Keep the durable result in the outbox. A repeated Hub ACK
-                                # will retry the handoff without creating another operation.
-                                print(f"[Agent] 生命周期操作交接失败，将等待重试：{type(exc).__name__}", file=sys.stderr, flush=True)
-                                continue
-                        self.journal.ack(data["id"])
-                        if lifecycle_started:
-                            self.stop_event.set()
-                            with contextlib.suppress(Exception):
-                                await socket.close(code=1000, reason="Agent lifecycle change")
-                    elif kind == "cancel":
-                        self.cancel_call(id)
-                    elif kind == "cancel_pending":
-                        self.cancel_pending_call(id)
-            finally:
-                self.computer_approvals.cancel()
-                native_sync.cancel()
+                    self.journal.ack(data["id"])
+                    if lifecycle_started:
+                        self.stop_event.set()
+                        with contextlib.suppress(Exception):
+                            await socket.close(code=1000, reason="Agent lifecycle change")
+                elif kind == "cancel":
+                    self.cancel_call(id)
+                elif kind == "cancel_pending":
+                    self.cancel_pending_call(id)
+        finally:
+            self.computer_approvals.cancel()
+            native_sync.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await native_sync
+            heartbeat.cancel()
+            try:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await native_sync
-                heartbeat.cancel()
-                try:
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await heartbeat
-                finally:
-                    if self.socket is socket:
-                        self.socket = self.channel = None
+                    await heartbeat
+            finally:
+                if self.socket is socket:
+                    self.socket = self.channel = None
 
     def cancel_pending_call(self, id):
         """Fence revoked work only before execution; never kill running work.
@@ -933,21 +938,28 @@ class Agent:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(process.wait(), 5)
 
-    async def run(self):
-        await self.integrations.start()
-        self.computer.start_guard()
-        watcher = asyncio.create_task(self.watch_config())
-        sender = asyncio.create_task(self.output_sender())
-        stopping = asyncio.create_task(self.stop_event.wait())
-        from agent.brand_upgrade import watch as watch_brand_upgrade
-        branding = asyncio.create_task(watch_brand_upgrade(self))
+    async def run(self, local_transport=None):
+        self.local_transport = local_transport
+        # Local configuration belongs to the supervisor's immutable revision.
+        # A new revision gets a new child; do not hot-reload it under an old session.
+        background = []
         connection = None
         delay = 1
         try:
+            await self.integrations.start()
+            self.computer.start_guard()
+            if local_transport is None:
+                background.append(asyncio.create_task(self.watch_config()))
+                from agent.brand_upgrade import watch as watch_brand_upgrade
+                background.append(asyncio.create_task(watch_brand_upgrade(self)))
+            background.append(asyncio.create_task(self.output_sender()))
+            stopping = asyncio.create_task(self.stop_event.wait())
+            background.append(stopping)
             while not self.stop_event.is_set():
                 before = self.connection_number
                 try:
-                    connection = asyncio.create_task(self.connect_once())
+                    connection = asyncio.create_task(self.connect_once() if local_transport is None
+                                                     else self.run_session(local_transport))
                     await asyncio.wait({connection, stopping}, return_when=asyncio.FIRST_COMPLETED)
                     if self.stop_event.is_set():
                         connection.cancel()
@@ -956,6 +968,9 @@ class Agent:
                     break
                 except Exception as exc:
                     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S%z')}] [Agent] 连接断开：{type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr, flush=True)
+                if local_transport is not None:
+                    # EOF/failure ends this child. Only the parent may restart it.
+                    break
                 if self.connection_number != before:
                     delay = 1
                 try:
@@ -965,9 +980,12 @@ class Agent:
                 delay = min(delay * 2, 30)
         finally:
             self.stop_event.set()
+            if local_transport is not None:
+                await local_transport.close()
             await self.computer.close()
             await self.integrations.close()
-            background = [watcher, sender, stopping, branding] + ([connection] if connection else [])
+            if connection is not None:
+                background.append(connection)
             for task in background:
                 task.cancel()
             await asyncio.gather(*background, return_exceptions=True)

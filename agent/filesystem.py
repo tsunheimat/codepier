@@ -71,10 +71,43 @@ class FileEngine:
         # Nested project mappings can address the same file under different roots.
         self.mutation_lock = threading.RLock()
 
+    def _builtin_access(self, path: Path):
+        """Recheck pinned root names and private targets at every access boundary.
+
+        This is confinement for file tools, not an OS sandbox against concurrent
+        local processes. In particular, never re-authorize a saved root merely
+        because its name now resolves to a different mount/symlink target.
+        """
+        policy = self.config.get("builtin_root_policy")
+        if policy is None:
+            return
+        try:
+            actual = path.resolve(strict=False)
+            private = [Path(value) for value in policy["protected_paths"]]
+            private.extend((self.config_path.parent, self.journal.directory))
+            private = [item for value in private for item in (value, value.resolve())]
+            if protected(actual.as_posix()) or any(within(actual, item) or within(item, actual) for item in private):
+                raise DevError("PROTECTED_PATH", "不能访问 Hub 或 Agent 的配置/状态目录", 403)
+            if path != actual:
+                raise DevError("ROOT_CHANGED", "已授权路径发生重定向，请重新确认根目录设置", 403)
+            if not any(within(actual, allowed) and allowed.resolve() == allowed
+                       for value in policy["roots"] for allowed in (Path(value),)):
+                raise DevError("ROOT_NOT_ALLOWED", "路径不在当前内置设备根目录授权范围内", 403)
+        except (OSError, RuntimeError) as exc:
+            raise DevError("ROOT_CHANGED", "已授权根目录无法安全解析", 403) from exc
+
+    def _allowed_root(self, spec):
+        path = Path(spec["path"]).expanduser()
+        # Built-in paths are pinned by the Hub, not mutable symlink grants. In
+        # particular, a redirected nested writable root cannot grant writes to
+        # a different child of an otherwise read-only root.
+        return path if "builtin_root_policy" in self.config else path.resolve()
+
     def root(self, project: dict, write: bool = False) -> tuple[Path, dict]:
         raw = Path(project["root"]).expanduser()
         if not raw.is_absolute():
             raise DevError("INVALID_ROOT", "项目根目录必须是本机绝对路径")
+        self._builtin_access(raw)
         try:
             actual = raw.resolve(strict=True)
         except FileNotFoundError as exc:
@@ -85,7 +118,7 @@ class FileEngine:
             raise DevError("PROTECTED_ROOT", "不能把凭据、依赖或内部目录直接映射成项目", 403)
         matches = []
         for spec in self.config.get("allowed_roots", []):
-            allowed = Path(spec["path"]).expanduser().resolve()
+            allowed = self._allowed_root(spec)
             if within(actual, allowed):
                 matches.append((len(allowed.parts), spec))
         if not matches:
@@ -98,6 +131,7 @@ class FileEngine:
         return actual, spec
 
     def path(self, root: Path, value: str, allow_dot: bool = True) -> Path:
+        self._builtin_access(root)
         rel = relative_path(value, allow_dot)
         current = root
         for part in PurePosixPath(rel).parts:
@@ -107,6 +141,7 @@ class FileEngine:
             # is_junction is available on Python 3.12+; resolve containment also covers junctions.
             if hasattr(current, "is_junction") and current.is_junction():
                 raise DevError("SYMLINK_BLOCKED", "不跟随 Windows 目录联接", 403)
+        self._builtin_access(current)
         resolved = current.resolve(strict=False)
         if not within(resolved, root):
             raise DevError("OUTSIDE_PROJECT", "路径超出项目范围", 403)
@@ -115,9 +150,10 @@ class FileEngine:
         return current
 
     def check_local_write(self, path: Path):
+        self._builtin_access(path)
         actual = path.resolve(strict=False)
         matches = [(len(allowed.parts), spec) for spec in self.config.get("allowed_roots", [])
-                   if within(actual, allowed := Path(spec["path"]).expanduser().resolve())]
+                   if within(actual, allowed := self._allowed_root(spec))]
         if not matches or not max(matches, key=lambda x: x[0])[1].get("writable", True):
             raise DevError("READ_ONLY", "目标文件属于本机只读授权目录", 403)
 
@@ -129,6 +165,7 @@ class FileEngine:
             raise DevError("DURABILITY_UNCONFIRMED", "文件系统已改变，但目录落盘失败；请先核查当前文件和备份，勿盲目重试", 500) from exc
 
     def read_bytes(self, path: Path, missing: bool = False, *, max_bytes: int = MAX_FILE) -> bytes | None:
+        self._builtin_access(path)
         try:
             flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
             fd = os.open(path, flags)

@@ -44,6 +44,10 @@ data:
   HUB_PORT: "8765"
   # One built-in device in the initial administrator's Personal Space. Represents
   # this container, NOT its k3s node; no project roots, Shell, or tasks by default.
+  # Private local process pipes, not WebSocket. For optional project mounts see
+  # docs/AGENT_INSTALL.md: use a separate volume, authorize its container path in
+  # the built-in node details, then map a project. Never expose /app/data or keys.
+  # This manifest adds no project mounts; root settings do not create volumes.
   # Set false and restart the deployment to stop it without deleting its identity.
   HUB_BUILTIN_AGENT_ENABLED: "true"
   # Public origin for the panel, OAuth, MCP and Agent installers; must equal the Ingress host.

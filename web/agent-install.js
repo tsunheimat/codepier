@@ -230,7 +230,7 @@ function agentLifecycleSummary(device) {
     current = agent.version || device.info?.version || '—',
     target = agent.target_version || '—';
   if (device.builtin)
-    return `<div class="device-lifecycle"><div class="device-version"><div><small>Agent 版本</small><strong>${esc(current)}</strong></div><span class="badge purple">Built-in · 内置</span></div><p class="lifecycle-note">内置 Agent 由 Hub 部署管理，随 Hub 启动；更新或重启请通过 Hub 部署完成，无需单独安装或卸载。</p><p class="lifecycle-note">此节点代表 Hub 运行环境（容器部署时为容器，而非宿主机）。默认不开放项目目录、Shell 或任务执行权限。</p></div>`;
+    return `<div class="device-lifecycle"><div class="device-version"><div><small>Agent 版本</small><strong>${esc(current)}</strong></div><span class="badge purple">Built-in · 内置</span></div><p class="lifecycle-note">内置 Agent 由 Hub 部署管理，随 Hub 启动；更新或重启请通过 Hub 部署完成，无需单独安装或卸载。</p><p class="lifecycle-note">此节点代表 Hub 运行环境（容器部署时为容器，而非宿主机），通过私有本地进程管道连接。项目文件需先挂载，再由具备节点管理权限的实例管理员在“完整管理”中授权并映射；默认只读，不开启 Shell 或任务执行权限。</p></div>`;
   const managed = agent.managed && agent.service;
   const versionState = agent.update_available
     ? '<span class="badge running">可更新</span>'

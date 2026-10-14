@@ -7,6 +7,7 @@ from pathlib import Path
 WINDOWS_CORE = {
     'test_native_windows.py', 'test_windows_service.py', 'test_optimization_store.py',
     'test_regression_plan.py', 'test_smoke.py', 'test_protocol_negotiation.py',
+    'test_local_transport.py', 'test_agent_local_transport.py', 'test_builtin_agent_integration.py',
 }
 
 # These modules deliberately assert short local timing, subprocess startup,

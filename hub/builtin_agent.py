@@ -6,6 +6,7 @@ invalid state is never an invitation to enroll a replacement identity.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -18,6 +19,8 @@ import uuid
 
 import anyio
 
+from hub.builtin_roots import load_settings
+from shared.local_transport import PipeTransport
 from shared.util import DevError, atomic_json
 
 log = logging.getLogger(__name__)
@@ -111,6 +114,8 @@ class BuiltinAgent:
         self.clock = clock or time.monotonic
         self.interval, self.terminate_timeout = interval, terminate_timeout
         self.process = None
+        self._transport = None
+        self._session = None
         self._task = None
         self._loop = None
         self._wake = asyncio.Event()
@@ -123,7 +128,6 @@ class BuiltinAgent:
         if not self.config.builtin_agent_enabled or self._task is not None:
             return
         self._loop = asyncio.get_running_loop()
-        # Never wait for the listener here: ASGI has not yielded startup yet.
         self._task = asyncio.create_task(self._run(), name="hub-builtin-agent")
 
     def wake(self):
@@ -163,7 +167,9 @@ class BuiltinAgent:
                 raise DevError("BUILTIN_AGENT_STATE", "Hub 内置设备原始归属不一致；不会重新分配", 409)
             if not device_identity_active(self.store, device):
                 return None
-            return {"device_id": device["id"], "name": device["name"], "secret": self.store.decrypt(device["secret"])}
+            settings = load_settings(self.store)
+            return {"device_id": device["id"], "name": device["name"], "secret": self.store.decrypt(device["secret"]),
+                    "revision": settings["revision"], "roots": settings["roots"]}
 
     def _write_config(self, identity):
         from agent.config import validate_config
@@ -172,8 +178,12 @@ class BuiltinAgent:
         state = self.directory / "state"
         state.mkdir(mode=0o700, exist_ok=True)
         os.chmod(state, 0o700)
-        config = validate_config({**identity, "hub_url": listener_url(self.config), "state_dir": str(state),
-                                  "allowed_roots": [], "tasks": {}, "shell": {"enabled": False},
+        config = validate_config({**{key: identity[key] for key in ("device_id", "name", "secret")},
+                                  "hub_url": listener_url(self.config), "state_dir": str(state),
+                                  "allowed_roots": identity["roots"], "tasks": {}, "shell": {"enabled": False},
+                                  "builtin_root_policy": {"protected_paths": [str(self.store.directory.resolve())],
+                                                          "roots": [root["path"] for root in identity["roots"]]},
+                                  "builtin_revision": identity["revision"],
                                   "skills": {"codex_enabled": False, "extra_roots": []},
                                   "computer": {"enabled": False}, "integrations": {
                                       "language_servers": {}, "browser": {"enabled": False}, "local_control": False}},
@@ -186,25 +196,45 @@ class BuiltinAgent:
 
     async def _reap(self):
         process, self.process = self.process, None
+        transport, self._transport = self._transport, None
+        session, self._session = self._session, None
         self._current = None
-        if process is None:
-            return
-        # EOF also provides a fail-safe when termination signals are unavailable.
-        if process.stdin is not None:
-            process.stdin.close()
-        if process.returncode is None:
-            try:
-                process.terminate()
-            except ProcessLookupError:
+        if session is not None:
+            session.cancel()
+            await asyncio.gather(session, return_exceptions=True)
+
+        async def discard_output():
+            while await process.stdout.read(64 * 1024):
                 pass
+
+        # A paused, full stdout pipe can otherwise keep Process.wait pending even
+        # after the child exits. The protocol reader has finished before draining.
+        draining = asyncio.create_task(discard_output()) if process is not None else None
         try:
-            await asyncio.wait_for(process.wait(), self.terminate_timeout)
-        except asyncio.TimeoutError:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            await process.wait()
+            # EOF also provides a fail-safe when termination signals are unavailable.
+            if process is not None:
+                if process.stdin is not None:
+                    process.stdin.close()
+                if process.returncode is None:
+                    try:
+                        process.terminate()
+                    except ProcessLookupError:
+                        pass
+                try:
+                    await asyncio.wait_for(process.wait(), self.terminate_timeout)
+                except asyncio.TimeoutError:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
+        finally:
+            if draining is not None:
+                draining.cancel()
+                await asyncio.gather(draining, return_exceptions=True)
+            if transport is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(transport.close(), 2)
 
     async def _stop_child(self):
         cleanup = asyncio.create_task(self._reap())
@@ -223,8 +253,8 @@ class BuiltinAgent:
         env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
         env["PYTHONUNBUFFERED"] = "1"
         spawning = asyncio.create_task(self.process_factory(
-            sys.executable, "-m", "agent", "--config", str(self.config_path), "run", "--supervised", "--parent-stdin",
-            cwd=str(BASE), stdin=asyncio.subprocess.PIPE, env=env))
+            sys.executable, "-m", "agent", "--config", str(self.config_path), "run", "--supervised", "--local-stdio",
+            cwd=str(BASE), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, env=env))
         try:
             self.process = await asyncio.shield(spawning)
         except asyncio.CancelledError:
@@ -235,13 +265,19 @@ class BuiltinAgent:
                 # into a recoverable reconcile error and restart the loop.
                 pass
             raise
+        self._transport = PipeTransport(self.process.stdout, self.process.stdin)
+        self._session = asyncio.create_task(
+            self.runtime.agent_session(self._transport, identity["device_id"], local_revision=identity["revision"]),
+            name="hub-builtin-session")
+        self._session.add_done_callback(lambda _: self.wake())
         self._current = identity
         self._started_at = self.clock()
 
     async def reconcile(self):
         """Called by one supervisor task; DB phases never span an await/lock."""
         desired = await self.store.run(self._snapshot)
-        if self.process is not None and self.process.returncode is not None:
+        if self.process is not None and (self.process.returncode is not None or
+                                         self._session is not None and self._session.done()):
             if self.clock() - self._started_at >= 60:
                 self._failures = 0
             await self._stop_child()

@@ -22,8 +22,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class BuiltinHub:
-    def __init__(self, directory):
+    def __init__(self, directory, *, websocket=True):
         self.directory = directory
+        self.websocket = websocket
         self.data = directory / 'data'
         self.password = 'Builtin-test-' + token(18)
         self.user = uuid.uuid4().hex
@@ -47,10 +48,16 @@ class BuiltinHub:
         self.client = httpx.Client(base_url=self.url, timeout=10, trust_env=False)
 
     def start(self):
-        self.process = subprocess.Popen(
-            [sys.executable, '-m', 'hub', '--data-dir', str(self.data), 'run',
-             '--host', '127.0.0.1', '--port', str(self.port)],
-            cwd=BASE, env=self.env, stdout=self.log, stderr=subprocess.STDOUT)
+        if self.websocket:
+            command = [sys.executable, '-m', 'hub', '--data-dir', str(self.data), 'run',
+                       '--host', '127.0.0.1', '--port', str(self.port)]
+        else:
+            command = [sys.executable, '-m', 'uvicorn', 'hub.app:create_app', '--factory',
+                       '--host', '127.0.0.1', '--port', str(self.port), '--ws', 'none']
+            # Deliberately wrong local-listener settings must not affect private IPC.
+            self.env.update(HUB_HOST='127.0.0.2', HUB_PORT='1')
+        self.process = subprocess.Popen(command, cwd=BASE, env=self.env,
+                                        stdout=self.log, stderr=subprocess.STDOUT)
         wait_for_hub(self.process, self.url)
         self.client.cookies.clear()
         response = self.client.post('/api/login', json={'username': 'admin', 'password': self.password})
@@ -79,6 +86,32 @@ class BuiltinHub:
 
     def config(self):
         return json.loads((self.data / 'builtin-agent' / 'config.json').read_text())
+
+    def roots(self, device, roots=None, revision=None):
+        url = f'/api/devices/{device}/roots'
+        response = self.client.get(url) if roots is None else self.client.put(
+            url, json={'roots': roots, 'revision': revision})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def applied(self, device, revision):
+        settings = self.roots(device)
+        return settings if settings['status'] == 'applied' and settings['applied_revision'] == revision else None
+
+    def project(self, device, root, *, alias='Mounted', mode='write'):
+        body = {'device_id': device, 'root': str(root), 'alias': alias, 'mode': mode,
+                'allow_tasks': False, 'idempotency_key': uuid.uuid4().hex}
+        response = self.client.post('/api/projects', json=body)
+        if response.status_code == 409 and response.json().get('error', {}).get('code') == 'VALIDATION_PENDING':
+            operation = response.json()['error']['operation_id']
+            wait_for(lambda: self.client.get('/api/operations/' + operation).json()['state'] not in
+                     {'queued', 'running', 'reconnecting', 'cancelling'}, timeout=30)
+            response = self.client.post('/api/projects', json=body)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def call(self, tool, **arguments):
+        return self.client.post('/api/tools/call', json={'tool': tool, 'arguments': arguments})
 
     def close(self):
         try:
@@ -171,3 +204,57 @@ def test_abrupt_hub_exit_releases_agent_and_preserves_identity(builtin_hub):
     assert hub.config()['secret'] == config['secret']
     hub.stop()
     wait_for(lambda: released_state(config), timeout=20)
+
+
+def test_mounted_project_read_write_revocation_and_restart_without_websocket(tmp_path):
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    project = workspace / 'project'
+    project.mkdir()
+    (project / 'README.md').write_text('mounted project\n')
+    hub = BuiltinHub(tmp_path, websocket=False)
+    try:
+        hub.start()
+        identity = wait_for(hub.online, timeout=45)['id']
+        saved = hub.roots(identity, [{'path': str(workspace), 'writable': True}], revision=0)
+        revision = saved['revision']
+        wait_for(lambda: hub.applied(identity, revision), timeout=30)
+        mapping = hub.project(identity, project)
+        response = hub.call('fs_read', project='Mounted', path='README.md')
+        assert response.status_code == 200, response.text
+        assert response.json()['content'] == 'mounted project\n'
+        write_args = {'project': 'Mounted', 'path': 'local.txt', 'content': 'private IPC\n',
+                      'expected_sha256': 'new', 'idempotency_key': uuid.uuid4().hex}
+        response = hub.call('fs_write', **write_args)
+        assert response.status_code == 200, response.text
+        first_operation = response.json()['operation_id']
+        assert (project / 'local.txt').read_text() == 'private IPC\n'
+        assert hub.config()['shell']['enabled'] is False
+        assert not hub.config()['allowed_roots'][0]['allow_tasks']
+        hub.stop()
+        hub.start()
+        assert wait_for(hub.online, timeout=45)['id'] == identity
+        wait_for(lambda: hub.applied(identity, revision), timeout=30)
+        # A durable replay after the Hub/child restart must not repeat the mutation.
+        response = hub.call('fs_write', **write_args)
+        assert response.status_code == 200, response.text
+        assert response.json()['operation_id'] == first_operation
+        response = hub.call('fs_read', project='Mounted', path='local.txt')
+        assert response.status_code == 200 and response.json()['content'] == 'private IPC\n'
+        saved = hub.roots(identity, [{'path': str(workspace), 'writable': False}], revision=revision)
+        revision = saved['revision']
+        wait_for(lambda: hub.applied(identity, revision), timeout=30)
+        response = hub.call('fs_write', **{**write_args, 'path': 'denied.txt', 'idempotency_key': uuid.uuid4().hex})
+        assert response.status_code == 409, response.text
+        assert response.json()['error']['code'] == 'READ_ONLY'
+        assert not (project / 'denied.txt').exists()
+        saved = hub.roots(identity, [], revision=revision)
+        wait_for(lambda: hub.applied(identity, saved['revision']), timeout=30)
+        response = hub.call('fs_read', project='Mounted', path='README.md')
+        assert response.status_code == 409, response.text
+        assert response.json()['error']['code'] == 'ROOT_NOT_ALLOWED'
+        projects = hub.client.get('/api/projects').json()['projects']
+        assert any(row['id'] == mapping['id'] for row in projects)
+        assert (project / 'local.txt').read_text() == 'private IPC\n'
+    finally:
+        hub.close()

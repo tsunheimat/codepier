@@ -23,6 +23,9 @@ services:
       TZ: "${TZ:-Asia/Taipei}"
       FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
       OAUTH_REDIRECT_HOSTS: "${OAUTH_REDIRECT_HOSTS:-chatgpt.com,chat.openai.com,platform.openai.com,localhost,127.0.0.1,::1}"
+    # Optional project mounts are an explicit deployment choice; none are added here.
+    # See docs/AGENT_INSTALL.md: mount separately from /app/data, authorize the
+    # container path in the built-in node details, then map a project. No Shell/tasks.
     volumes:
       - hub-data:/app/data
       - type: bind

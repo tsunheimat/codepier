@@ -61,7 +61,9 @@ ChatGPT / MCP 客户端                 浏览器管理面板
 
 **Hub** 负责面板、认证、项目映射、MCP 接入和操作记录。**Agent** 负责实际访问文件、启动本机工具和执行命令。一台 Hub 可以连接多台 Agent，每个项目对应其中一台电脑上的实际目录。
 
-Hub 初始化管理员后，默认在该管理员的 Personal Space 登记一个 **CodePier Hub / 内置** 节点，并自动运行镜像内的 Agent。该节点默认不授权任何项目目录，也不开启 Shell 或任务；Docker / k3s 下代表 Hub 容器而非宿主节点。身份跨重启保留，删除后不自动重建；可通过 `HUB_BUILTIN_AGENT_ENABLED=false` 关闭运行。内置 Agent 随 Hub 部署维护，详见 [Hub 内置节点](docs/AGENT_INSTALL.md#hub-内置节点)。
+Hub 初始化管理员后，默认在该管理员的 Personal Space 登记一个 **CodePier Hub / 内置** 节点，并自动运行镜像内的 Agent。Docker / k3s 下代表 Hub 容器而非宿主节点。内置 Agent 通过**私有本地进程管道**通信，不使用 WebSocket；远程 Agent 的 WebSocket 连接不变。身份跨重启保留，删除后不自动重建；可通过 `HUB_BUILTIN_AGENT_ENABLED=false` 关闭运行。
+
+内置节点可按 **挂载 → 授权 → 映射** 访问项目文件：部署管理员先将项目存储单独挂载到 Hub（例如 `/workspace`，不要放进 `/app/data`）；具备该节点管理权限的实例管理员再到 **设备节点 → 完整管理 → 内置节点授权目录**，填写容器内已存在的绝对路径，默认只读，需要编辑时明确授权；等待“已生效”后使用现有项目映射流程。保存授权不会创建目录或挂载，也**不会开启 Shell 或任务**。授权与版本保存在 Hub 数据库中，不要修改自动生成的 Agent 配置；Hub 数据库、密钥、配置、状态及包含它们的上级目录不得开放。内置节点随 Hub 部署维护，Compose / k3s 的**手动可选挂载示例**及保存/生效说明见 [Hub 内置节点](docs/AGENT_INSTALL.md#hub-内置节点)。
 
 项目映射限制文件工具的访问范围，但**完整 Shell 不是项目目录沙箱**：命令使用 Agent 运行账号的系统权限。启用执行权限前，请确认该账号能够访问哪些文件和凭据。
 
@@ -108,6 +110,8 @@ curl --fail http://127.0.0.1:8765/healthz
 不在服务器上构建镜像的部署方式（例如 Kubernetes/k3s）可直接拉取 CI 发布到 `ghcr.io/<仓库所有者>/codepier` 的 Hub 镜像。每次成功的 `main` 构建都会更新 `:latest`（同时保留 `:main` 与 `:sha-<短提交>`）；正式 release 另外提供版本标签。k3s 单文件清单 [`deploy/k3s/deployment.yaml`](deploy/k3s/deployment.yaml) 默认跟随 `:latest` 并强制重新拉取；需要可重现部署时应改为 CI 记录的 digest。Compose 可通过 `CODEPIER_HUB_IMAGE` 选择镜像，首次安装与数据初始化仍应遵循[入门教程](docs/START-HERE.md)。OIDC 环境变量播种和首次 SSO 管理员初始化需显式配置，见[多用户/OIDC 指南](docs/MULTIUSER_OIDC.md)。镜像在发布前经过启动验证，构建与校验过程见[发布流程](docs/RELEASING.md)。
 
 ### 2. 接入开发电脑
+
+仅访问 Hub 已挂载的项目文件时，也可使用上面的内置节点流程，无需另外安装 Agent；需要本机工具或命令执行时，按下述方式接入独立 Agent。
 
 在面板打开 **设备节点 → 接入电脑**，选择系统，填写设备名称、这台电脑能访问的 Hub 地址，以及一个已经存在的绝对授权目录。复制生成的命令，在目标电脑的本机终端执行。
 

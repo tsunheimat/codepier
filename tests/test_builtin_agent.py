@@ -128,6 +128,14 @@ def test_local_listener_address(host, expected):
     assert listener_url(config(host=host, port=9123)) == f"http://{expected}:9123"
 
 
+class LocalRuntime:
+    def publish(self, *args, **kwargs):
+        pass
+
+    async def agent_session(self, transport, device_id, *, local_revision):
+        await asyncio.Event().wait()
+
+
 class Process:
     def __init__(self, *, stubborn=False):
         self.returncode = None
@@ -136,11 +144,15 @@ class Process:
         self.killed = 0
         self.stubborn = stubborn
         self.exited = asyncio.Event()
-        self.stdin = SimpleNamespace(close=self.close)
+        self.stdin = SimpleNamespace(close=self.close, wait_closed=self.wait_closed)
+        self.stdout = asyncio.StreamReader()
         self.on_terminate = None
 
     def close(self):
         self.closed = True
+
+    async def wait_closed(self):
+        pass
 
     def terminate(self):
         self.terminated += 1
@@ -178,7 +190,7 @@ class Factory:
 async def test_optout_neither_enrolls_nor_spawns(store):
     admin(store)
     factory = Factory()
-    supervisor = BuiltinAgent(store, None, replace(config(), builtin_agent_enabled=False), process_factory=factory)
+    supervisor = BuiltinAgent(store, LocalRuntime(), replace(config(), builtin_agent_enabled=False), process_factory=factory)
     await supervisor.start()
     await supervisor.stop()
     assert not factory.children and builtin_device_id(store) is None
@@ -195,7 +207,7 @@ async def test_private_safe_config_and_spawn_contract(store, monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://secret:password@proxy")
     admin(store)
     factory = Factory()
-    supervisor = BuiltinAgent(store, None, config(host="127.0.0.2", port=9321), process_factory=factory)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(host="127.0.0.2", port=9321), process_factory=factory)
     try:
         await supervisor.reconcile()
         value = json.loads(supervisor.config_path.read_text())
@@ -208,9 +220,11 @@ async def test_private_safe_config_and_spawn_contract(store, monkeypatch):
         assert supervisor.config_path.stat().st_mode & 0o777 == 0o600
         assert supervisor.directory.stat().st_mode & 0o777 == 0o700
         args, kwargs = factory.calls[0]
-        assert args[-3:] == ("run", "--supervised", "--parent-stdin")
-        assert kwargs["stdin"] == asyncio.subprocess.PIPE
-        assert "stdout" not in kwargs and "stderr" not in kwargs
+        assert args[-3:] == ("run", "--supervised", "--local-stdio")
+        assert kwargs["stdin"] == kwargs["stdout"] == asyncio.subprocess.PIPE
+        assert "stderr" not in kwargs
+        assert value["builtin_revision"] == 0
+        assert value["builtin_root_policy"]["protected_paths"] == [str(store.directory.resolve())]
         assert not {"CODEPIER_OIDC_CLIENT_SECRET", "OPENAI_API_KEY", "HTTPS_PROXY"} & kwargs["env"].keys()
         assert value["secret"] not in args
     finally:
@@ -221,7 +235,7 @@ async def test_private_safe_config_and_spawn_contract(store, monkeypatch):
 async def test_rotation_and_concurrent_disable_reread_after_reap(store):
     admin(store)
     factory = Factory()
-    supervisor = BuiltinAgent(store, None, config(), process_factory=factory)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory)
     try:
         await supervisor.reconcile()
         child = supervisor.process
@@ -249,7 +263,7 @@ async def test_rotation_and_concurrent_disable_reread_after_reap(store):
 async def test_authorization_revocation_stops_without_reassignment(store, revocation):
     space = admin(store)
     factory = Factory()
-    supervisor = BuiltinAgent(store, None, config(), process_factory=factory)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory)
     await supervisor.start()
     try:
         for _ in range(200):
@@ -287,7 +301,7 @@ async def test_crash_backoff_is_bounded_and_does_not_preempt_agent_reconnect(sto
     admin(store)
     now = [100.0]
     factory = Factory()
-    supervisor = BuiltinAgent(store, None, config(), process_factory=factory, clock=lambda: now[0])
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory, clock=lambda: now[0])
     try:
         await supervisor.reconcile()
         for delay in (1, 2, 4, 8, 16, 30, 30):
@@ -316,7 +330,7 @@ async def test_start_returns_before_spawn_and_cancelled_spawn_is_reaped(store):
         await release.wait()
         return child
 
-    supervisor = BuiltinAgent(store, None, config(), process_factory=factory, terminate_timeout=.01)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory, terminate_timeout=.01)
     await asyncio.wait_for(supervisor.start(), .1)
     await asyncio.wait_for(spawning.wait(), 2)
     stopping = asyncio.create_task(supervisor.stop())
@@ -341,7 +355,7 @@ async def test_failed_spawn_during_cancellation_preserves_shutdown(store):
         await release.wait()
         raise OSError("spawn failed")
 
-    supervisor = BuiltinAgent(store, None, config(), process_factory=factory)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory)
     await supervisor.start()
     await asyncio.wait_for(spawning.wait(), 2)
     stopping = asyncio.create_task(supervisor.stop())
@@ -364,7 +378,7 @@ async def test_spawn_failure_and_corrupt_marker_do_not_take_down_supervisor(stor
         return await factory(*args, **kwargs)
 
     now = [0.0]
-    supervisor = BuiltinAgent(store, None, config(), process_factory=flaky, clock=lambda: now[0], interval=.01)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=flaky, clock=lambda: now[0], interval=.01)
     await supervisor.start()
     try:
         for _ in range(200):
@@ -399,7 +413,7 @@ async def test_existing_name_disabled_state_and_secret_are_preserved(store):
     store.execute("UPDATE devices SET name='Renamed',enabled=0 WHERE id=?", (marker["device_id"],))
     before = store.one("SELECT * FROM devices WHERE id=?", (marker["device_id"],))
     factory = Factory()
-    supervisor = BuiltinAgent(store, None, config(), process_factory=factory)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory)
     await supervisor.reconcile()
     assert not factory.children
     assert store.one("SELECT * FROM devices WHERE id=?", (marker["device_id"],)) == before
@@ -407,9 +421,52 @@ async def test_existing_name_disabled_state_and_secret_are_preserved(store):
 
 
 @pytest.mark.asyncio
+async def test_completed_ipc_session_is_reaped_before_replacement(store):
+    admin(store)
+    now = [10.0]
+    factory = Factory()
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory, clock=lambda: now[0])
+    try:
+        await supervisor.reconcile()
+        child, session = supervisor.process, supervisor._session
+        session.cancel()
+        await asyncio.gather(session, return_exceptions=True)
+        await supervisor.reconcile()
+        assert child.terminated == 1 and child.closed
+        assert supervisor.process is None and supervisor._session is None
+        now[0] += 1
+        await supervisor.reconcile()
+        assert supervisor.process is not child and len(factory.children) == 2
+    finally:
+        await supervisor._stop_child()
+
+
+@pytest.mark.asyncio
+async def test_reap_drains_child_stdout_before_waiting(store):
+    class BufferedProcess(Process):
+        def __init__(self):
+            super().__init__()
+            self.stdout.feed_data(b'x' * 200000)
+            self.stdout.feed_eof()
+
+        async def wait(self):
+            await super().wait()
+            while not self.stdout.at_eof():
+                await asyncio.sleep(0)
+            return self.returncode
+
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), terminate_timeout=.05)
+    child = BufferedProcess()
+    supervisor.process = child
+    await asyncio.wait_for(supervisor._stop_child(), 1)
+    assert child.closed and child.terminated == 1 and child.killed == 0
+    assert child.stdout.at_eof()
+
+
+@pytest.mark.asyncio
 async def test_periodic_late_bootstrap_without_wake(store):
     factory = Factory()
-    supervisor = BuiltinAgent(store, None, config(), process_factory=factory, interval=.01)
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), process_factory=factory, interval=.01)
     await supervisor.start()
     try:
         await asyncio.sleep(.03)

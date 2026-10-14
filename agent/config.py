@@ -48,6 +48,31 @@ def validate_config(value: object, config_path: Path) -> dict:
             if field in root and type(root[field]) is not bool:
                 raise ValueError(f"{field} 必须是 true/false，不能是字符串")
     c["allowed_roots"] = roots
+    if "builtin_root_policy" in c:
+        from agent.filesystem import protected, within
+        policy = c["builtin_root_policy"]
+        if not isinstance(policy, dict) or set(policy) != {"protected_paths", "roots"}:
+            raise ValueError("builtin_root_policy 必须包含 protected_paths 和 roots")
+        for field in ("protected_paths", "roots"):
+            paths = policy[field]
+            if not isinstance(paths, list) or len(paths) > 32 or (field == "protected_paths" and not paths):
+                raise ValueError("builtin_root_policy 路径列表无效")
+            for path in paths:
+                if (not isinstance(path, str) or not 1 <= len(path) <= 2048
+                        or any(ord(char) < 32 or ord(char) == 127 for char in path)
+                        or not Path(path).is_absolute() or str(Path(path)) != path or ".." in Path(path).parts):
+                    raise ValueError("builtin_root_policy 路径必须是规范绝对路径")
+            if len(set(paths)) != len(paths):
+                raise ValueError("builtin_root_policy 路径不能重复")
+        if (len(roots) != len(policy["roots"]) or {root["path"] for root in roots} != set(policy["roots"])
+                or any(type(root.get("writable")) is not bool or root.get("allow_tasks") is not False for root in roots)):
+            raise ValueError("内置根目录必须匹配已保存的授权且禁止任务")
+        private = [Path(path) for path in policy["protected_paths"]]
+        private.extend((config_path.resolve().parent, Path(c["state_dir"])))
+        for root in policy["roots"]:
+            path = Path(root)
+            if protected(path.as_posix()) or any(within(path, item) or within(item, path) for item in private):
+                raise ValueError("内置根目录不能包含 Hub 或 Agent 的配置/状态目录")
     tasks = c.get("tasks", {})
     if not isinstance(tasks, dict):
         raise ValueError("tasks 应为具名任务对象")
@@ -79,6 +104,8 @@ def validate_config(value: object, config_path: Path) -> dict:
                 raise ValueError(f"任务 {name}: env 必须是文字键值对象")
     c["tasks"] = tasks
     c["shell"] = validate_shell(c.get("shell", {}))
+    if "builtin_root_policy" in c and (c["tasks"] or c["shell"]["enabled"]):
+        raise ValueError("内置根目录不授予 Shell 或任务执行权限")
     c["mcp_policy"] = validate_policy(c.get("mcp_policy", {}))
     c["skills"] = validate_skills(c.get("skills", {}))
     c["computer"] = validate_computer(c.get("computer", {}))

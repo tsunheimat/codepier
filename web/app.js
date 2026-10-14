@@ -1157,7 +1157,7 @@ function devicesHTML() {
         String(d.id || '')
           .slice(0, 12)
           .toUpperCase(),
-      )}</span></div></header><dl class="card-meta workspace-device-facts"><div><dt>平台 / 主机</dt><dd>${esc(info.platform || '等待上线')} · ${esc(info.hostname || '—')}</dd></div><div><dt>映射项目</dt><dd>${esc(d.project_count)} 个</dd></div><div><dt>最近心跳</dt><dd>${esc(d.last_seen ? shortTime(d.last_seen) : '未连接')}</dd></div><div><dt>授权目录</dt><dd>${roots.length} 个</dd></div></dl><div class="actions agent-card-actions workspace-device-actions">${agentLifecycleButtons(d, true)}<button class="btn ghost small" data-action="device-detail" data-id="${esc(d.id)}">${icon('settings')}完整管理</button><button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">${icon('folder')}映射项目</button></div>${agentLifecycleSummary(d)}<details class="device-roots workspace-device-roots"><summary>目录与权限 · ${roots.length}</summary><div class="device-root-list">${rootRows || (d.builtin ? '<p>内置节点默认不开放项目目录，也不会自动创建项目映射。</p>' : '<p>设备上线后显示授权目录</p>')}</div></details><details class="device-raw workspace-device-raw"><summary>完整本机信息</summary><div class="code-box"><pre>${esc(json(info))}</pre></div></details></article>`;
+      )}</span></div></header><dl class="card-meta workspace-device-facts"><div><dt>平台 / 主机</dt><dd>${esc(info.platform || '等待上线')} · ${esc(info.hostname || '—')}</dd></div><div><dt>映射项目</dt><dd>${esc(d.project_count)} 个</dd></div><div><dt>最近心跳</dt><dd>${esc(d.last_seen ? shortTime(d.last_seen) : '未连接')}</dd></div><div><dt>授权目录</dt><dd>${roots.length} 个</dd></div></dl><div class="actions agent-card-actions workspace-device-actions">${agentLifecycleButtons(d, true)}<button class="btn ghost small" data-action="device-detail" data-id="${esc(d.id)}">${icon('settings')}完整管理</button><button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">${icon('folder')}映射项目</button></div>${agentLifecycleSummary(d)}<details class="device-roots workspace-device-roots"><summary>目录与权限 · ${roots.length}</summary><div class="device-root-list">${rootRows || (d.builtin ? '<p>尚无生效的项目目录授权。先将目录挂载到 Hub，再由具备节点管理权限的实例管理员在“完整管理”中授权，最后映射项目。</p>' : '<p>设备上线后显示授权目录</p>')}</div></details><details class="device-raw workspace-device-raw"><summary>完整本机信息</summary><div class="code-box"><pre>${esc(json(info))}</pre></div></details></article>`;
     })
     .join('');
   return (
@@ -1210,6 +1210,210 @@ function pairingModal(pairing, rePair = false) {
   $('#download-pairing').onclick = () => download('pairing.json', json(pairing));
   loadBasics().catch(() => {});
 }
+function builtinRootsHTML(device) {
+  if (!device.builtin || device.can_configure_roots !== true) return '';
+  return `<section class="node-manage-section" id="builtin-roots"><div class="node-section-head"><h3>内置节点授权目录</h3><p>先挂载 → 再授权 → 映射项目。填写 Hub 运行环境内已存在的绝对路径；容器部署使用容器内路径，例如 <code>/workspace</code>，不是宿主机路径。</p></div><p class="form-note">保存不会创建目录或挂载。仅授权文件访问，不开启 Shell 或任务；不可开放 Hub 数据库、密钥、配置与状态目录或其上级目录。移除授权保留项目映射和文件，但后续访问会被拒绝；已开始的修改不会撤销。</p><form id="builtin-roots-form" novalidate><fieldset id="builtin-roots-fields" disabled><div id="builtin-root-rows"></div><button type="button" class="btn ghost small" id="add-builtin-root">${icon(
+    'plus',
+  )}添加授权目录</button></fieldset><p id="builtin-roots-status" class="form-note" role="status" aria-live="polite">正在读取已保存的授权…</p><p id="builtin-roots-error" class="field-error" role="alert" hidden></p><div class="actions"><button type="submit" class="btn primary small" id="save-builtin-roots" disabled>保存目录授权</button><button type="button" class="btn ghost small" id="refresh-builtin-roots">重新读取</button><button type="button" class="btn ghost small" id="map-builtin-project" data-action="add-project" data-device="${esc(
+    device.id,
+  )}" disabled>映射项目</button></div></form><p class="form-note">需要实例管理员身份及当前 Space 的节点管理权限。目录授权保存在 Hub 数据库中，请勿编辑自动生成的 Agent 配置。保存与生效是两个状态，生效后仍需单独映射项目。</p></section>`;
+}
+async function setupBuiltinRoots(dialog, device) {
+  const form = $('#builtin-roots-form', dialog);
+  if (!form) return;
+  const session = S.session,
+    space = S.space_id,
+    page = S.page,
+    rows = $('#builtin-root-rows', form),
+    fields = $('#builtin-roots-fields', form),
+    status = $('#builtin-roots-status', form),
+    errorBox = $('#builtin-roots-error', form),
+    save = $('#save-builtin-roots', form),
+    refresh = $('#refresh-builtin-roots', form),
+    map = $('#map-builtin-project', form),
+    controller = new AbortController(),
+    url = `/api/devices/${encodeURIComponent(device.id)}/roots`;
+  let snapshot = null,
+    revision = null,
+    dirty = false,
+    pending = false,
+    polling = false,
+    blocked = false,
+    stale = false,
+    timer = null,
+    rowId = 0;
+  const current = () =>
+    !controller.signal.aborted &&
+    S.session === session &&
+    S.space_id === space &&
+    S.page === page &&
+    dialog.isConnected &&
+    $('.modal') === dialog;
+  const cleanup = S.modalCleanup;
+  S.modalCleanup = () => {
+    clearTimeout(timer);
+    controller.abort();
+    cleanup?.();
+  };
+  const showError = (message = '') => {
+    errorBox.textContent = message;
+    errorBox.hidden = !message;
+  };
+  const controls = () => {
+    fields.disabled = pending || blocked || revision === null;
+    save.disabled = pending || polling || blocked || stale || revision === null;
+    refresh.disabled = pending || polling;
+    map.disabled =
+      pending ||
+      blocked ||
+      stale ||
+      dirty ||
+      snapshot?.status !== 'applied' ||
+      !snapshot?.roots.length;
+    form.setAttribute('aria-busy', String(pending));
+  };
+  const markDirty = () => {
+    dirty = true;
+    dialog.dataset.editorDirty = 'true';
+    controls();
+  };
+  const addRow = (root = { path: '', writable: false }) => {
+    const row = document.createElement('div'),
+      id = 'builtin-root-' + ++rowId;
+    row.className = 'builtin-root-editor';
+    row.innerHTML = `<div class="field"><label for="${id}">Hub 内绝对路径</label><input id="${id}" name="root_path" value="${esc(
+      root.path,
+    )}" placeholder="/workspace/project" autocomplete="off" spellcheck="false" aria-describedby="builtin-roots-error"></div><div class="field"><label for="${id}-mode">文件权限</label><select id="${id}-mode" name="root_mode"><option value="read" ${
+      root.writable ? '' : 'selected'
+    }>只读</option><option value="write" ${
+      root.writable ? 'selected' : ''
+    }>可读取和编辑</option></select></div><button type="button" class="btn ghost small" aria-label="移除此授权目录">移除</button>`;
+    $('button', row).onclick = () => {
+      row.remove();
+      markDirty();
+    };
+    rows.append(row);
+    return row;
+  };
+  const display = (result, replaceRows = false) => {
+    snapshot = result;
+    if (replaceRows) {
+      rows.replaceChildren();
+      result.roots.forEach(addRow);
+      revision = result.revision;
+      dirty = false;
+      stale = false;
+      dialog.dataset.editorDirty = String($('#device-rename', dialog).value !== device.name);
+      delete form.dataset.submission;
+    } else if (result.revision !== revision) {
+      stale = true;
+      showError('目录授权已在其他页面更改。当前输入已保留，请重新读取最新授权后再保存。');
+    }
+    const states = {
+      applied: '已生效，可映射项目',
+      applying: '正在应用；尚未确认生效，请等待',
+      offline: '节点离线；保存不代表已生效，等待重新连接',
+      disabled: '内置节点已停用；启用后才能应用',
+    };
+    status.textContent = `已保存版本 ${result.revision} · 已应用版本 ${
+      result.applied_revision ?? '无'
+    } · ${states[result.status] || '等待确认'}`;
+    controls();
+  };
+  const handleError = (error) => {
+    if (
+      error.status === 401 ||
+      (error.status === 403 && error.code !== 'PROTECTED_ROOT') ||
+      error.status === 404
+    ) blocked = true;
+    if (error.status === 409) stale = true;
+    if (error.code === 'NETWORK_UNCERTAIN' || error.status >= 500) {
+      form.dataset.submission = 'uncertain';
+      stale = true;
+    }
+    showError(error.message + (stale ? ' 请重新读取最新授权后再保存；当前输入已保留。' : ''));
+  };
+  const schedule = () => {
+    clearTimeout(timer);
+    if (current() && !blocked) timer = setTimeout(() => load(false), 3000);
+  };
+  const load = async (replaceRows) => {
+    if (!current() || pending || polling) return;
+    polling = true;
+    pending = replaceRows;
+    clearTimeout(timer);
+    controls();
+    try {
+      const result = await api(url, { signal: controller.signal, retryDelays: [] });
+      if (!current()) return;
+      blocked = false;
+      if (replaceRows) showError();
+      display(result, replaceRows || revision === null);
+    } catch (error) {
+      if (current()) handleError(error);
+    } finally {
+      pending = false;
+      polling = false;
+      if (current()) {
+        controls();
+        schedule();
+      }
+    }
+  };
+  $('#add-builtin-root', form).onclick = () => {
+    const row = addRow();
+    markDirty();
+    $('input', row).focus();
+  };
+  rows.addEventListener('input', markDirty);
+  rows.addEventListener('change', markDirty);
+  refresh.onclick = () => {
+    if (dirty && !confirm('重新读取会丢弃未保存的目录输入。继续？')) return;
+    load(true);
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (!current() || pending || polling || blocked || stale || revision === null) return;
+    showError();
+    const roots = [],
+      paths = new Set();
+    for (const row of rows.children) {
+      const input = $('input', row),
+        path = input.value;
+      input.removeAttribute('aria-invalid');
+      if (!/^(\/|[A-Za-z]:[\\/]|\\\\[^\\]+\\)/.test(path) || paths.has(path)) {
+        input.setAttribute('aria-invalid', 'true');
+        showError(
+          paths.has(path) ? '授权目录不能重复。' : '请填写 Hub 运行环境内已存在目录的绝对路径。',
+        );
+        input.focus();
+        return;
+      }
+      paths.add(path);
+      roots.push({ path, writable: $('select', row).value === 'write' });
+    }
+    pending = true;
+    clearTimeout(timer);
+    controls();
+    try {
+      const result = await api(url, {
+        method: 'PUT',
+        body: JSON.stringify({ roots, revision }),
+        signal: controller.signal,
+      });
+      if (current()) display(result, true);
+    } catch (error) {
+      if (current()) handleError(error);
+    } finally {
+      pending = false;
+      if (current()) {
+        controls();
+        schedule();
+      }
+    }
+  };
+  await load(true);
+}
 async function deviceDetail(id) {
   const d = S.devices.find((device) => device.id === id);
   if (!d) return;
@@ -1219,7 +1423,7 @@ async function deviceDetail(id) {
       : '';
   const dialog = modal(
     '管理节点 · ' + d.name,
-    `<div class="field"><label>节点名称</label><input id="device-rename" value="${esc(d.name)}" maxlength="80"></div><dl class="kv device-kv"><dt>节点编号</dt><dd><code>${esc(d.id)}</code></dd><dt>连接状态</dt><dd>${d.enabled ? onlineBadge(d.online) : '<span class="badge failed">已停用</span>'}</dd><dt>最近连接</dt><dd>${esc(timeText(d.last_seen))}</dd><dt>平台 / 主机</dt><dd>${esc(d.info.platform || '等待上线')} · ${esc(d.info.hostname || '—')}</dd><dt>项目映射</dt><dd>${d.project_count} 个</dd></dl>${agentLifecycleSummary(d)}<section class="node-manage-section"><div class="node-section-head"><div><h3>Agent 生命周期</h3><p>${d.builtin ? '由 Hub 部署统一管理；停用、启用或轮换连接密钥仍可在此操作。' : '更新先校验完整新运行时，面板记录结果后才切换；节点有任务执行时不会强行更新或重启。'}</p></div></div><div class="actions">${agentLifecycleButtons(d, false)}</div></section><section class="node-manage-section"><h3>开发工具配置</h3><p class="form-note">按项目连接语言服务与后台浏览器。只进入配置引导，不自动安装、授权或重启。</p><div class="actions">${
+    `<div class="field"><label>节点名称</label><input id="device-rename" value="${esc(d.name)}" maxlength="80"></div><dl class="kv device-kv"><dt>节点编号</dt><dd><code>${esc(d.id)}</code></dd><dt>连接状态</dt><dd>${d.enabled ? onlineBadge(d.online) : '<span class="badge failed">已停用</span>'}</dd><dt>最近连接</dt><dd>${esc(timeText(d.last_seen))}</dd><dt>平台 / 主机</dt><dd>${esc(d.info.platform || '等待上线')} · ${esc(d.info.hostname || '—')}</dd><dt>项目映射</dt><dd>${d.project_count} 个</dd></dl>${agentLifecycleSummary(d)}<section class="node-manage-section"><div class="node-section-head"><div><h3>Agent 生命周期</h3><p>${d.builtin ? '由 Hub 部署统一管理；停用、启用或轮换连接密钥仍可在此操作。' : '更新先校验完整新运行时，面板记录结果后才切换；节点有任务执行时不会强行更新或重启。'}</p></div></div><div class="actions">${agentLifecycleButtons(d, false)}</div></section>${builtinRootsHTML(d)}<section class="node-manage-section"><h3>开发工具配置</h3><p class="form-note">按项目连接语言服务与后台浏览器。只进入配置引导，不自动安装、授权或重启。</p><div class="actions">${
       S.projects
         .filter((p) => p.device_id === d.id)
         .map(
@@ -1228,9 +1432,9 @@ async function deviceDetail(id) {
         )
         .join('') ||
       (d.builtin
-        ? '<p class="form-note">内置节点默认不开放项目目录，也不会自动创建项目映射。</p>'
+        ? '<p class="form-note">先挂载项目目录，再由具备节点管理权限的实例管理员授权，最后映射项目；不会自动创建项目映射。目录授权仅开放文件访问，不开启开发工具执行能力。</p>'
         : `<button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">先添加项目映射</button>`)
-    }</div></section><details class="device-raw"><summary>本机声明与能力</summary><div class="code-box"><pre>${esc(json(d.info))}</pre></div></details><p class="form-note">${d.builtin ? '内置节点通过本机连接 Hub，连接配置由 Hub 自动维护；无需下载配对文件或在其他电脑安装。' : '更换 IP / 端口：在目标电脑运行 <code>python -m agent configure --hub http://新IP:新端口</code>。面板不能越过本机配置增加授权目录。'}</p><section class="danger-zone"><div><h3>节点与凭据</h3><p>${d.builtin ? '停用会停止内置 Agent，重新启用后自动连接。移除会停止内置 Agent 并持久保留删除决定，Hub 重启后不会自动重建此节点；不会删除项目文件。' : '卸载只清理目标电脑上的 Agent；“移除面板记录”只删除 Hub 中的节点身份。两者都不会删除项目文件。'}</p></div><div class="actions">${uninstall}<button class="btn small" id="toggle-device">${d.enabled ? '停用节点' : '启用节点'}</button><button class="btn small" id="rotate-device">轮换连接密钥</button><button class="btn danger small" id="delete-device">${d.builtin ? '移除内置节点' : '仅移除面板记录'}</button></div></section>`,
+    }</div></section><details class="device-raw"><summary>本机声明与能力</summary><div class="code-box"><pre>${esc(json(d.info))}</pre></div></details><p class="form-note">${d.builtin ? '内置节点通过私有本地进程管道连接 Hub，不使用 WebSocket；远程 Agent 的 WebSocket 连接不变。连接配置由 Hub 自动维护，无需下载配对文件或手动编辑生成配置。' : '更换 IP / 端口：在目标电脑运行 <code>python -m agent configure --hub http://新IP:新端口</code>。面板不能越过本机配置增加授权目录。'}</p><section class="danger-zone"><div><h3>节点与凭据</h3><p>${d.builtin ? '停用会停止内置 Agent，重新启用后自动连接。移除会停止内置 Agent 并持久保留删除决定，Hub 重启后不会自动重建此节点；不会删除项目文件。' : '卸载只清理目标电脑上的 Agent；“移除面板记录”只删除 Hub 中的节点身份。两者都不会删除项目文件。'}</p></div><div class="actions">${uninstall}<button class="btn small" id="toggle-device">${d.enabled ? '停用节点' : '启用节点'}</button><button class="btn small" id="rotate-device">轮换连接密钥</button><button class="btn danger small" id="delete-device">${d.builtin ? '移除内置节点' : '仅移除面板记录'}</button></div></section>`,
     buttons('rename-device', '保存名称'),
     true,
   );
@@ -1289,6 +1493,7 @@ async function deviceDetail(id) {
       await renderPage();
     });
   };
+  await setupBuiltinRoots(dialog, d);
 }
 async function projectModal(id = null, device = '') {
   const session = S.session,
@@ -1319,6 +1524,27 @@ async function projectModal(id = null, device = '') {
   status.className = 'form-note';
   status.setAttribute('role', 'status');
   form.append(status);
+  const builtinNote = document.createElement('p');
+  builtinNote.className = 'form-note';
+  builtinNote.textContent = '内置节点仅开放文件访问，不支持 Shell 或任务。请填写 Hub 内已授权的路径；新映射默认只读。';
+  form.append(builtinNote);
+  const selectedBuiltin = () =>
+    S.devices.find((d) => d.id === form.elements.device_id.value)?.builtin === true;
+  let previousBuiltin = false,
+    remoteMode = form.elements.mode.value;
+  const syncDevicePermissions = () => {
+    const builtin = selectedBuiltin();
+    form.elements.allow_tasks.disabled = builtin;
+    if (builtin) form.elements.allow_tasks.checked = false;
+    builtinNote.hidden = !builtin;
+    if (!id && builtin && !previousBuiltin) {
+      remoteMode = form.elements.mode.value;
+      form.elements.mode.value = 'read';
+    } else if (!id && !builtin && previousBuiltin) form.elements.mode.value = remoteMode;
+    previousBuiltin = builtin;
+  };
+  form.elements.device_id.addEventListener('change', syncDevicePermissions);
+  syncDevicePermissions();
   const current = () =>
     S.session === session && S.page === page && dialog.isConnected && $('.modal') === dialog;
   let submission = null;
@@ -1326,7 +1552,7 @@ async function projectModal(id = null, device = '') {
     busy(button, async () => {
       if (!current() || !form.reportValidity()) return;
       const data = Object.fromEntries(new FormData(form));
-      data.allow_tasks = form.elements.allow_tasks.checked;
+      data.allow_tasks = !selectedBuiltin() && form.elements.allow_tasks.checked;
       const signature = JSON.stringify(data);
       if (submission && submission.signature !== signature && submission.uncertain) {
         status.textContent = '原保存结果尚未核实，请保留原参数继续核实，或关闭后先刷新项目列表。';

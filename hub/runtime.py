@@ -11,7 +11,8 @@ import uuid
 from hub.access_profiles import effective_grant, refresh_profile_principal, current_profile, access_context
 from hub.roles import require_role, role_project_scopes, principal_grant
 from hub import iam
-from hub.builtin_agent import require_external_device
+from hub.builtin_agent import is_builtin_device, require_external_device
+from hub.builtin_roots import load_settings
 from shared.role_contracts import ROLE_TOOLS
 from hub.principal import Principal, refresh_principal
 from hub.dispatch_plan import DeferredCall
@@ -67,6 +68,7 @@ class Connection:
         self.cancel_pending_protocol = 0
         self.unusable = False
         self.device_secret = None
+        self.local_revision = None
         self.native_protocol = 0
         self.native_chat_protocol = 0
         self.native_security_protocol = 0
@@ -183,8 +185,17 @@ class Runtime:
 
     def connection_authorized(self, device_id, connection):
         device = self.store.one("SELECT id,enabled,secret,space_id,owner_user_id FROM devices WHERE id=?", (device_id,))
-        return bool(iam.device_identity_active(self.store, device) and
-                    (getattr(connection, "device_secret", None) is None or connection.device_secret == device["secret"]))
+        if not (iam.device_identity_active(self.store, device) and
+                (getattr(connection, "device_secret", None) is None or connection.device_secret == device["secret"])):
+            return False
+        try:
+            builtin = is_builtin_device(self.store, device_id)
+            revision = getattr(connection, "local_revision", None)
+            if builtin:
+                return type(revision) is int and revision == load_settings(self.store)["revision"]
+            return revision is None
+        except DevError:
+            return False
 
     def _detach_fence(self, device_id, connection):
         if self.connections.get(device_id) is not connection:
@@ -1146,19 +1157,30 @@ class Runtime:
 
     async def agent_socket(self, websocket: WebSocket, device_id: str):
         device = await self.store.run(self.store.one, "SELECT * FROM devices WHERE id=?", (device_id,))
-        if not device or not device["enabled"]:
+        if not device or not device["enabled"] or await self.store.run(is_builtin_device, self.store, device_id):
             await websocket.close(code=4404)
             return
         await websocket.accept()
+        await self.agent_session(websocket, device_id)
+
+    async def agent_session(self, transport, device_id: str, *, local_revision=None):
+        device = await self.store.run(self.store.one, "SELECT * FROM devices WHERE id=?", (device_id,))
+        builtin = await self.store.run(is_builtin_device, self.store, device_id)
+        if (not device or not device["enabled"] or
+                (builtin and type(local_revision) is not int) or
+                (not builtin and local_revision is not None)):
+            await transport.close(code=4404)
+            return
         challenge = token(32)
         connection = None
         authenticated = False
         try:
-            await asyncio.wait_for(websocket.send_json({"type": "challenge", "challenge": challenge}), 4)
+            await asyncio.wait_for(transport.send_json({"type": "challenge", "challenge": challenge}), 4)
             channel = SecureChannel(self.store.decrypt(device["secret"]), challenge, device_id, "hub")
-            connection = Connection(websocket, channel)
+            connection = Connection(transport, channel)
             connection.device_secret = device["secret"]
-            hello = channel.unpack(await asyncio.wait_for(websocket.receive_text(), 10))
+            connection.local_revision = local_revision
+            hello = channel.unpack(await asyncio.wait_for(transport.receive_text(), 10))
             if hello.get("type") != "hello":
                 raise ValueError("Invalid hello")
             connection.tool_protocol = negotiate(hello)
@@ -1206,7 +1228,7 @@ class Runtime:
             if not await self.store.run(self._register_agent, device_id, connection, info, device):
                 return
             while not self.stopping:
-                packet = await asyncio.wait_for(websocket.receive_text(), 45)
+                packet = await asyncio.wait_for(transport.receive_text(), 45)
                 data = channel.unpack(packet)
                 if not await self.store.run(self._touch_agent, device_id, connection):
                     break  # Fence a replaced socket before accepting its late events.
@@ -1227,7 +1249,7 @@ class Runtime:
                 if acknowledgement is not None:
                     await connection.send(acknowledgement)
 
-        except (WebSocketDisconnect, asyncio.TimeoutError):
+        except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
             pass
         except Exception as exc:
             with contextlib.suppress(Exception):
@@ -1238,7 +1260,7 @@ class Runtime:
                     with contextlib.suppress(Exception):
                         await self.store.run(self.store.audit, "device:" + device["name"], "device.disconnected", device_id, "offline", target_kind="device")
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(websocket.close(), 2)
+                await asyncio.wait_for(transport.close(), 2)
 
     async def stop(self):
         self.stopping = True

@@ -11,7 +11,8 @@ from fastapi import Request
 from shared.agent_lifecycle import DEVICE_ACTIONS
 from shared.crypto import token
 from shared.util import DevError, VERSION, normalize_url
-from hub.api.models import DeviceCreate, DeviceUpdate
+from hub.api.models import BuiltinRootsInput, DeviceCreate, DeviceUpdate
+from hub.builtin_roots import load_settings, save_settings
 
 @iam.read_decision
 def device_rows(store, runtime, principal):
@@ -32,6 +33,7 @@ def device_rows(store, runtime, principal):
             info = {}
         row["builtin"] = row["id"] == builtin_id
         row["can_manage"] = bool(principal.admin or row.get('owner_user_id')==principal.user_id)
+        row["can_configure_roots"] = bool(row["builtin"] and principal.instance_admin and row["can_manage"])
         row["info"] = info
         row["online"] = runtime.online(row["id"])
         row["project_count"] = store.one("SELECT count(*) AS n FROM projects WHERE device_id=?", (row["id"],))["n"]
@@ -96,6 +98,48 @@ def make_devices_router(context: HubContext):
     def devices(request: Request):
         principal = auth.panel(request)
         return {"devices": device_rows(store, runtime, principal)}
+
+    def roots_access(id, request, *, write=False):
+        principal = auth.instance(request, write)
+        device = iam.require_device(store, principal, id, manage=True)
+        if not is_builtin_device(store, id):
+            raise DevError("BUILTIN_ROOTS_ONLY", "只有 Hub 内置设备支持面板根目录设置", 409)
+        return principal, device
+
+    def roots_result(id, device, settings):
+        connection = runtime.connections.get(id)
+        online = runtime.online(id)
+        local_revision = getattr(connection, "local_revision", None)
+        applied = local_revision if online and type(local_revision) is int and local_revision >= 0 else None
+        if not getattr(config, "builtin_agent_enabled", True) or not iam.device_identity_active(store, device):
+            status, applied = "disabled", None
+        elif applied == settings["revision"]:
+            status = "applied"
+        elif connection is not None and type(local_revision) is int and local_revision != settings["revision"]:
+            status = "applying"
+        else:
+            status = "offline"
+        return {"roots": settings["roots"], "revision": settings["revision"],
+                "applied_revision": applied, "status": status}
+
+    @router.get("/api/devices/{id}/roots")
+    @database_endpoint(store)
+    def get_roots(id: str, request: Request):
+        with store.transaction(immediate=False):
+            _, device = roots_access(id, request)
+            return roots_result(id, device, load_settings(store))
+
+    @router.put("/api/devices/{id}/roots")
+    @database_endpoint(store)
+    def put_roots(id: str, request: Request, body: BuiltinRootsInput):
+        with store.transaction():
+            principal, device = roots_access(id, request, write=True)
+            settings = save_settings(store, [root.model_dump() for root in body.roots], body.revision,
+                                     actor=principal.actor, device_id=id)
+            if settings["revision"] != body.revision:
+                runtime.publish("device", {"id": id})
+                wake_builtin(id)
+            return roots_result(id, device, settings)
 
     @router.post("/api/devices")
     @database_endpoint(store)

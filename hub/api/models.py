@@ -34,6 +34,16 @@ class DeviceUpdate(Model):
     enabled: bool | None = None
 
 
+class BuiltinRootInput(Model):
+    path: str = Field(min_length=1, max_length=2048)
+    writable: bool
+
+
+class BuiltinRootsInput(Model):
+    roots: list[BuiltinRootInput] = Field(max_length=32)
+    revision: int = Field(ge=0, le=2**53 - 1)
+
+
 class ProjectInput(Model):
     alias: str = Field(min_length=1, max_length=64)
     device_id: str = Field(min_length=1, max_length=100)
