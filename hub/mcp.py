@@ -78,7 +78,8 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         mark('authenticate')
         try:principal=await runtime.store.run(auth.bearer, request)
         except DevError as exc:
-            metadata=(await runtime.store.run(public_url))+'/.well-known/oauth-protected-resource/mcp'
+            metadata=public_base+'/.well-known/oauth-protected-resource/mcp'
+            if authorization=='role':metadata+='?authorization=role'
             return failure(None,-32001,exc.message,exc.status,headers={'WWW-Authenticate':f'Bearer resource_metadata="{metadata}", scope="{auth_scope}"'})
         mark('authenticated')
         if request.headers.get('content-type','').split(';',1)[0].strip().lower()!='application/json':
@@ -206,7 +207,9 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                     if trace:trace['status']='tool_error';trace['operation_id']=exc.details.get('operation_id')
                     if exc.code=='INSUFFICIENT_SCOPE':
                         scopes=[ROLE_SCOPE] if principal.authorization_mode=='role' else sorted({'read',exc.details.get('required_scope', TOOLS[name].scope)}) if name in TOOLS else ['read']
-                        challenge='Bearer resource_metadata="'+public_base+'/.well-known/oauth-protected-resource/mcp", error="insufficient_scope", scope="'+' '.join(scopes)+'"'
+                        metadata_url=public_base+'/.well-known/oauth-protected-resource/mcp'
+                        if principal.authorization_mode=='role':metadata_url+='?authorization=role'
+                        challenge='Bearer resource_metadata="'+metadata_url+'", error="insufficient_scope", scope="'+' '.join(scopes)+'"'
                         result['_meta']={'mcp/www_authenticate':[challenge]}
             elif method=='resources/list':
                 result={'resources':[{'uri':'rd://projects','name':'Mapped projects','mimeType':'application/json'},

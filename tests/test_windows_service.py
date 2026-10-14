@@ -106,7 +106,7 @@ def test_existing_boot_task_starts_without_requesting_uac_again(windows_install,
     (base/'service.xml').write_bytes(saved)
     monkeypatch.setattr(installer.sys, 'platform', 'win32')
     monkeypatch.setattr(installer.subprocess, 'run', lambda *_a, **_kw: SimpleNamespace(returncode=0))
-    monkeypatch.setattr(installer.subprocess, 'check_output', lambda *_a, **_kw: saved)
+    monkeypatch.setattr(installer.subprocess, 'check_output', lambda *_a, **_kw: saved.decode('utf-16').encode('utf-8'))
     monkeypatch.setattr(installer, 'windows_user_sid', lambda: SID)
     monkeypatch.setattr(installer, 'register_windows_task', lambda *_a: pytest.fail('must not request UAC again'))
     monkeypatch.setattr(installer.time, 'sleep', lambda *_a: None)
@@ -349,3 +349,117 @@ def test_source_adoption_refuses_live_foreground_process(tmp_path, monkeypatch):
         with pytest.raises(ValueError, match='foreground Agent'):
             installer.install_source(base, ROOT)
     assert not (base/'runtime').exists()
+
+
+@pytest.mark.parametrize('bom', [False, True])
+def test_live_task_unicode_transport_handles_utf16_declaration_in_utf8(windows_install, monkeypatch, bom):
+    import base64
+    base, python = windows_install
+    saved = installer.windows_task_xml(base, python, 'CodePierAgent', SID)
+    (base/'service.xml').write_bytes(saved)
+    live = saved.decode('utf-16').encode('utf-8')
+    with pytest.raises(ET.ParseError, match='encoding specified'):
+        ET.fromstring(live)
+    calls = []
+    def query(command, **kwargs):
+        calls.append((command, kwargs))
+        return (b'\xef\xbb\xbf' if bom else b'') + live
+    monkeypatch.setattr(installer.subprocess, 'check_output', query)
+    installer.verify_service_ownership(base)
+    parsed = installer.query_windows_task_xml("Literal ' $task")
+    assert installer.windows_task_has_recovery(parsed, SID)
+    command, options = calls[-1]
+    assert command[:4] == ['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand']
+    assert options == {'timeout': 30}
+    script = base64.b64decode(command[-1]).decode('utf-16-le')
+    assert '[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)' in script
+    assert ".GetTask('Literal '' $task')" in script
+    assert '[Console]::Write([string]$t.Xml)' in script
+    assert 'schtasks' not in script and 'RunAs' not in script
+    assert (base/'service.xml').read_bytes() == saved
+
+
+@pytest.mark.parametrize('bad', [
+    b'', b'<broken>', b'\x00<Task/>', b'<Task>\xff</Task>',
+    '<?xml version="1.0" encoding="UTF-16"?><Task/>'.encode('utf-16'),
+    '<Task>中文路径</Task>'.encode('cp936'),
+    b'<!DOCTYPE Task [<!ENTITY x "text">]><Task>&x;</Task>',
+    b'<Task/>' + b' '*(1024*1024),
+])
+def test_live_task_transport_rejects_ambiguous_or_invalid_xml_without_replacing(windows_install, monkeypatch, bad):
+    base, python = windows_install
+    saved = installer.windows_task_xml(base, python, 'CodePierAgent', SID)
+    (base/'service.xml').write_bytes(saved)
+    monkeypatch.setattr(installer.subprocess, 'check_output', lambda *_a, **_kw: bad)
+    with pytest.raises(ValueError, match='service was preserved'):
+        installer.verify_service_ownership(base)
+    assert (base/'service.xml').read_bytes() == saved
+    assert not (base/'service-pending.xml').exists()
+
+
+@pytest.mark.parametrize('field', ['Command', 'Arguments', 'WorkingDirectory'])
+def test_unicode_live_task_foreign_action_still_rejected(windows_install, monkeypatch, field):
+    base, python = windows_install
+    saved = installer.windows_task_xml(base, python, 'CodePierAgent', SID)
+    (base/'service.xml').write_bytes(saved)
+    live = ET.fromstring(saved)
+    live.find('t:Actions/t:Exec/t:'+field, NS).text = 'C:\\foreign\\中文'
+    output = ET.tostring(live, encoding='unicode').encode('utf-8')
+    monkeypatch.setattr(installer.subprocess, 'check_output', lambda *_a, **_kw: output)
+    with pytest.raises(ValueError, match='different Agent'):
+        installer.verify_service_ownership(base)
+    assert (base/'service.xml').read_bytes() == saved
+
+
+EXPORTED_DEFAULT_PATHS = (
+    'Principals/Principal/RunLevel', 'Triggers/BootTrigger/Enabled',
+    'Triggers/TimeTrigger/Enabled', 'Settings/RunOnlyIfNetworkAvailable',
+)
+
+
+def task_field(root, path):
+    return root.find('/'.join('t:'+part for part in path.split('/')), NS)
+
+
+def test_windows_export_omitted_defaults_preserve_same_recovery_policy(windows_install):
+    base, python = windows_install
+    root = ET.fromstring(installer.windows_task_xml(base, python, 'CodePierAgent', SID))
+    for path in EXPORTED_DEFAULT_PATHS:
+        parent = task_field(root, path.rsplit('/', 1)[0])
+        parent.remove(task_field(root, path))
+    raw = ET.tostring(root, encoding='unicode')
+    assert installer.windows_task_has_recovery(raw, SID)
+    assert not installer.windows_task_has_recovery(raw, 'S-1-5-21-999-999-999-999')
+
+
+@pytest.mark.parametrize('path,value', [
+    ('Principals/Principal/RunLevel', 'HighestAvailable'),
+    ('Triggers/BootTrigger/Enabled', 'false'),
+    ('Triggers/TimeTrigger/Enabled', 'false'),
+    ('Settings/RunOnlyIfNetworkAvailable', 'true'),
+] + [(path, '') for path in EXPORTED_DEFAULT_PATHS])
+def test_windows_export_explicit_nondefault_or_empty_still_rejected(windows_install, path, value):
+    base, python = windows_install
+    root = ET.fromstring(installer.windows_task_xml(base, python, 'CodePierAgent', SID))
+    task_field(root, path).text = value
+    assert not installer.windows_task_has_recovery(ET.tostring(root, encoding='unicode'), SID)
+
+
+@pytest.mark.parametrize('path', [
+    'Principals/Principal', 'Triggers/BootTrigger', 'Triggers/TimeTrigger', 'Settings',
+])
+def test_missing_parent_cannot_gain_export_defaults(windows_install, path):
+    base, python = windows_install
+    root = ET.fromstring(installer.windows_task_xml(base, python, 'CodePierAgent', SID))
+    parent = task_field(root, path.rsplit('/', 1)[0]) if '/' in path else root
+    parent.remove(task_field(root, path))
+    assert not installer.windows_task_has_recovery(ET.tostring(root, encoding='unicode'), SID)
+
+
+@pytest.mark.parametrize('path', ['Triggers/TimeTrigger/Repetition/Duration', 'Triggers/TimeTrigger/EndBoundary'])
+def test_explicit_empty_expiration_is_not_an_omitted_expiration(windows_install, path):
+    base, python = windows_install
+    root = ET.fromstring(installer.windows_task_xml(base, python, 'CodePierAgent', SID))
+    parent, field = path.rsplit('/', 1)
+    ET.SubElement(task_field(root, parent), '{'+NS['t']+'}'+field)
+    assert not installer.windows_task_has_recovery(ET.tostring(root, encoding='unicode'), SID)
