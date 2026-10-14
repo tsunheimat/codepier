@@ -15,6 +15,18 @@ from hub.store import Store
 from shared.util import DevError
 
 
+@pytest.fixture(autouse=True)
+def bounded_fake_shutdown(monkeypatch):
+    original = BuiltinAgent.__init__
+
+    def initialize(self, *args, **kwargs):
+        if kwargs.get('process_factory') is not None:
+            kwargs.setdefault('terminate_timeout', .01)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(BuiltinAgent, '__init__', initialize)
+
+
 @pytest.fixture
 def store(tmp_path):
     value = Store(tmp_path / "hub")
@@ -439,6 +451,36 @@ async def test_completed_ipc_session_is_reaped_before_replacement(store):
         assert supervisor.process is not child and len(factory.children) == 2
     finally:
         await supervisor._stop_child()
+
+
+@pytest.mark.asyncio
+async def test_reap_allows_pipe_eof_exit_without_signal(store):
+    child = Process()
+
+    class Transport:
+        async def close(self):
+            child.close()
+            child.exit(0)
+
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), terminate_timeout=.1)
+    supervisor.process, supervisor._transport = child, Transport()
+    await asyncio.wait_for(supervisor._stop_child(), 1)
+    assert child.returncode == 0 and child.terminated == child.killed == 0
+
+
+@pytest.mark.asyncio
+async def test_reap_escalates_unresponsive_pipe_child(store):
+    child = Process(stubborn=True)
+
+    class Transport:
+        async def close(self):
+            child.close()
+
+    supervisor = BuiltinAgent(store, LocalRuntime(), config(), terminate_timeout=.01)
+    supervisor.process, supervisor._transport = child, Transport()
+    await asyncio.wait_for(supervisor._stop_child(), 1)
+    assert child.closed and child.terminated == child.killed == 1
+    assert child.returncode is not None
 
 
 @pytest.mark.asyncio

@@ -166,6 +166,138 @@ async def test_cancelling_partial_receive_poisoned_and_close_wakes_reader():
     assert not transport._pending
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('interruption', ['cancel', 'timeout'])
+@pytest.mark.parametrize('failure', [False, True])
+async def test_close_waiter_survives_interrupted_caller(interruption, failure):
+    class DelayedWriter(Writer):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.finish = asyncio.Future()
+            self.waits = 0
+            self.aborts = 0
+
+        def abort(self):
+            self.aborts += 1
+            super().abort()
+
+        async def wait_closed(self):
+            self.waits += 1
+            self.started.set()
+            await self.finish
+
+    writer = DelayedWriter()
+    transport = PipeTransport(asyncio.StreamReader(), writer)
+    closing = asyncio.create_task(transport.close(reason='first reason'))
+    await writer.started.wait()
+    if interruption == 'cancel':
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+    else:
+        await asyncio.wait_for(closing, 2)
+    assert not writer.finish.cancelled()
+    assert not transport._close_waiter.done()
+    if failure:
+        writer.finish.set_exception(BrokenPipeError('peer closed'))
+    else:
+        writer.finish.set_result(None)
+    await transport.close(reason='later reason')
+    assert writer.waits == writer.aborts == 1
+    assert transport._error == 'first reason'
+
+
+@contextlib.asynccontextmanager
+async def real_parent_pipe(*, reads=True):
+    loop = asyncio.get_running_loop()
+    errors = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: errors.append(context))
+    code = 'import sys; sys.stdin.buffer.read()' if reads else 'import time; time.sleep(30)'
+    child = await asyncio.create_subprocess_exec(sys.executable, '-c', code,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    transport = PipeTransport(asyncio.StreamReader(), child.stdin)
+    try:
+        yield transport
+    finally:
+        try:
+            await transport.close()
+            if child.returncode is None:
+                child.terminate()
+            await asyncio.wait_for(child.communicate(), 5)
+            # Observe callback failures after connection_lost and concurrent
+            # cleanup callbacks, not just the result of the close coroutine.
+            for _ in range(3):
+                barrier = loop.create_future()
+                loop.call_soon(barrier.set_result, None)
+                await barrier
+        finally:
+            if child.returncode is None:
+                child.kill()
+                await child.communicate()
+            loop.set_exception_handler(previous_handler)
+        assert not errors, [(item.get('message'), repr(item.get('exception'))) for item in errors]
+
+
+@pytest.mark.asyncio
+async def test_real_pipe_invalid_frame_does_not_double_finalize():
+    async with real_parent_pipe() as transport:
+        transport.reader.feed_data(struct.pack('!I', 0))
+        with pytest.raises(ConnectionError):
+            await transport.recv()
+        await asyncio.gather(transport.close(), transport.close())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_reader', [False, True])
+async def test_real_pipe_pending_reader_and_repeated_close(cancel_reader):
+    async with real_parent_pipe() as transport:
+        started = asyncio.Event()
+        original = transport.reader.readexactly
+
+        async def read(n):
+            started.set()
+            return await original(n)
+
+        transport.reader.readexactly = read
+        reading = asyncio.create_task(transport.recv())
+        await started.wait()
+        if cancel_reader:
+            reading.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await reading
+        else:
+            await transport.close(reason='roots changed')
+            with pytest.raises(ConnectionError, match='roots changed'):
+                await reading
+        await asyncio.gather(transport.close(), transport.close())
+        assert not transport._pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('completed', [False, True])
+async def test_real_pipe_already_closing_or_closed_is_not_aborted_again(completed):
+    async with real_parent_pipe() as transport:
+        transport.writer.close()
+        if completed:
+            await transport.writer.wait_closed()
+        transport.reader.feed_eof()
+        with pytest.raises(ConnectionError):
+            await transport.recv()
+        await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_real_pipe_buffered_graceful_close_can_be_aborted_once():
+    async with real_parent_pipe(reads=False) as transport:
+        transport.writer.write(b'x' * (1024 * 1024))
+        assert transport.writer.transport.get_write_buffer_size() > 0
+        transport.writer.close()
+        await asyncio.wait_for(asyncio.gather(transport.close(), transport.close()), 2)
+        assert transport.writer.transport.get_write_buffer_size() == 0
+
+
 @contextlib.contextmanager
 def bridge(**kwargs):
     read_fd, parent_write = os.pipe()

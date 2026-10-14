@@ -213,7 +213,14 @@ class BuiltinAgent:
         try:
             # EOF also provides a fail-safe when termination signals are unavailable.
             if process is not None:
-                if process.stdin is not None:
+                if transport is not None:
+                    with contextlib.suppress(Exception):
+                        await transport.close()
+                    # EOF already asks the child to stop. Sending SIGTERM while
+                    # that exit closes its loop can race signal-wakeup cleanup.
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(process.wait(), self.terminate_timeout)
+                elif process.stdin is not None:
                     process.stdin.close()
                 if process.returncode is None:
                     try:

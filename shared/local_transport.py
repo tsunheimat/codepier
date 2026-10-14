@@ -70,21 +70,29 @@ class PipeTransport(_TextTransport):
         self._recv_lock = asyncio.Lock()
         self._error = None
         self._pending = set()
+        self._close_waiter = None
 
     def _check(self):
         if self._error is not None:
             raise ConnectionError(self._error)
 
-    def _poison(self, error, *, abort=True):
-        if self._error is None:
-            self._error = str(error)
-            for task in self._pending:
-                task.cancel()
+    def _poison(self, error):
+        if self._error is not None:
+            return
+        self._error = str(error)
+        for task in self._pending:
+            task.cancel()
+        transport = getattr(self.writer, "transport", None)
+        if transport is None:
             self.writer.close()
-        if abort:
-            transport = getattr(self.writer, "transport", None)
-            if transport is not None:
-                transport.abort()
+            return
+        # Unix write pipes can schedule connection_lost twice for close+abort.
+        # A closing empty pipe has already scheduled/completed finalization; a
+        # buffered graceful close still needs abort to release a stalled writer.
+        closing = getattr(transport, "is_closing", lambda: False)()
+        buffered = getattr(transport, "get_write_buffer_size", lambda: 0)()
+        if not closing or buffered:
+            transport.abort()
 
     async def _operate(self, operation):
         task = asyncio.create_task(operation)
@@ -127,14 +135,22 @@ class PipeTransport(_TextTransport):
             await self._operate(self._write_frame(text))
 
     async def close(self, code=1000, reason=""):
-        self._poison(reason or "Local pipe closed", abort=False)
+        self._poison(reason or "Local pipe closed")
+        if self._close_waiter is None:
+            self._close_waiter = asyncio.create_task(self.writer.wait_closed())
+            self._close_waiter.add_done_callback(self._observe_close)
         try:
             async with asyncio.timeout(1):
-                await self.writer.wait_closed()
-        except (Exception, asyncio.CancelledError):
-            self._poison("Local pipe closed")
-            if asyncio.current_task().cancelling():
-                raise
+                await asyncio.shield(self._close_waiter)
+        except Exception:
+            # The stream is already terminal; timeout or a broken peer must not
+            # schedule another abort or cancel asyncio's shared close waiter.
+            pass
+
+    @staticmethod
+    def _observe_close(task):
+        if not task.cancelled():
+            task.exception()
 
 
 def _read_exactly(fd, size):

@@ -94,9 +94,17 @@ class BuiltinHub:
         assert response.status_code == 200, response.text
         return response.json()
 
+    def assert_clean_log(self):
+        self.log.flush()
+        text = (self.directory / 'hub.log').read_text(encoding='utf-8', errors='replace')
+        assert 'Exception in callback' not in text and 'Traceback (most recent call last)' not in text, text
+
     def applied(self, device, revision):
         settings = self.roots(device)
-        return settings if settings['status'] == 'applied' and settings['applied_revision'] == revision else None
+        if settings['status'] == 'applied' and settings['applied_revision'] == revision:
+            self.assert_clean_log()
+            return settings
+        return None
 
     def project(self, device, root, *, alias='Mounted', mode='write'):
         body = {'device_id': device, 'root': str(root), 'alias': alias, 'mode': mode,
@@ -116,6 +124,7 @@ class BuiltinHub:
     def close(self):
         try:
             self.stop()
+            self.assert_clean_log()
         finally:
             self.client.close()
             self.log.close()
@@ -256,5 +265,25 @@ def test_mounted_project_read_write_revocation_and_restart_without_websocket(tmp
         projects = hub.client.get('/api/projects').json()['projects']
         assert any(row['id'] == mapping['id'] for row in projects)
         assert (project / 'local.txt').read_text() == 'private IPC\n'
+        alternate = tmp_path / 'alternate'
+        alternate.mkdir()
+        (alternate / 'README.md').write_text('alternate project\n')
+        saved = hub.roots(identity, [{'path': str(alternate), 'writable': False}], revision=saved['revision'])
+        wait_for(lambda: hub.applied(identity, saved['revision']), timeout=30)
+        hub.project(identity, alternate, alias='Alternate', mode='read')
+        response = hub.call('fs_read', project='Alternate', path='README.md')
+        assert response.status_code == 200 and response.json()['content'] == 'alternate project\n'
+        response = hub.call('fs_read', project='Mounted', path='README.md')
+        assert response.status_code == 409 and response.json()['error']['code'] == 'ROOT_NOT_ALLOWED'
+        restored = [{'path': str(workspace), 'writable': True}, {'path': str(alternate), 'writable': False}]
+        saved = hub.roots(identity, restored, revision=saved['revision'])
+        wait_for(lambda: hub.applied(identity, saved['revision']), timeout=30)
+        assert hub.online()['id'] == identity
+        response = hub.call('fs_write', **{**write_args, 'path': 'restored.txt', 'idempotency_key': uuid.uuid4().hex})
+        assert response.status_code == 200, response.text
+        assert (project / 'restored.txt').read_text() == 'private IPC\n'
+        unchanged = hub.roots(identity, restored, revision=saved['revision'])
+        assert unchanged['revision'] == saved['revision'] and unchanged['status'] == 'applied'
+        hub.assert_clean_log()
     finally:
         hub.close()
