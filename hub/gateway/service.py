@@ -63,6 +63,8 @@ class Gateway:
         self.inflight = 0
         self.discovery_inflight = 0
         self.validator = Validator()
+        from hub.external_plugins.service import ExternalPlugins
+        self.plugins = ExternalPlugins(self)
         # Keep idempotency/cursor identities stable across offline key rotation.
         with store.transaction():
             saved = store.one("SELECT secret FROM gateway_secrets WHERE id='routing'")
@@ -85,6 +87,7 @@ class Gateway:
         if not self.enabled:
             return []
         result = [catalog.definition(binding['alias'], tool, principal.authorization_mode) for binding, tool in policy.visible_tools(self.store, principal)]
+        result.extend(self.plugins.tools(principal))
         try:
             policy.grant_context(self.store, principal)
         except DevError:
@@ -179,15 +182,26 @@ class Gateway:
                              (identifier, principal.space_id, principal.user_id, principal.grant_id))
         if not row:
             raise DevError('GATEWAY_CALL_NOT_FOUND', '找不到此凭据的调用记录', 404)
-        plan = policy.require_tool(self.store, principal, row['binding_id'], row['tool'])
+        context = json.loads(row['plugin_context']) if row.get('plugin_context') else None
+        plan = self.plugins.authorize_context(principal, context) if context else policy.require_tool(self.store, principal, row['binding_id'], row['tool'])
+        if plan[1]['id'] != row['binding_id'] or plan[-1]['name'] != row['tool']:
+            raise DevError('PLUGIN_ROUTE_CHANGED', 'Original backend identity changed', 409)
         if catalog.fingerprint(plan[-1]) != row['tool_hash']:
             raise DevError('GATEWAY_CATALOG_CHANGED', '工具定义已变化；旧结果未自动跨版本公开', 409)
         value = {k: row[k] for k in ('id', 'state', 'error_code', 'created', 'updated')}
         value['result'] = json.loads(self.store.decrypt(row['result'])) if row['result'] else None
         value['replayed'] = False
+        if context:
+            value['plugin'] = context
         return value
 
     async def call(self, principal, name, arguments, reauthenticate, request_key=None):
+        self.require_enabled()
+        if name.startswith('ext.'):
+            return await self.plugins.call(principal, name, arguments, reauthenticate, request_key)
+        return await self._call(principal, name, arguments, reauthenticate, request_key)
+
+    async def _call(self, principal, name, arguments, reauthenticate, request_key=None, *, plugin_context=None):
         self.require_enabled()
         if name == catalog.STATUS_TOOL:
             def recover():
@@ -211,9 +225,11 @@ class Gateway:
                 fresh = reauthenticate()
                 if (fresh.space_id, fresh.user_id, fresh.grant_id) != (principal.space_id, principal.user_id, principal.grant_id):
                     raise DevError('GATEWAY_IDENTITY_CHANGED', '请求身份已改变', 403)
-                plan = self.resolve(fresh, name)
+                plan = self.plugins.authorize_context(fresh, plugin_context) if plugin_context else self.resolve(fresh, name)
                 if getattr(self, 'conversations', None):
                     self.conversations.observed_resource(fresh, 'mcp', plan[1]['id'])
+                    if plugin_context and plugin_context['project_id']:
+                        self.conversations.observed_resource(fresh, 'project', plugin_context['project_id'])
                 catalog.validate_arguments(plan[-1], arguments, schema_check=False)
                 return plan, self.store.decrypt(plan[2]['secret'])
 
@@ -222,7 +238,7 @@ class Gateway:
                 fresh = reauthenticate()
                 if (fresh.space_id, fresh.user_id, fresh.grant_id) != (principal.space_id, principal.user_id, principal.grant_id):
                     raise DevError('GATEWAY_IDENTITY_CHANGED', '请求身份已改变', 403)
-                latest = policy.require_tool(self.store, fresh, binding['id'], tool['name'])
+                latest = self.plugins.authorize_context(fresh, plugin_context) if plugin_context else policy.require_tool(self.store, fresh, binding['id'], tool['name'])
                 if self._signature(latest) != signature:
                     raise DevError('GATEWAY_CONFIG_CHANGED', '连接/帐户/工具在等待期间改变；请核对原结果', 409)
                 return fresh
@@ -254,6 +270,8 @@ class Gateway:
                     (call_id, principal.space_id, principal.user_id, principal.grant_id, binding['id'], tool['name'], catalog.fingerprint(tool), now, now, request_hash, fingerprint))
                 if getattr(self, 'conversations', None):
                     self.conversations.admitted(principal, call_id, [{'type': 'mcp', 'id': binding['id']}], 'mcp')
+                if plugin_context:
+                    self.store.db.execute('UPDATE gateway_calls SET plugin_context=? WHERE id=?', (catalog.encoded(plugin_context), call_id))
                 return call_id, None
 
         async def before_send():
@@ -277,7 +295,10 @@ class Gateway:
                 signature = self._signature(plan)
                 await self.validator.validate(tool['inputSchema'], arguments)
                 request_hash = hmac.new(self.secret, request_key.encode(), hashlib.sha256).hexdigest() if request_key else None
-                fingerprint = hmac.new(self.secret, catalog.encoded([binding['id'], tool, arguments]).encode(), hashlib.sha256).hexdigest()
+                fingerprint_input = [binding['id'], tool, arguments]
+                if plugin_context:
+                    fingerprint_input.append(plugin_context)
+                fingerprint = hmac.new(self.secret, catalog.encoded(fingerprint_input).encode(), hashlib.sha256).hexdigest()
                 identifier, cached = await self.store.run(admit)
                 if cached is not None:
                     return cached

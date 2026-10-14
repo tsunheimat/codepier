@@ -50,7 +50,8 @@ window.CodePierProduct = (() => {
       // Delegation is managed with the connection in Access.
       for (const p of t.content.querySelectorAll('.panel'))
         if (p.querySelector('h2')?.textContent === '我的连接委派') p.remove();
-      body = t.innerHTML;
+      body =
+        t.innerHTML + (window.CodePierExternalPlugins ? await CodePierExternalPlugins.html() : '');
     } else body = projectsHTML();
     return `<div id="resources-page">${heading('资源', 'RESOURCES', '先建立资源，再配置角色规则，最后连接客户端。')}${tabs(
       'resources',
@@ -60,7 +61,7 @@ window.CodePierProduct = (() => {
   }
   function permissionRows(c) {
     const p = c.permissions;
-    return `<div class="connection-permissions">${p.projects.map((r) => `<p><strong>Project ${esc(r.name)}</strong> → ${esc(r.actions.join(' / ') || '无可用操作')}${r.actions.join() !== r.policy_actions.join() ? `<small> · 角色规则 ${esc(r.policy_actions.join(' / '))}；项目配置进一步限制</small>` : ''}</p>`).join('')}${p.vps.map((r) => `<p><strong>VPS ${esc(r.name)}</strong> → ${esc(r.actions.join(' / '))}${r.policy_actions.includes('execute') && !r.actions.includes('execute') ? '<small> · 执行路线或项目执行权未满足</small>' : ''}<small> · ${esc(r.execution_route.alias || '未配置可用执行路线')} · SSH 账号权限</small></p>`).join('')}${p.mcp.map((r) => `<p><strong>MCP ${esc(r.name)}</strong> → ${esc(r.tools.join(' / '))}<small> · 帐户 ${esc(r.account_id)}</small></p>`).join('')}${!p.projects.length && !p.vps.length && !p.mcp.length ? '<p class="muted">当前没有有效资源权限。</p>' : ''}</div>`;
+    return `<div class="connection-permissions">${p.projects.map((r) => `<p><strong>Project ${esc(r.name)}</strong> → ${esc(r.actions.join(' / ') || '无可用操作')}${r.actions.join() !== r.policy_actions.join() ? `<small> · 角色规则 ${esc(r.policy_actions.join(' / '))}；项目配置进一步限制</small>` : ''}</p>`).join('')}${p.vps.map((r) => `<p><strong>VPS ${esc(r.name)}</strong> → ${esc(r.actions.join(' / '))}${r.policy_actions.includes('execute') && !r.actions.includes('execute') ? '<small> · 执行路线或项目执行权未满足</small>' : ''}<small> · ${esc(r.execution_route.alias || '未配置可用执行路线')} · SSH 账号权限</small></p>`).join('')}${p.mcp.map((r) => `<p><strong>MCP ${esc(r.name)}</strong> → ${esc(r.tools.join(' / '))}<small> · 帐户 ${esc(r.account_id)}</small></p>`).join('')}${(p.plugins || []).map((r) => `<p><strong>Plugin ${esc(r.name)}</strong> → ${esc(r.action)} · ${esc(r.effect)}<small> · ${esc(r.project_id || '空间范围')}</small></p>`).join('')}${!p.projects.length && !p.vps.length && !p.mcp.length && !(p.plugins || []).length ? '<p class="muted">当前没有有效资源权限。</p>' : ''}</div>`;
   }
   async function access() {
     await loadBasics();
@@ -102,7 +103,7 @@ window.CodePierProduct = (() => {
           records.connections
             .map(
               (c) =>
-                `<article class="grant-row" data-connection-id="${esc(c.id)}"><div class="grant-info"><h3>${esc(c.name)} <span class="badge neutral">${esc(names[c.status])}</span></h3><p>${esc(c.client)} · 角色 ${esc(c.role?.label || '原固定授权')} · ${c.follows_role_changes ? '已明确同意跟随未来角色变化' : '固定同意上限，角色新增能力不会扩展本连接'}</p><p>${c.expires ? '到期 ' + esc(timeText(c.expires)) : '等待完成连接'}${c.unavailable_reason ? ' · ' + esc(c.unavailable_reason) : ''}</p>${permissionRows(c)}<p class="form-note">资源操作仍需本机授权与在线状态；MCP 工具限制不代替后端账号自身的数据隔离。</p><details><summary>高级身份与授权信息</summary><p>连接 ${esc(c.id)}</p><p>稳定 Profile ${esc(c.profile?.id || '传统账号身份')}</p><p>授权模式 ${esc(c.authorization_mode)} · 角色版本 ${esc(c.role?.version || '—')}</p></details></div><div class="actions">${!['revoked', 'expired'].includes(c.status) ? `<button class="btn danger small" data-action="revoke-grant" data-id="${esc(c.id)}">撤销连接</button>` : ''}${gateway.grants?.some((g) => g.id === c.id) ? `<button class="btn small" data-connection-consent="${esc(c.id)}">外部 MCP 同意</button>` : ''}${c.profile ? `<button class="btn ghost small" data-connection-profile="${esc(c.profile.id)}">高级身份设置</button>` : ''}</div></article>`,
+                `<article class="grant-row" data-connection-id="${esc(c.id)}"><div class="grant-info"><h3>${esc(c.name)} <span class="badge neutral">${esc(names[c.status])}</span></h3><p>${esc(c.client)} · 角色 ${esc(c.role?.label || '原固定授权')} · ${c.follows_role_changes ? '已明确同意跟随未来角色变化' : '固定同意上限，角色新增能力不会扩展本连接'}</p><p>${c.expires ? '到期 ' + esc(timeText(c.expires)) : '等待完成连接'}${c.unavailable_reason ? ' · ' + esc(c.unavailable_reason) : ''}</p>${permissionRows(c)}<p class="form-note">资源操作仍需本机授权与在线状态；MCP 工具限制不代替后端账号自身的数据隔离。</p><details><summary>高级身份与授权信息</summary><p>连接 ${esc(c.id)}</p><p>稳定 Profile ${esc(c.profile?.id || '传统账号身份')}</p><p>授权模式 ${esc(c.authorization_mode)} · 角色版本 ${esc(c.role?.version || '—')}</p></details></div><div class="actions">${!['revoked', 'expired'].includes(c.status) ? `<button class="btn danger small" data-action="revoke-grant" data-id="${esc(c.id)}">撤销连接</button>` : ''}${gateway.grants?.some((g) => g.id === c.id) ? `<button class="btn small" data-connection-consent="${esc(c.id)}">外部 MCP 同意</button>` : ''}${c.role && !['revoked', 'expired'].includes(c.status) ? `<button class="btn small" data-ext-action="consent" data-ext-id="${esc(c.id)}">插件动作同意</button>` : ''}${c.profile ? `<button class="btn ghost small" data-connection-profile="${esc(c.profile.id)}">高级身份设置</button>` : ''}</div></article>`,
             )
             .join('') || empty('先配置角色，然后在这里连接客户端。'),
         );

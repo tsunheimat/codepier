@@ -44,7 +44,8 @@ def frozen_policy(store, role):
         return RolePolicy(project_rules=[{'actions': list(actions), 'projects': ids[i:i+1000]}
                 for actions, ids in groups.items() for i in range(0, len(ids), 1000)],
                 vps_rules=[r.model_dump() for r in current.vps_rules],
-                connector_rules=[r.model_dump() for r in current.connector_rules])
+                connector_rules=[r.model_dump() for r in current.connector_rules],
+                plugin_rules=[r.model_dump() for r in current.plugin_rules])
     except ValidationError as exc:
         raise DevError('CONNECTION_RESOURCE_LIMIT', '固定连接的资源快照过大；请缩小角色中的明确资源范围', 409) from exc
 
@@ -84,7 +85,16 @@ def effective_access(runtime, principal):
             item = mcp.setdefault(binding['id'], {'id': binding['id'], 'name': binding['alias'],
                                   'account_id': binding['account_id'], 'tools': []})
             item['tools'].append(tool['name'])
-    return {'projects': projects, 'vps': vps, 'mcp': list(mcp.values())}
+    plugins = []
+    if runtime.gateway and runtime.gateway.enabled and getattr(runtime.gateway, 'plugins', None):
+        try:
+            plugins = [{'integration_id': record['context']['integration_id'],
+                        'name': record['integration']['alias'], 'action': record['context']['action'],
+                        'project_id': record['context']['project_id'], 'effect': record['action'].effect}
+                       for record in runtime.gateway.plugins.records(principal)]
+        except DevError:
+            plugins = []
+    return {'projects': projects, 'vps': vps, 'mcp': list(mcp.values()), 'plugins': plugins}
 
 
 def public_connection(runtime, row):

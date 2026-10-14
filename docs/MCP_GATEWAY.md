@@ -10,6 +10,10 @@
 Status: first implementation on `9366b23` (1.13 + multi-user IAM), **disabled by
  default**. This is not an upstream 1.14 merge, a release or a deployment.
 
+For reusable, project-aware action mappings over approved tools, see
+[External plugins](EXTERNAL_PLUGINS.md). These use independent action rules and
+explicit target consent; they do not grant the caller unrestricted backing tools.
+
 ## Scope and architecture
 
 The existing `/mcp` remains the frontend MCP server. `hub/gateway/` is a separate

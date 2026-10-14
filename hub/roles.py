@@ -24,6 +24,7 @@ from hub.access import AccessModel
 from shared.role_contracts import ROLE_SCOPE
 from shared.util import DevError
 from hub import iam
+from hub.external_plugins.rules import PluginRule, intersect as intersect_plugins, validate_rules as validate_plugin_rules
 
 CAPABILITIES = frozenset({'read', 'write', 'execute', 'computer'})
 MAX_ROLES = 200
@@ -94,6 +95,13 @@ class RolePolicy(AccessModel):
     device_rules: list[DeviceRule] = Field(default_factory=list, max_length=32)
     connector_rules: list[ConnectorRule] = Field(default_factory=list, max_length=32)
     vps_rules: list[VPSRule] = Field(default_factory=list, max_length=32)
+    plugin_rules: list[PluginRule] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode='after')
+    def bounded_plugin_surface(self):
+        if sum(len(r.actions) * max(1, len(r.projects)) for r in self.plugin_rules) > 256:
+            raise ValueError('A role may contain at most 256 explicit plugin action/resource pairs')
+        return self
 
 
 class RoleFields(RolePolicy):
@@ -210,7 +218,8 @@ def connection_policy(store, grant):
                 connectors.append(ConnectorRule(binding_id=rule.binding_id, tools=tools))
         # This evaluated internal policy can have >32 rows after expansion.
         return RolePolicy.model_construct(project_rules=projects, device_rules=[],
-                                          vps_rules=vps, connector_rules=connectors)
+                                          vps_rules=vps, connector_rules=connectors,
+                                          plugin_rules=intersect_plugins(ceiling, current))
     except (ValueError, TypeError, KeyError) as exc:
         raise DevError('INVALID_TOKEN', '固定连接的资源同意或身份绑定无效', 401) from exc
 
@@ -393,7 +402,10 @@ def role_values(store, body, space_id=None):
         binding = store.one('SELECT tools FROM gateway_bindings WHERE id=? AND space_id=?', (rule.binding_id, space_id))
         if not binding or not set(rule.tools) <= {tool['name'] for tool in json.loads(binding['tools'])}:
             raise DevError('GATEWAY_RULE_INVALID', 'MCP 规则必须引用当前空间已批准的工具与 binding')
+    validate_plugin_rules(store, body.plugin_rules, space_id)
     policy = body.model_dump(include={'project_rules', 'device_rules'})
+    if body.plugin_rules:
+        policy['plugin_rules'] = [rule.model_dump() for rule in body.plugin_rules]
     if body.vps_rules:
         policy['vps_rules'] = [rule.model_dump() for rule in body.vps_rules]
     if body.connector_rules:
@@ -461,6 +473,8 @@ def make_roles_router(auth, runtime):
                 raise DevError('ROLE_NOT_FOUND', '角色不存在', 404)
             if 'connector_rules' not in body.model_fields_set:
                 body = body.model_copy(update={'connector_rules': _policy(row).connector_rules})
+            if 'plugin_rules' not in body.model_fields_set:
+                body = body.model_copy(update={'plugin_rules': _policy(row).plugin_rules})
             if 'vps_rules' not in body.model_fields_set:
                 body = body.model_copy(update={'vps_rules': _policy(row).vps_rules})
             label, key, policy = role_values(store, body, owner.space_id)

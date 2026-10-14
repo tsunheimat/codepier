@@ -1,0 +1,55 @@
+{
+  "api_version": 1,
+  "id": "gitlab",
+  "version": "0.1.0",
+  "title": "GitLab pipelines",
+  "space_config_schema": {
+    "type": "object", "properties": {}, "additionalProperties": false
+  },
+  "project_config_schema": {
+    "type": "object", "additionalProperties": false,
+    "required": ["remote_project_id"],
+    "properties": {
+      "remote_project_id": {"type": "integer", "minimum": 1, "title": "GitLab project ID"}
+    }
+  },
+  "backend_slots": {
+    "gitlab": {"transport": "mcp", "tool_slots": ["pipeline_get", "pipeline_list"]}
+  },
+  "actions": {
+    "pipeline.get": {
+      "title": "Get pipeline",
+      "description": "Read one pipeline in the selected CodePier project's configured GitLab repository.",
+      "scope": "project", "effect": "read",
+      "input_schema": {
+        "type": "object", "additionalProperties": false,
+        "required": ["pipeline_id"],
+        "properties": {"pipeline_id": {"type": "integer", "minimum": 1}}
+      },
+      "call": {
+        "backend": "gitlab", "tool_slot": "pipeline_get",
+        "arguments": {
+          "project_id": {"from_project": "remote_project_id"},
+          "pipeline_id": {"from_input": "pipeline_id"}
+        }
+      }
+    },
+    "pipeline.list": {
+      "title": "List pipelines",
+      "description": "List a bounded page of pipelines in the selected CodePier project's configured GitLab repository.",
+      "scope": "project", "effect": "read",
+      "input_schema": {
+        "type": "object", "additionalProperties": false,
+        "properties": {"page": {"type": "integer", "minimum": 1, "maximum": 10000}}
+      },
+      "call": {
+        "backend": "gitlab", "tool_slot": "pipeline_list",
+        "arguments": {
+          "project_id": {"from_project": "remote_project_id"},
+          "page": {"from_input": "page"},
+          "per_page": {"literal": 20}
+        }
+      }
+    }
+  }
+}
