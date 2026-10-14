@@ -85,7 +85,9 @@ window.CodePierIdentity = (() => {
       me.spaces.find((x) => x.id === me.default_space_id);
     S.space_id = selected?.id || null;
     if (S.space_id) sessionValue('codepier-space:' + me.id, S.space_id);
-    S.session = { ...S.session, instance_admin: me.instance_admin, spaces: me.spaces };
+    // Keep this security-context generation for metadata-only refreshes.
+    // Login/logout and switchSpace still replace it to fence stale work.
+    Object.assign(S.session, { instance_admin: me.instance_admin, spaces: me.spaces });
     if (!selected) S.page = 'identity';
   }
   function selector() {

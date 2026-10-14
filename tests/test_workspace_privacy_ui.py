@@ -52,7 +52,7 @@ def test_sse_revocation_clears_loaded_private_content(privacy_page):
       S.work.content='PRIVATE_SENTINEL';S.work.original='PRIVATE_SENTINEL';
       document.querySelector('#app').textContent='PRIVATE_SENTINEL';
       connectEvents();
-      fixtureEvents.listeners.access_revoked?.({data:'{}'});
+      fixtureEvents.listeners.session_revoked?.({data:'{}'});
     }""")
     assert "PRIVATE_SENTINEL" not in page.locator("body").inner_text()
     assert page.evaluate("S.work.content") == ""
@@ -77,7 +77,7 @@ def test_stale_stream_cannot_clear_new_space(privacy_page):
       connectEvents();window.oldEvents=fixtureEvents;
       S.session={user_id:'fixture-owner'};S.space_id='new-team';
       S.work.content='NEW_SPACE_DRAFT';
-      oldEvents.listeners.access_revoked?.({data:'{}'});
+      oldEvents.listeners.session_revoked?.({data:'{}'});oldEvents.listeners.access_changed?.({data:'{}'});
     }""")
     assert page.evaluate("S.work.content") == "NEW_SPACE_DRAFT"
     assert page.evaluate("S.space_id") == "new-team"
@@ -93,13 +93,20 @@ def test_rejected_reconnect_rechecks_authority_without_erasing_on_network_failur
       S.work.content='PRIVATE_SENTINEL';
       window.fetch=async(path)=>path==='/api/auth/providers'
         ? new Response(JSON.stringify({providers:[]}),{status:200})
-        : new Response(JSON.stringify({error:{code,message:'fixture'}}),
-          {status,headers:{'Content-Type':'application/json'}});
+        : path==='/api/session'
+          ? new Response(JSON.stringify({authenticated:status!==401}),{status:200})
+          : new Response(JSON.stringify({error:{code,message:'fixture'}}),
+            {status,headers:{'Content-Type':'application/json'}});
       connectEvents();fixtureEvents.onerror();
     }""", {"status": status, "code": code})
-    if revoked:
+    if revoked and status == 401:
         page.wait_for_function("S.session===null")
         assert page.evaluate("S.work.content") == ""
+    elif revoked:
+        page.wait_for_function("document.querySelector('[data-action=retry-identity]')!==null")
+        assert page.evaluate("S.session!==null")
+        assert "PRIVATE_SENTINEL" not in page.locator("body").inner_text()
+        assert not page.locator("#login-form").count()
     else:
         page.wait_for_function("document.querySelector('#toasts')!==null")
         assert page.evaluate("S.work.content") == "PRIVATE_SENTINEL"
@@ -117,3 +124,101 @@ def test_audit_download_without_space_fails_closed(privacy_page):
     }""")
     assert result["downloads"] == []
     assert result.get("error")
+
+
+@pytest.mark.parametrize("event", ["access_changed", "access_revoked"])
+@pytest.mark.parametrize("project", ["kept", "removed"])
+def test_policy_change_resynchronizes_without_login_or_mutation_replay(privacy_page, event, project):
+    page = privacy_page
+    page.evaluate("""({event,project}) => {
+      const mapping=id=>({id,alias:id,root:'/'+id,device_id:'device',mode:'write'});
+      S.projects=[mapping('kept'),mapping('removed')];
+      Object.assign(S.work,{project,content:'DRAFT_'+project,original:'BASE',dirty:true});
+      document.querySelector('#app').textContent='PRIVATE_OLD_VIEW';
+      window.requests=[];
+      window.fetch=async(path,options)=>{
+        requests.push({path,method:options?.method||'GET'});
+        const value=path==='/api/iam/me'
+          ? {id:'fixture-owner',instance_admin:false,spaces:[{id:'team',level:'member'}],default_space_id:'team'}
+          : path==='/api/projects'?{projects:[mapping('kept')]}
+          : path==='/api/devices'?{devices:[]}
+          : path==='/api/session'?{authenticated:true,user_id:'fixture-owner'}
+          : {providers:[]};
+        return new Response(JSON.stringify(value),{status:200,headers:{'Content-Type':'application/json'}});
+      };
+      // Presentation adapter only: run the real invalidation, identity,
+      // request and suspended-work revalidation pipeline.
+      renderShell=()=>{document.querySelector('#app').innerHTML='<div id="page"></div>';};
+      renderPage=async()=>{document.querySelector('#page').textContent=S.work.content;window.recovered=true;};
+      connectEvents();window.oldEvents=fixtureEvents;
+      oldEvents.listeners[event]({data:'{}'});
+      window.hiddenImmediately=!document.body.textContent.includes('PRIVATE_OLD_VIEW');
+    }""", {"event": event, "project": project})
+    assert page.evaluate("hiddenImmediately")
+    page.wait_for_function("window.recovered===true")
+    assert page.evaluate("S.session.user_id") == 'fixture-owner'
+    assert page.evaluate("S.space_id") == 'team'
+    assert page.evaluate("S.work.content") == ('DRAFT_kept' if project == 'kept' else '')
+    assert not page.locator('#login-form').count()
+    assert all(r['method'] == 'GET' and r['path'] not in {'/api/login', '/api/logout'} for r in page.evaluate('requests'))
+    assert page.evaluate('oldEvents.closed')
+
+
+def test_late_reply_cannot_restore_revoked_content(privacy_page):
+    page = privacy_page
+    page.evaluate("""() => {
+      window.fetch=()=>new Promise(resolve=>{window.oldReply=resolve;});
+      window.oldResult=api('/api/projects').then(()=> 'APPLIED',e=>e.code);
+      S.work.content='PRIVATE_OLD_VIEW';document.querySelector('#app').textContent=S.work.content;
+      connectEvents();
+      // Hold recovery offline; old private content must stay hidden.
+      window.fetch=async()=>{throw Error('offline');};
+      fixtureEvents.listeners.access_changed({data:'{}'});
+      oldReply(new Response(JSON.stringify({projects:[{id:'revoked'}]}),{status:200}));
+    }""")
+    assert page.evaluate('oldResult') == 'SESSION_CHANGED'
+    assert 'PRIVATE_OLD_VIEW' not in page.locator('body').inner_text()
+    assert page.evaluate('S.session!==null')
+
+
+def test_old_space_event_does_not_affect_current_space_without_session_replacement(privacy_page):
+    page = privacy_page
+    page.evaluate("""() => {
+      connectEvents();const previous=fixtureEvents;
+      S.space_id='other';S.work.content='CURRENT_DRAFT';
+      previous.listeners.session_revoked({data:'{}'});
+      previous.listeners.access_changed({data:'{}'});
+    }""")
+    assert page.evaluate('S.space_id') == 'other'
+    assert page.evaluate('S.work.content') == 'CURRENT_DRAFT'
+    assert page.evaluate('S.session!==null')
+
+
+
+def test_repeated_suspension_preserves_original_project_mapping(privacy_page):
+    page = privacy_page
+    page.evaluate("""async () => {
+      S.projects=[{id:'p',root:'/original',device_id:'d'}];
+      Object.assign(S.work,{project:'p',content:'OLD_MAPPING_DRAFT',dirty:true});
+      suspendPanelContext(false,true);
+      suspendPanelContext(false,true);
+      window.quarantinedRoot=S.suspendedMappings.get('p').root;
+      window.fetch=async path=>new Response(JSON.stringify(path==='/api/projects'
+        ? {projects:[{id:'p',root:'/replacement',device_id:'d'}]}:{devices:[]}),{status:200});
+      await revalidateSuspendedWork();
+    }""")
+    assert page.evaluate('quarantinedRoot') == '/original'
+    assert page.evaluate('S.work.content') == ''
+    assert page.evaluate('S.session!==null')
+
+
+def test_suspended_work_cannot_be_relabelled_to_another_space(privacy_page):
+    page = privacy_page
+    page.evaluate("""() => {
+      S.work.content='OTHER_SPACE_PRIVATE';
+      suspendPanelContext(false,true);
+      S.space_id='different-space';
+      suspendPanelContext(false,true);
+    }""")
+    assert page.evaluate('S.work.content') == ''
+    assert page.evaluate('S.suspendedMappings') is None

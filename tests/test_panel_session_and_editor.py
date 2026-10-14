@@ -32,7 +32,7 @@ def app_page(chat_browser_pool):
         page.add_script_tag(path=str(ROOT / 'web' / name))
     page.evaluate('''async () => {
       S.session={user_id:'owner-one',username:'admin',csrf:'fixture'};S.page='native';
-      window.nextLogin={...S.session};window.calls=[];
+      window.nextLogin={...S.session};window.calls=[];window.fixtureAuthenticated=true;
       window.fixtureDevices=[{id:'node-one',name:'Fixture node',online:true}];
       window.fixtureProjects=[{id:'project-one',alias:'Fixture',device_id:'node-one',
         root:'/fixture/one',mode:'write',allow_tasks:true,online:true}];
@@ -42,8 +42,14 @@ def app_page(chat_browser_pool):
         calls.push({path,method,body});
         const response=(value,status=200)=>new Response(JSON.stringify(value),{status,
           headers:{'Content-Type':'application/json'}});
-        if(path==='/api/fixture-expire')return response({error:{code:'UNAUTHORIZED',message:'Session expired'}},401);
-        if(path==='/api/login')return response(nextLogin);
+        if(path==='/api/fixture-expire'){
+          fixtureAuthenticated=false;
+          return response({error:{code:'UNAUTHORIZED',message:'Session expired'}},401);
+        }
+        if(path==='/api/session')return response({authenticated:fixtureAuthenticated,
+          ...(fixtureAuthenticated?{user_id:S.session.user_id,csrf:S.session.csrf}:{})});
+        if(path==='/api/fixture-resource-denied')return response({error:{code:'UPSTREAM_AUTH_FAILED',message:'Upstream token rejected'}},401);
+        if(path==='/api/login'){fixtureAuthenticated=true;return response(nextLogin);}
         if(path==='/api/auth/providers')return response({providers:[]});
         if(path==='/api/iam/me')return response({id:S.session.user_id,username:S.session.username,
           instance_admin:true,default_space_id:'personal-fixture',
@@ -303,3 +309,25 @@ def test_network_failure_keeps_suspended_draft_hidden_until_authority_recheck(ap
     page.locator('[data-action=retry-identity]').click()
     expect(page.locator('#chat-compose')).to_have_value('PRIVATE_NETWORK_SUSPENDED')
     assert not page.evaluate("calls.some(c=>c.path.endsWith('/start')||c.path.endsWith('/chat_prompt'))")
+
+
+def test_upstream_401_keeps_real_native_draft_and_login(app_page):
+    page = app_page
+    page.fill('#chat-compose', 'Unsent draft survives unrelated upstream auth failure')
+    assert page.evaluate("api('/api/fixture-resource-denied').catch(error=>error.code)") == 'UPSTREAM_AUTH_FAILED'
+    expect(page.locator('#login-form')).to_have_count(0)
+    expect(page.locator('#chat-compose')).to_have_value('Unsent draft survives unrelated upstream auth failure')
+    assert page.evaluate("calls.filter(c=>c.path==='/api/session').length") == 1
+    assert not page.evaluate("calls.some(c=>c.path==='/api/login'||c.path==='/api/logout')")
+
+
+@pytest.mark.parametrize('native_allowed', [True, False])
+def test_policy_recovery_rechecks_native_drafts_without_relogin(app_page, native_allowed):
+    page = app_page
+    page.fill('#chat-compose', 'Scoped native draft')
+    page.evaluate('(allowed)=>{window.fixtureNativeDenied=!allowed;}', native_allowed)
+    page.evaluate('recoverPanelAccess()')
+    expect(page.locator('#login-form')).to_have_count(0)
+    expect(page.locator('#chat-compose')).to_have_value('Scoped native draft' if native_allowed else '')
+    assert page.evaluate('S.session.user_id') == 'owner-one'
+    assert not page.evaluate("calls.some(c=>c.path==='/api/login'||c.path==='/api/logout'||c.path.endsWith('/start')||c.path.endsWith('/chat_prompt'))")

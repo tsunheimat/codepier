@@ -102,6 +102,14 @@ def make_activity_router(context: HubContext):
 
     @router.get("/api/events")
     async def events(request: Request):
+        # Old pages only understand access_revoked. Negotiate differentiated
+        # events so a rolling upgrade never leaves their private snapshots live.
+        scoped_events = 'query_string' in request.scope and request.query_params.get('access_events') == '2'
+
+        def invalidation(event):
+            name = event if scoped_events else 'access_revoked'
+            return f"event: {name}\ndata: {{}}\n\n"
+
         def snapshot(item=None):
             # One current authority decision for each frame/idle heartbeat.
             # Only an invalidation marker, never old event data, crosses a
@@ -132,11 +140,17 @@ def make_activity_router(context: HubContext):
                         item = None
                     try:
                         current_access, visible = await store.run(snapshot, item)
-                    except DevError:
-                        yield "event: access_revoked\ndata: {}\n\n"
+                    except DevError as exc:
+                        # Membership/entitlement loss is not a revoked login.
+                        # Neither branch sends the event which failed its check.
+                        event = 'session_revoked' if exc.code in {
+                            'LOGIN_REQUIRED', 'ACCOUNT_DISABLED',
+                            'IDENTITY_DISABLED', 'INVALID_TOKEN',
+                        } else 'access_changed'
+                        yield invalidation(event)
                         break
                     if not access <= current_access:
-                        yield "event: access_revoked\ndata: {}\n\n"
+                        yield invalidation('access_changed')
                         break
                     access = current_access
                     if item is None:

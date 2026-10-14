@@ -97,10 +97,59 @@ async function scenario(name){
     const pending=run('auditHTML(1)');run('S.renderSeq=2');await run('auditHTML(2)');old.resolve(response({events:[{id:'old',action:'old',at:1}],next_offset:40}));await pending;
     assert.equal(run('S.auditRows[0].id'),'new');assert.equal(run('S.auditNext'),null);
   }else if(name==='settled_receipt_does_not_cross_sessions'){
-    editor();const receipt=deferred();context.receipt=receipt.promise;const pending=run('settled(receipt)');run("S.session={csrf:'new'}");receipt.resolve({pending:true,operation_id:'old'});await assert.rejects(pending,/登录状态已变化/);
+    editor();const receipt=deferred();context.receipt=receipt.promise;const pending=run('settled(receipt)');run("S.session={csrf:'new'}");receipt.resolve({pending:true,operation_id:'old'});await assert.rejects(pending,e=>e.code==='SESSION_CHANGED');
   }else if(name==='old_401_does_not_clear_new_session'){
     editor();const request=deferred();fetchImpl=()=>request.promise;const pending=run("api('/api/devices')");run("S.session={csrf:'new'}");request.resolve(response({error:{message:'expired'}},401));
-    await assert.rejects(pending,/登录状态已变化/);assert.equal(run('S.session.csrf'),'new');
+    await assert.rejects(pending,e=>e.code==='SESSION_CHANGED');assert.equal(run('S.session.csrf'),'new');
+  }else if(name==='metadata_bootstrap_keeps_pending_request'){
+    editor();run("S.space_id='team';S.session.user_id='u'");const session=run('S.session'), old=deferred();
+    fetchImpl=async path=>path==='/api/iam/me'?response({id:'u',instance_admin:false,spaces:[{id:'team',level:'member'}],default_space_id:'team'}):old.promise;
+    const pending=run("api('/api/devices')");await run('CodePierIdentity.bootstrap()');
+    assert.equal(run('S.session'),session);old.resolve(response({devices:['kept']}));assert.deepEqual((await pending).devices,['kept']);
+  }else if(name==='resource_401_preserves_live_login'){
+    editor();const session=run('S.session');let mutations=0,probes=0;
+    fetchImpl=async(path,options)=>{if(path==='/api/session'){probes++;return response({authenticated:true,csrf:'initial'});}mutations++;return response({error:{code:'UPSTREAM_AUTH_FAILED',message:'upstream denied'}},401);};
+    await assert.rejects(run("post('/api/resource')"),e=>e.code==='UPSTREAM_AUTH_FAILED');
+    assert.equal(run('S.session'),session);assert.equal(mutations,1);assert.equal(probes,1);
+  }else if(name==='probe_failure_is_not_logout'){
+    editor();const session=run('S.session');let probes=0;
+    fetchImpl=async path=>{if(path==='/api/session'){probes++;throw Error('offline');}return response({error:{code:'UPSTREAM_AUTH_FAILED'}},401);};
+    await assert.rejects(run("post('/api/resource')"),e=>e.code==='UPSTREAM_AUTH_FAILED');
+    assert.equal(run('S.session'),session);assert.equal(probes,1);
+  }else if(name==='probe_401_is_not_recursive'){
+    editor();const session=run('S.session');let probes=0;
+    fetchImpl=async path=>{if(path==='/api/session')probes++;return response({error:{code:'PROXY_AUTH_FAILED'}},401);};
+    await assert.rejects(run("post('/api/resource')"),e=>e.code==='PROXY_AUTH_FAILED');
+    assert.equal(run('S.session'),session);assert.equal(probes,1);
+  }else if(name==='expired_cookie_ends_login_once'){
+    editor();run('endSession=(discard)=>{S.session=null;S.ended=(S.ended||0)+1;S.discarded=discard;}');
+    fetchImpl=async path=>path==='/api/session'?response({authenticated:false}):response({error:{code:'LOGIN_REQUIRED'}},401);
+    await assert.rejects(run("api('/api/devices',{discardOnAuthFailure:true})"),e=>e.code==='LOGIN_REQUIRED');
+    assert.equal(run('S.session'),null);assert.equal(run('S.ended'),1);assert.equal(run('S.discarded'),true);
+  }else if(name==='parallel_401s_share_cookie_probe'){
+    editor();const probe=deferred(),session=run('S.session');let probes=0,mutations=0;
+    fetchImpl=async path=>{if(path==='/api/session'){probes++;return probe.promise;}mutations++;return response({error:{code:'UPSTREAM_AUTH_FAILED'}},401);};
+    const pending=Promise.allSettled([run("post('/api/resource/a')"),run("post('/api/resource/b')")]);await tick();assert.equal(probes,1);
+    probe.resolve(response({authenticated:true,csrf:'initial'}));const results=await pending;
+    assert.ok(results.every(r=>r.status==='rejected'&&r.reason.code==='UPSTREAM_AUTH_FAILED'));assert.equal(mutations,2);assert.equal(run('S.session'),session);
+  }else if(name==='late_probe_cannot_clear_new_login'){
+    editor();const probe=deferred();fetchImpl=async path=>path==='/api/session'?probe.promise:response({error:{code:'LOGIN_REQUIRED'}},401);
+    const pending=assert.rejects(run("api('/api/devices')"),e=>e.code==='SESSION_CHANGED');await tick();
+    run("S.session={csrf:'new'}");probe.resolve(response({authenticated:false}));await pending;assert.equal(run('S.session.csrf'),'new');
+  }else if(name==='changed_cookie_does_not_adopt_old_work'){
+    editor();run("S.session.user_id='u';endSession=(discard)=>{S.session=null;S.discarded=discard;}");
+    fetchImpl=async path=>path==='/api/session'?response({authenticated:true,user_id:'u',csrf:'different-login'}):response({error:{code:'UPSTREAM_AUTH_FAILED'}},401);
+    await assert.rejects(run("post('/api/resource')"),e=>e.code==='UPSTREAM_AUTH_FAILED');assert.equal(run('S.session'),null);assert.equal(run('S.discarded'),true);
+  }else if(name==='space_change_rejects_pending_receipt'){
+    editor();run("S.space_id='a'");const receipt=deferred();context.receipt=receipt.promise;
+    const pending=assert.rejects(run('settled(receipt)'),e=>e.code==='SESSION_CHANGED');run("S.space_id='b'");receipt.resolve({operation_id:'old',pending:false});await pending;
+  }else if(name==='late_probe_cannot_clear_new_space'){
+    editor();run("S.space_id='a'");const probe=deferred();fetchImpl=async path=>path==='/api/session'?probe.promise:response({error:{code:'LOGIN_REQUIRED'}},401);
+    const pending=assert.rejects(run("api('/api/devices')"),e=>e.code==='SESSION_CHANGED');await tick();run("S.space_id='b'");
+    probe.resolve(response({authenticated:false}));await pending;assert.equal(run('S.space_id'),'b');assert.ok(run('S.session'));
+  }else if(name==='project_addition_keeps_session'){
+    editor();const session=run('S.session');fetchImpl=async()=>response({});run('connectEvents()');
+    run('S.events').onmessage({data:JSON.stringify({type:'project',data:{id:'future'}})});assert.equal(run('S.session'),session);
   }else if(name==='null_json_retries_are_bounded'){
     editor();let count=0;fetchImpl=async()=>{count++;return response(null);};await assert.rejects(run("api('/api/devices')"),/网络暂时不可用/);assert.equal(count,5);
   }else if(name==='uncertain_task_reuses_key_after_reload'){
@@ -141,6 +190,17 @@ scenario(process.argv[1]).then(()=>console.log('SCENARIO_COMPLETED')).catch(erro
     "stale_audit_response_keeps_current_details",
     "settled_receipt_does_not_cross_sessions",
     "old_401_does_not_clear_new_session",
+    "metadata_bootstrap_keeps_pending_request",
+    "resource_401_preserves_live_login",
+    "probe_failure_is_not_logout",
+    "probe_401_is_not_recursive",
+    "expired_cookie_ends_login_once",
+    "parallel_401s_share_cookie_probe",
+    "late_probe_cannot_clear_new_login",
+    "changed_cookie_does_not_adopt_old_work",
+    "space_change_rejects_pending_receipt",
+    "late_probe_cannot_clear_new_space",
+    "project_addition_keeps_session",
     "null_json_retries_are_bounded",
     "uncertain_task_reuses_key_after_reload",
     "missing_task_does_not_block_new_run",

@@ -94,9 +94,12 @@ function networkState(text, online = false) {
   if ($('#event-dot')) $('#event-dot').className = 'dot ' + (online ? 'online' : 'offline');
 }
 function sessionChanged() {
-  return Object.assign(new Error('登录状态已变化，请在当前会话中重试。'), {
-    code: 'SESSION_CHANGED',
-  });
+  return Object.assign(
+    new Error('登录、空间或权限上下文已变化；旧请求结果未应用，已提交操作请先核对状态。'),
+    {
+      code: 'SESSION_CHANGED',
+    },
+  );
 }
 function stopEvents() {
   S.events?.close();
@@ -169,7 +172,10 @@ function clearSpaceSnapshots() {
     basicsRequest: null,
   });
 }
-function endSession(discard = false) {
+function suspendPanelContext(discard = false, keepLogin = false) {
+  const session = S.session,
+    space = S.space_id;
+  closeModal();
   window.CodePierCallLog?.clear();
   window.CodePierAuditSessions?.clear();
   S.auditSession = '';
@@ -180,11 +186,16 @@ function endSession(discard = false) {
   // Expiry suspends in-memory drafts, never persists message text or files.
   // Only the same authenticated account can recover them after signing in.
   const owner = sessionOwner(S.session);
-  discard = discard || !owner;
+  // A second invalidation may arrive while the first recovery is offline.
+  // Do not relabel quarantined work or replace its original mapping snapshot
+  // with the now-empty UI inventory: that could restore it to a remapped path.
+  discard = discard || !owner || !!(S.suspendedUser && S.suspendedUser !== owner);
+  const priorMappings = S.suspendedUser === owner ? S.suspendedMappings : null;
   S.suspendedUser = discard ? null : owner;
   S.suspendedMappings = discard
     ? null
-    : new Map(
+    : priorMappings ||
+      new Map(
         (S.projects || []).map((project) => [
           project.id,
           { root: project.root, device_id: project.device_id },
@@ -199,7 +210,9 @@ function endSession(discard = false) {
   stopEvents();
   clearTimeout(S.poll);
   S.poll = null;
-  S.session = null;
+  // A new object is an explicit security-context generation. Display-only
+  // identity updates must not replace this object (see identity.bootstrap).
+  S.session = keepLogin && session ? { ...session } : null;
   S.renderSeq++;
   clearSpaceSnapshots();
   if (typeof stopComputerApprovals === 'function') stopComputerApprovals();
@@ -209,8 +222,70 @@ function endSession(discard = false) {
   window.CodePierGateway?.reset();
   window.CodePierIdentity?.reset();
   S.identity = null;
-  S.space_id = null;
+  S.space_id = keepLogin ? space : null;
+}
+function endSession(discard = false) {
+  suspendPanelContext(discard);
   renderLogin();
+}
+let accessRecovery = null;
+function recoverPanelAccess() {
+  if (!S.session) return Promise.resolve();
+  if (accessRecovery?.session === S.session) return accessRecovery.promise;
+  // Hide old content synchronously and fence in-flight replies. Drafts remain
+  // quarantined in memory; boot only restores still-authorized, unchanged
+  // project mappings. No command or submitted mutation is replayed here.
+  suspendPanelContext(false, true);
+  $('#app').innerHTML =
+    `<main class="boot"><div id="page" role="status">${brand}<p>权限已更新，正在重新校验当前工作区…</p></div></main>`;
+  const recovery = { session: S.session, promise: null };
+  recovery.promise = bootAuthenticated()
+    .catch((error) => {
+      if (S.session !== recovery.session || error.code === 'SESSION_CHANGED') return;
+      stopEvents();
+      $('#app').innerHTML =
+        `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<button class="btn primary" data-action="retry-identity">重试身份与空间校验</button><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
+    })
+    .finally(() => {
+      if (accessRecovery === recovery) accessRecovery = null;
+    });
+  accessRecovery = recovery;
+  return recovery.promise;
+}
+let sessionVerification = null;
+function verifyPanelSession(session, space, discard = false) {
+  if (session !== S.session || space !== S.space_id) return Promise.reject(sessionChanged());
+  if (sessionVerification?.session === session && sessionVerification.space === space) {
+    sessionVerification.discard ||= discard;
+    return sessionVerification.promise;
+  }
+  const check = { session, space, discard, promise: null };
+  // Probe the panel cookie, not the failing resource credential. /api/session
+  // does not recurse into this path, and a lost/invalid probe is not logout.
+  check.promise = api('/api/session', { retryDelays: [], requestTimeout: 5000 })
+    .then((value) => {
+      if (session !== S.session || space !== S.space_id) throw sessionChanged();
+      if (value.authenticated === false) {
+        endSession(check.discard);
+      } else if (
+        value.authenticated === true &&
+        ((value.user_id && session.user_id && value.user_id !== session.user_id) ||
+          (value.csrf && session.csrf && value.csrf !== session.csrf))
+      ) {
+        // A different tab changed the cookie. Never attach old private work to
+        // the new login, even when it belongs to the same user.
+        endSession(true);
+      }
+    })
+    .catch((error) => {
+      if (error.code === 'SESSION_CHANGED') throw error;
+      // Preserve the original API error, and do not replay its mutation.
+    })
+    .finally(() => {
+      if (sessionVerification === check) sessionVerification = null;
+    });
+  sessionVerification = check;
+  return check.promise;
 }
 async function api(path, options = {}) {
   const {
@@ -261,7 +336,8 @@ async function api(path, options = {}) {
     if (externalSignal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
     if (session !== S.session || space !== S.space_id) throw sessionChanged();
     if (res) {
-      if (res.status === 401 && path != '/api/login') endSession(discardOnAuthFailure);
+      if (res.status === 401 && session && !['/api/login', '/api/session'].includes(path))
+        await verifyPanelSession(session, space, discardOnAuthFailure);
       if (res.ok && body !== null && body !== undefined) {
         if (method !== 'GET' && method !== 'HEAD') invalidateBasics();
         return body;
@@ -319,9 +395,10 @@ const workTarget = (project = S.work.project) => ({
 });
 const wtool = (name, args = {}) => tool(name, { ...workTarget(), ...args });
 async function settled(promise) {
-  const session = S.session;
+  const session = S.session,
+    space = S.space_id;
   const out = await promise;
-  if (S.session !== session) throw sessionChanged();
+  if (S.session !== session || S.space_id !== space) throw sessionChanged();
   if (!out?.pending) return out;
   const id = out.operation_id;
   toast('操作已保存，正在等待本机或恢复连接；无需重新提交。');
@@ -329,7 +406,7 @@ async function settled(promise) {
   // retried safely. No editor state is destroyed when connectivity changes.
   const deadline = Date.now() + 31 * 60 * 1000;
   while (Date.now() < deadline && S.session) {
-    if (S.session !== session) throw sessionChanged();
+    if (S.session !== session || S.space_id !== space) throw sessionChanged();
     let op;
     try {
       op = await tool('operations_wait', { operation_id: id, wait_seconds: 8 });
@@ -626,9 +703,9 @@ async function bootAuthenticated() {
   } catch (error) {
     // Membership discovery must fail closed, while preserving an explicit retry
     // surface. Never start resource streams using a guessed/default Space.
+    if (error.code === 'SESSION_CHANGED' || !S.session) return;
     stopEvents();
     if (typeof stopComputerApprovals === 'function') stopComputerApprovals();
-    if (!S.session) return;
     CodePierIdentity.reset();
     S.identity = null;
     S.space_id = null;
@@ -641,7 +718,7 @@ async function bootAuthenticated() {
     try {
       await revalidateSuspendedWork();
     } catch (error) {
-      if (!S.session) return;
+      if (error.code === 'SESSION_CHANGED' || !S.session) return;
       stopEvents();
       $('#app').innerHTML =
         `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<p>草稿仍隔离在本标签页中；重新确认权限前不会恢复显示或重发请求。</p><button class="btn primary" data-action="retry-identity">重新校验工作区权限</button><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
@@ -666,10 +743,11 @@ async function bootAuthenticated() {
 function connectEvents() {
   stopEvents();
   const session = S.session,
+    space = S.space_id,
     events = (S.events = new EventSource(
-      '/api/events?' + new URLSearchParams({ space_id: S.space_id || '' }),
+      '/api/events?' + new URLSearchParams({ space_id: space || '', access_events: '2' }),
     ));
-  const current = () => S.events === events && S.session === session;
+  const current = () => S.events === events && S.session === session && S.space_id === space;
   let opened = false,
     checkingAccess = false,
     refreshing = false,
@@ -725,11 +803,18 @@ function connectEvents() {
       refreshPanel();
     else loadBasics().catch(() => {});
   };
-  events.addEventListener('access_revoked', () => {
+  events.addEventListener('session_revoked', () => {
     if (!current()) return;
     endSession(true);
-    toast('当前工作区权限已变化。私有内容已清除，请重新验证身份。', true);
+    toast('登录已过期或已撤销，请重新登录。', true);
   });
+  const accessChanged = () => {
+    if (current()) recoverPanelAccess();
+  };
+  events.addEventListener('access_changed', accessChanged);
+  // Older Hubs do not distinguish policy loss from login revocation. A fresh
+  // identity read decides which it is instead of unconditionally logging out.
+  events.addEventListener('access_revoked', accessChanged);
   events.onerror = () => {
     if (current()) {
       networkState('正在重新连接…');
@@ -741,20 +826,14 @@ function connectEvents() {
         api('/api/projects', { retryDelays: [], discardOnAuthFailure: true })
           .then(({ projects }) => {
             if (current() && S.projects.some((old) => !projects.some((p) => p.id === old.id)))
-              endSession(true);
+              return recoverPanelAccess();
           })
           .catch((error) => {
             if (
               current() &&
-              [
-                'SPACE_FORBIDDEN',
-                'SPACE_NOT_FOUND',
-                'ENTITLEMENTS_STALE',
-                'IDENTITY_DISABLED',
-                'ACCOUNT_DISABLED',
-              ].includes(error.code)
+              ['SPACE_FORBIDDEN', 'SPACE_NOT_FOUND', 'ENTITLEMENTS_STALE'].includes(error.code)
             )
-              endSession(true);
+              return recoverPanelAccess();
           })
           .finally(() => {
             checkingAccess = false;
@@ -1325,7 +1404,8 @@ async function setupBuiltinRoots(dialog, device) {
       error.status === 401 ||
       (error.status === 403 && error.code !== 'PROTECTED_ROOT') ||
       error.status === 404
-    ) blocked = true;
+    )
+      blocked = true;
     if (error.status === 409) stale = true;
     if (error.code === 'NETWORK_UNCERTAIN' || error.status >= 500) {
       form.dataset.submission = 'uncertain';
@@ -1526,7 +1606,8 @@ async function projectModal(id = null, device = '') {
   form.append(status);
   const builtinNote = document.createElement('p');
   builtinNote.className = 'form-note';
-  builtinNote.textContent = '内置节点仅开放文件访问，不支持 Shell 或任务。请填写 Hub 内已授权的路径；新映射默认只读。';
+  builtinNote.textContent =
+    '内置节点仅开放文件访问，不支持 Shell 或任务。请填写 Hub 内已授权的路径；新映射默认只读。';
   form.append(builtinNote);
   const selectedBuiltin = () =>
     S.devices.find((d) => d.id === form.elements.device_id.value)?.builtin === true;

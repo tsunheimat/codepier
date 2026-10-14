@@ -23,13 +23,15 @@ def event_endpoint(app):
                 if route.path == "/api/events")
 
 
-@pytest.mark.parametrize("revocation", ["membership", "session", "role_assignment", "role_scope", "expiry"])
-def test_live_panel_stream_signals_authority_loss_without_private_payload(team, revocation):
+@pytest.mark.parametrize("protocol", ["legacy", "scoped"])
+@pytest.mark.parametrize("revocation", ["membership", "session", "role_assignment", "role_scope", "expiry", "project_delete"])
+def test_live_panel_stream_signals_authority_loss_without_private_payload(team, revocation, protocol):
     app, browsers = team
     role = shared_role(app, browsers, ["read", "execute"])
     browser = browsers["alice"]
     request = Request({
-        "type": "http", "method": "GET", "path": "/api/events", "query_string": b"",
+        "type": "http", "method": "GET", "path": "/api/events",
+        "query_string": b"access_events=2" if protocol == "scoped" else b"",
         "headers": [(b"cookie", ("rd_session=" + browser.cookie).encode()),
                     (b"x-codepier-space", b"team")],
     })
@@ -51,6 +53,8 @@ def test_live_panel_stream_signals_authority_loss_without_private_payload(team, 
                 app.state.store.execute("UPDATE sessions SET expires=1 WHERE user_id='alice'")
             elif revocation == "role_assignment":
                 app.state.store.execute("UPDATE role_assignments SET active=0 WHERE user_id='alice'")
+            elif revocation == "project_delete":
+                app.state.store.execute("DELETE FROM projects WHERE id='project-team'")
             else:
                 import json
                 policy = json.loads(app.state.store.one("SELECT policy FROM access_roles WHERE id=?", (role["id"],))["policy"])
@@ -60,13 +64,16 @@ def test_live_panel_stream_signals_authority_loss_without_private_payload(team, 
                 queue.put_nowait({"type": "iam", "data": {
                     "space_id": "team", "user_id": "alice", "private": "PRIVATE_SENTINEL"}})
             frame = await anext(stream)
-            assert frame == "event: access_revoked\ndata: {}\n\n"
+            event = ('session_revoked' if revocation in {'session', 'expiry'} else 'access_changed') if protocol == 'scoped' else 'access_revoked'
+            assert frame == f"event: {event}\ndata: {{}}\n\n"
             with pytest.raises(StopAsyncIteration):
                 await anext(stream)
         finally:
             await stream.aclose()
         assert not app.state.runtime.watchers
     asyncio.run(run())
+    # Policy loss does not delete the browser login.
+    assert browser.get('/api/session').json()['authenticated'] == (revocation not in {'session', 'expiry'})
 
 
 def test_audit_export_query_is_an_authorized_selector_not_authority(team):
@@ -126,3 +133,43 @@ def test_idle_heartbeat_rechecks_membership_and_benign_changes_preserve_stream(t
         finally:
             await stream.aclose()
     asyncio.run(run())
+
+
+
+@pytest.mark.parametrize('protocol', ['legacy', 'scoped'])
+def test_new_project_and_granted_access_preserve_existing_stream_and_login(team, protocol):
+    import json
+    app, browsers = team
+    role = shared_role(app, browsers)
+    browser = browsers['alice']
+    request = Request({
+        'type': 'http', 'method': 'GET', 'path': '/api/events',
+        'query_string': b'access_events=2' if protocol == 'scoped' else b'',
+        'headers': [(b'cookie', ('rd_session=' + browser.cookie).encode()),
+                    (b'x-codepier-space', b'team')],
+    })
+    async def connected():
+        return False
+    request.is_disconnected = connected
+    store = app.state.store
+    original_session = store.all("SELECT * FROM sessions WHERE user_id='alice'")
+
+    async def run():
+        response = await event_endpoint(app)(request)
+        stream = response.body_iterator
+        try:
+            assert 'event: ready' in await anext(stream)
+            store.execute("""INSERT INTO projects(id,alias,alias_key,device_id,root,space_id,created)
+                SELECT 'future-project','Future','future',device_id,'/future',space_id,created
+                FROM projects WHERE id='project-team'""")
+            policy = json.loads(store.one('SELECT policy FROM access_roles WHERE id=?', (role['id'],))['policy'])
+            policy['project_rules'].append({'actions': ['read'], 'projects': ['future-project']})
+            store.execute('UPDATE access_roles SET policy=? WHERE id=?', (json.dumps(policy), role['id']))
+            next(iter(app.state.runtime.watchers)).put_nowait(None)
+            assert await anext(stream) == ': heartbeat\n\n'
+        finally:
+            await stream.aclose()
+    asyncio.run(run())
+    assert store.all("SELECT * FROM sessions WHERE user_id='alice'") == original_session
+    assert browser.get('/api/session').json()['authenticated']
+    assert 'future-project' in {p['id'] for p in browser.get('/api/projects').json()['projects']}

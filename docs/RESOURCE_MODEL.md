@@ -56,3 +56,12 @@ The resource migration is additive and transactionally applied when a Hub opens 
 Old VPS associations remain, but do not become grants or execution routes. An administrator must choose a route and configure explicit VPS rules before new SSH submissions. Previously queued association-only SSH requests are blocked before delivery; already dispatched operations retain their original receipts and recovery behavior. Changing only a resource's purpose associations no longer revokes an otherwise explicitly authorized route; changing the route, connection or credential blocks pending delivery. Cancellation still uses the original operation and cannot guarantee remote process termination.
 
 Back up the database and matching key material before a real upgrade. Do not run an older Hub against a database containing new resource policies or fixed snapshots: old binaries do not understand these authorization gates. Rollback requires a compatible pre-upgrade database/key backup. This task exercises upgrade/restart only on isolated fixtures; it does not migrate a live database or certify a deployed image.
+
+
+## 面板登录与实时权限更新
+
+面板登录、当前 Space 和资源权限是不同状态。一般身份显示资料刷新不会替换登录上下文；新增 Project 或角色权限增加不要求重新登录。收到资源 API 的 HTTP 401 时，面板先合并校验 `/api/session`：只有确认 Cookie 会话失效或身份已经切换才结束当前登录；校验超时、网络失败和外部服务凭据失败不能当成登出，也不会自动重发原来的写入。
+
+实时通道的新版页面使用 `access_events=2`，区分 `session_revoked`（登录失效）和 `access_changed`（资源、成员资格或身份权限需要重新校验）。后者立即隐藏旧工作区、停止旧数据流并使旧请求结果失效，但保留登录；只在重新确认项目权限、项目映射和原生 CLI 访问后恢复仍获授权的内存草稿。失去权限的内容不会重新显示，校验失败时保留明确重试入口。旧页面继续收到原有 `access_revoked` 事件，避免部署更新期间失去撤权保护。
+
+真正登出、切换账号、切换 Space 或撤权后的上下文边界仍阻止旧回应覆盖新状态。`SESSION_CHANGED` 不代表后台操作没有执行；已提交操作应按原操作编号或幂等键核实，不能直接创建重复任务。这些恢复逻辑不修改 OAuth Token 生命周期，不取消 CSRF、角色校验或主动撤销机制。
