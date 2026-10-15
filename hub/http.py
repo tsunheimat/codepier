@@ -59,7 +59,10 @@ def install_http_behaviors(app):
 
     @app.exception_handler(DevError)
     async def dev_error(request, exc: DevError):
-        return JSONResponse({"error": {"code": exc.code, "message": exc.message, **exc.details}}, status_code=exc.status)
+        headers = {}
+        if exc.code == 'ENTITLEMENTS_UNAVAILABLE':
+            headers = {**headers, 'Retry-After': '10'}
+        return JSONResponse({"error": {"code": exc.code, "message": exc.message, **exc.details}}, status_code=exc.status, headers=headers)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -74,6 +77,15 @@ def install_http_behaviors(app):
     @app.middleware("http")
     async def headers(request: Request, call_next):
         response = await call_next(request)
+        # Renew server-side idle state, never re-set credentials from ordinary
+        # API responses: a late response must not overwrite a newer login cookie.
+        # /mcp, static assets and failed requests do not maintain human sessions.
+        if (request.url.path.startswith('/api/') and response.status_code < 400
+                and request.scope.get('codepier.panel_session')
+                and not any(value.lower().startswith('rd_session=')
+                            for value in response.headers.getlist('set-cookie'))):
+            auth = app.state.auth
+            await app.state.store.run(auth.maintain_session, request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"

@@ -781,7 +781,7 @@ class Runtime:
                               user_epoch=context.get('user_epoch'), identity_id=context.get('identity_id'))
         return iam.live_principal(self.store, principal)
 
-    def permission_error(self, op, request):
+    def permission_error(self, op, request, *, defer_identity=False):
         try:
             caller = self.operation_principal(op, request)
             if op['project_id']:
@@ -790,6 +790,8 @@ class Runtime:
                 iam.require_device(self.store, caller, op['device_id'], manage=op['tool'] != 'system_validate',
                                    creation=request['project'] if op['tool'] == 'system_validate' else None)
         except DevError as exc:
+            if defer_identity and exc.code in {'ENTITLEMENTS_STALE', 'ENTITLEMENTS_UNAVAILABLE'}:
+                raise
             return exc.message
         if not op["project_id"]:
             if op['grant_id']:
@@ -901,7 +903,18 @@ class Runtime:
             except Exception:
                 self.complete(op, {"ok": False, "error": {"code": "RECOVERY_DATA_INVALID", "message": "持久请求无法解密，请检查 Hub 数据库与 master.key 是否配套"}})
                 return
-            denied = self.permission_error(op, request)
+            identity_pending = False
+            try:
+                denied = self.permission_error(op, request, defer_identity=True)
+            except DevError as exc:
+                # A missing fresh snapshot is not a revocation. Preserve the
+                # original operation and payload, but never dispatch without a
+                # successful live authorization check. Queue deadlines remain.
+                if exc.code not in {'ENTITLEMENTS_STALE', 'ENTITLEMENTS_UNAVAILABLE'}:
+                    raise
+                identity_pending, denied = True, exc.message
+                self.store.execute('UPDATE operations SET transport_error=? WHERE id=?',
+                                   (exc.code + ': ' + exc.message, id))
             # Never trust a client-supplied origin, UA or project field. Durable
             # actor/grant columns originate from Auth, not tool arguments.
             panel = not op['grant_id'] and op['actor'].startswith('panel:')
@@ -941,6 +954,13 @@ class Runtime:
                 denied = denied or policy_denied
             # Already accepted/ambiguous work is probed, never silently replayed or killed.
             expired = bool(op["deadline"] and now > op["deadline"])
+            if identity_pending and not op['attempts']:
+                if not expired and not op['cancel_requested']:
+                    self.store.execute('UPDATE operations SET next_attempt=? WHERE id=?', (now + 10, id))
+                    return
+                denied = None  # Respect explicit cancellation and queue expiry.
+            elif not identity_pending and not denied and str(op.get('transport_error') or '').startswith('ENTITLEMENTS_'):
+                self.store.execute('UPDATE operations SET transport_error=NULL WHERE id=?', (id,))
             if not op["attempts"] and (expired or denied or op["cancel_requested"]):
                 code = "AUTHORIZATION_CHANGED" if denied else "CANCELLED" if op["cancel_requested"] else "QUEUE_EXPIRED"
                 self.complete(op, {"ok": False, "error": {"code": code, "message": denied or "排队操作已取消或超过首次执行期限；没有执行"}})
@@ -969,7 +989,7 @@ class Runtime:
             # the same operation; it cannot be mistaken for an unsent cancellation.
             if op["cancel_requested"]:
                 packets.append({"type": "cancel", "id": id})
-            elif denied and op["attempts"] and getattr(con, 'cancel_pending_protocol', 0) == 1:
+            elif denied and not identity_pending and op["attempts"] and getattr(con, 'cancel_pending_protocol', 0) == 1:
                 # A capability-gated conditional fence is safe even if the
                 # accepted/started ACK was lost. The Agent ignores it once
                 # running; never turn revocation into an unconditional kill.

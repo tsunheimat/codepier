@@ -36,6 +36,9 @@ def validate_credential(store, principal):
             security = store.one("SELECT * FROM session_security WHERE session_hash=?", (principal.session_hash,))
             if not security or security['epoch'] != principal.user_epoch or security['identity_id'] != principal.identity_id:
                 raise DevError("LOGIN_REQUIRED", "会话身份已改变，请重新登录", 401)
+            policy = getattr(store, 'auth_policy', None)
+            if policy and policy.session_max_seconds and security['authenticated_at'] + policy.session_max_seconds <= time.time():
+                raise DevError('LOGIN_REQUIRED', '登录已达到配置的最长有效期', 401)
         return replace(principal, actor="panel:" + row["username"])
     if principal.token_hash:
         row = store.one("SELECT g.*,t.kind AS token_kind FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.hash=? AND t.kind IN ('access','pat') AND t.expires>? AND g.revoked=0", (principal.token_hash, time.time()))

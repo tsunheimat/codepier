@@ -239,7 +239,7 @@ Removing the variables keeps the provider and makes it editable in the panel aga
 | `CODEPIER_OIDC_ISSUER` | Exact issuer; enables seeding. Callback is always `HUB_PUBLIC_URL/auth/oidc/callback`. |
 | `CODEPIER_OIDC_CLIENT_ID`, `CODEPIER_OIDC_CLIENT_SECRET` | Required together with the issuer. |
 | `CODEPIER_OIDC_LABEL` | Login button label; default `SSO`. |
-| `CODEPIER_OIDC_SCOPES` | Default `openid profile email`. |
+| `CODEPIER_OIDC_SCOPES` | Default `openid profile email offline_access`; the provider must also permit refresh tokens. |
 | `CODEPIER_OIDC_GROUP_CLAIM`, `CODEPIER_OIDC_REQUIRED_GROUP` | As in the panel; default claim `groups`, no required group. |
 | `CODEPIER_OIDC_DISCOVERY_URL`, `CODEPIER_OIDC_ENDPOINT_ORIGINS` | Optional override and extra exact origins (comma-separated). |
 | `CODEPIER_OIDC_FRESHNESS_SECONDS`, `CODEPIER_OIDC_ENABLED` | Defaults 900 and true. Admission is always `jit`. |
@@ -306,7 +306,9 @@ provenance; removing an IdP mapping does not erase an independent manual grant.
 
 The worker checks eligible identities periodically, in bounded batches, using
 verified UserInfo and upstream refresh where available. A provider-wide required
-group removal or rejected credentials disables that identity. Ordinary group
+group removal or subject mismatch disables that identity. Rejected upstream
+credentials suspend its verified authority, but retain the CodePier session and
+Grant for same-subject reauthentication. Ordinary group
 removal removes that source's membership/Role assignment. **校验群组权限** starts
 reconciliation of eligible identities (not a claim that every upstream service is
 healthy or every account was just refreshed).
@@ -409,7 +411,11 @@ encryption key to work around login errors.
 Common errors:
 
 - `ENTITLEMENTS_STALE`: upstream authority can no longer be freshly verified;
-  reauthenticate the provider and check its UserInfo/refresh availability.
+  check identity renewal diagnostics or reauthenticate that provider. The CodePier
+  session and Grant are retained, and a new MCP consent is not the remedy.
+- `ENTITLEMENTS_UNAVAILABLE`: temporary identity-provider outage after verified
+  authority expires. Protected operations pause fail-closed and resume after
+  successful synchronization. See [Authorization continuity](AUTH_CONTINUITY.md).
 - `SPACE_FORBIDDEN`: removed/blocked membership, not necessarily an invalid Token.
 - `ROLE_ASSIGNMENT_REQUIRED`: current human lacks Role-use/delegation eligibility.
 - `ROLE_POLICY_DENIED`: adjust applicable Role/resource policy; do not repeatedly

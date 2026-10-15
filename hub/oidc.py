@@ -94,7 +94,7 @@ class ProviderInput(AccessModel):
     admission: Literal['closed','jit'] = 'closed'
     group_claim: str = Field(default='groups',min_length=1,max_length=100)
     required_group: str = Field(default='',max_length=200)
-    scopes: str = Field(default='openid profile',max_length=500)
+    scopes: str = Field(default='openid profile offline_access',max_length=500)
     endpoint_origins: list[str] = Field(default_factory=list,max_length=10)
     freshness_seconds: int = Field(default=900,ge=60,le=86400)
     expected_version: int | None = Field(default=None,ge=1)
@@ -192,6 +192,7 @@ class OIDCService:
         self.transport=transport
         self.seed,self.bootstrap_admin=seed,bootstrap_admin
         self.sync_lock=asyncio.Lock()
+        self.identity_sync_locks={}
         from hub.oidc_resilience import SyncScheduler
         self.scheduler=SyncScheduler(self)
         self.metadata_locks={};self.key_locks={}
@@ -445,13 +446,19 @@ class OIDCService:
         if old:
             store.db.execute('UPDATE oidc_providers SET label=?,issuer=?,client_id=?,client_secret=?,discovery_url=?,enabled=?,admission=?,group_claim=?,required_group=?,scopes=?,endpoint_origins=?,freshness_seconds=?,version=version+1 WHERE id=?',(*values,identifier))
             store.db.execute('DELETE FROM oidc_cache WHERE provider_id=?',(identifier,))
-            # A changed provider may reduce admission/group policy. Old
-            # entitlement snapshots are not grandfathered indefinitely.
-            store.db.execute('UPDATE external_identities SET fresh_until=0,checked_at=0 WHERE provider_id=?',(identifier,))
-            for identity in store.all('SELECT * FROM external_identities WHERE provider_id=?',(identifier,)):
-                prefix='oidc:'+identity['id']+':'
-                for table in ('memberships','role_assignments'):
-                    store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE substr(source,1,?)=?',(len(prefix),prefix))
+            # Labels, requested scopes and credential rotation do not themselves
+            # remove already verified membership. Security-boundary/admission
+            # changes must invalidate snapshots immediately, as before.
+            security_fields=('issuer','client_id','discovery_url','enabled','admission',
+                             'group_claim','required_group','freshness_seconds')
+            invalidates=any(getattr(body,key)!=old[key] for key in security_fields)
+            invalidates=invalidates or body.endpoint_origins!=json.loads(old['endpoint_origins'])
+            if invalidates:
+                store.db.execute('UPDATE external_identities SET fresh_until=0,checked_at=0 WHERE provider_id=?',(identifier,))
+                for identity in store.all('SELECT * FROM external_identities WHERE provider_id=?',(identifier,)):
+                    prefix='oidc:'+identity['id']+':'
+                    for table in ('memberships','role_assignments'):
+                        store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE substr(source,1,?)=?',(len(prefix),prefix))
         else:
             store.db.execute('INSERT INTO oidc_providers(id,label,issuer,client_id,client_secret,discovery_url,enabled,admission,group_claim,required_group,scopes,endpoint_origins,freshness_seconds,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(identifier,*values,time.time()))
         audit('oidc.provider_updated' if old else 'oidc.provider_created',identifier,{'enabled':body.enabled,'issuer':body.issuer})
@@ -562,10 +569,20 @@ class OIDCService:
         callback=(await self.store.run(self.public_url))+'/auth/oidc/callback'
         params={'client_id':provider['client_id'],'redirect_uri':callback,'response_type':'code','scope':provider['scopes'],
                 'state':state,'nonce':nonce,'code_challenge':b64(hashlib.sha256(verifier.encode()).digest()),'code_challenge_method':'S256'}
-        if link_session:params.update(prompt='login',max_age='0')
+        # OIDC offline access requires explicit consent unless the provider has
+        # another applicable consent policy. Do not request it by stealth.
+        if 'offline_access' in provider['scopes'].split():params['prompt']='consent'
+        if link_session:params.update(prompt='login consent' if params.get('prompt') else 'login',max_age='0')
         return meta['authorization_endpoint']+('?' if '?' not in meta['authorization_endpoint'] else '&')+urlencode(params),state_hash,browser
 
     async def sync_identity(self,identifier):
+        # The scheduler and explicit synchronization share the same per-identity
+        # lock. Read tokens *after* acquiring it: two callers must not refresh
+        # the same upstream single-use token before either CAS completes.
+        async with self.identity_sync_locks.setdefault(identifier,asyncio.Lock()):
+            return await self._sync_identity(identifier)
+
+    async def _sync_identity(self,identifier):
         def snapshot():
             with iam.read_scope(self.store):
                 identity=self.store.one('SELECT * FROM external_identities WHERE id=?',(identifier,))
@@ -612,30 +629,65 @@ class OIDCService:
                     current=self.store.one('SELECT * FROM external_identities WHERE id=?',(identifier,))
                     self.disable_identity(current,code)
 
+        def require_reauthentication():
+            # invalid_grant/invalid_token says the upstream credential cannot be
+            # used, not that the human revoked CodePier. Immediately suspend its
+            # derived authority, but retain login/Grant IDs for same-subject
+            # recovery. Group removal and subject mismatch still disable below.
+            with self.store.transaction():
+                if not still_current():return
+                self.store.db.execute('UPDATE external_identities SET fresh_until=0 WHERE id=?',(identifier,))
+                prefix='oidc:'+identifier+':'
+                for table in ('memberships','role_assignments'):
+                    self.store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',
+                                          (identity['user_id'],len(prefix),prefix))
+                self.runtime.publish('iam',{'user_id':identity['user_id']})
+                self.runtime.wake_delivery()
+
+        async def refresh(meta,keys):
+            nonlocal expected_tokens
+            if not await self.store.run(still_current):return False
+            tokens=await self.exchange(provider,meta,{'grant_type':'refresh_token','refresh_token':secured['refresh_token']})
+            if tokens.get('token_type','').lower()!='bearer' or not isinstance(tokens.get('access_token'),str):raise DevError('OIDC_TOKEN_INVALID','刷新未返回有效访问令牌',401)
+            if tokens.get('id_token'):
+                claims=await self.verify_claims(tokens['id_token'],provider,keys,access_token=tokens['access_token'])
+                if claims['sub']!=identity['subject']:raise DevError('OIDC_SUBJECT_MISMATCH','刷新身份不一致',401)
+            life=tokens.get('expires_in',300)
+            if type(life) not in (int,float) or not math.isfinite(life) or not 1<=life<=30*86400:raise DevError('OIDC_TOKEN_INVALID','刷新有效期无效',401)
+            secured.update(access_token=tokens['access_token'],refresh_token=tokens.get('refresh_token') or secured['refresh_token'],expires_at=time.time()+life)
+            encrypted=await self.store.run(transfer_tokens)
+            if encrypted is None:return False
+            expected_tokens=encrypted
+            return True
+
         try:
             meta,keys=await self.metadata(provider)
             if not meta.get('userinfo_endpoint'):return 'OIDC_USERINFO_UNAVAILABLE'
-            if secured['expires_at']<=time.time()+30:
-                if not secured.get('refresh_token'):return 'OIDC_REAUTH_REQUIRED'
-                tokens=await self.exchange(provider,meta,{'grant_type':'refresh_token','refresh_token':secured['refresh_token']})
-                if tokens.get('token_type','').lower()!='bearer' or not isinstance(tokens.get('access_token'),str):raise DevError('OIDC_TOKEN_INVALID','刷新未返回有效访问令牌',401)
-                if tokens.get('id_token'):
-                    claims=await self.verify_claims(tokens['id_token'],provider,keys,access_token=tokens['access_token'])
-                    if claims['sub']!=identity['subject']:raise DevError('OIDC_SUBJECT_MISMATCH','刷新身份不一致',401)
-                life=tokens.get('expires_in',300)
-                if type(life) not in (int,float) or not math.isfinite(life) or not 1<=life<=30*86400:raise DevError('OIDC_TOKEN_INVALID','刷新有效期无效',401)
-                secured.update(access_token=tokens['access_token'],refresh_token=tokens.get('refresh_token',secured['refresh_token']),expires_at=time.time()+life)
-                encrypted=await self.store.run(transfer_tokens)
-                if encrypted is None:return
-                expected_tokens=encrypted
+            refreshed=False
+            if secured['expires_at']<=time.time()+30 and secured.get('refresh_token'):
+                if not await refresh(meta,keys):return
+                refreshed=True
+            elif secured['expires_at']<=time.time():
+                return 'OIDC_REAUTH_REQUIRED'
             # Do not use a stale account snapshot after metadata/refresh waits.
             if not await self.store.run(still_current):return
-            info=await self.http_json(provider,'GET',meta['userinfo_endpoint'],headers={'Authorization':'Bearer '+secured['access_token']})
+            try:
+                info=await self.http_json(provider,'GET',meta['userinfo_endpoint'],headers={'Authorization':'Bearer '+secured['access_token']})
+            except DevError as exc:
+                # Some providers expire an access token before expires_in. Try
+                # its refresh token exactly once, never loop on rejection.
+                if exc.code!='OIDC_CREDENTIAL_REJECTED' or refreshed or not secured.get('refresh_token'):raise
+                if not await refresh(meta,keys):return
+                if not await self.store.run(still_current):return
+                info=await self.http_json(provider,'GET',meta['userinfo_endpoint'],headers={'Authorization':'Bearer '+secured['access_token']})
             if info.get('sub')!=identity['subject']:raise DevError('OIDC_SUBJECT_MISMATCH','UserInfo 身份不一致',401)
             await self.store.run(finish_groups,info)
         except DevError as exc:
-            if exc.code in {'OIDC_ADMISSION_DENIED','OIDC_SUBJECT_MISMATCH','OIDC_CREDENTIAL_REJECTED'}:
+            if exc.code in {'OIDC_ADMISSION_DENIED','OIDC_SUBJECT_MISMATCH'}:
                 await self.store.run(reject_current,exc.code)
+            elif exc.code=='OIDC_CREDENTIAL_REJECTED':
+                await self.store.run(require_reauthentication)
+                return 'OIDC_REAUTH_REQUIRED'
             raise
 
     async def reconcile(self):
@@ -655,7 +707,7 @@ class OIDCService:
                     if time.monotonic()>=self.worker_audit_after:
                         self.worker_audit_after=time.monotonic()+3600
                         await self.store.run(self.store.audit,'oidc-worker','oidc.worker_error',status='error')
-                try:await asyncio.wait_for(self.stop_event.wait(),30)
+                try:await asyncio.wait_for(self.stop_event.wait(),10)
                 except asyncio.TimeoutError:pass
         self.worker=asyncio.create_task(work(),name='oidc-entitlements')
 
@@ -669,7 +721,7 @@ class OIDCService:
     def routes(self):
         router,store,auth=self.router,self.store,self.auth
         def cookie(response,secret):
-            response.set_cookie('rd_session',secret,httponly=True,samesite='lax',secure=urlsplit(self.public_url()).scheme=='https',max_age=12*3600,path='/')
+            auth.set_session_cookie(response,secret,secure=urlsplit(self.public_url()).scheme=='https')
             response.headers['Cache-Control']='no-store';return response
 
         @router.get('/api/auth/providers')

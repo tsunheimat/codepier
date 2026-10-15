@@ -25,7 +25,7 @@ JOURNAL_FILE = "rekey.json"
 CIPHER_COLUMNS = (("devices", "secret"), ("operations", "payload"), ("vps_connections", "secret"),
                   ("oidc_providers", "client_secret"), ("external_identities", "upstream_tokens"),
                   ("oidc_transactions", "verifier"), ("gateway_secrets", "secret"), ("gateway_accounts", "secret"),
-                  ("gateway_calls", "result"))
+                  ("gateway_calls", "result"), ("oauth_refresh_receipts", "response"))
 
 
 def key_id(key: bytes) -> str:
@@ -213,7 +213,8 @@ def rotate_key(directory: str | Path, *, resume: bool = False) -> dict:
             for table, column in CIPHER_COLUMNS:
                 if column not in {row[1] for row in store.db.execute(f"PRAGMA table_info({table})").fetchall()}:
                     continue
-                primary = "state_hash" if table == "oidc_transactions" else "id"
+                primary = {"oidc_transactions": "state_hash",
+                           "oauth_refresh_receipts": "predecessor_hash"}.get(table, "id")
                 cursor = store.db.execute(f"SELECT {primary} AS id,{column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''")
                 while rows := cursor.fetchmany(128):
                     for row in rows:

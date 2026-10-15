@@ -168,6 +168,8 @@ class Store:
         migrate_spaces(self.db)
         from hub.external_plugins.schema import migrate as migrate_plugins
         migrate_plugins(self.db)
+        from hub.auth_schema import migrate as migrate_auth
+        migrate_auth(self.db)
 
     @contextmanager
     def transaction(self, *, immediate=True):
