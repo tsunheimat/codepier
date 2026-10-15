@@ -27,6 +27,7 @@ class NativeService:
 
     def project(self,value,principal):
         p=self.runtime.project(value,principal)
+        p=self.runtime.routing.select(p, 'native', {}, principal)
         self.runtime.authorize(principal,'execute',project_id=p['id'])
         self.runtime.authorize(principal,'write',project_id=p['id'])
         if not p['device_enabled'] or p['mode']!='write' or not p['allow_tasks']:
@@ -89,6 +90,8 @@ class NativeService:
         if getattr(self.runtime, "panel_maintenance", None):
             self.runtime.panel_maintenance.guard()
         con=self.runtime.connections.get(project['device_id'])
+        if project.get('_source_boundary'):
+            self.runtime.routing.require_protocol(con)
         if not con or not self.runtime.online(project['device_id']):
             raise DevError('CLI_OFFLINE','节点离线；已同步历史可读，控制待重新连接后重试',409)
         if getattr(con,'native_security_protocol',0)!=1 and not (project.get('_native_operator') and project.get('_native_space')=='legacy'):
@@ -151,7 +154,12 @@ class NativeService:
             for row in rows:
                 try:
                     sid=identifier(row['id'])
-                    p=self.runtime.store.one('SELECT * FROM projects WHERE id=? AND device_id=?',(row['project_id'],device))
+                    p=self.runtime.store.one('SELECT * FROM projects WHERE id=?',(row['project_id'],))
+                    if p and p.get('routing_managed'):
+                        from hub.project_routing import configured_route
+                        selected=configured_route(self.runtime.store,p,'native')
+                        p={**p,'device_id':selected['device']['id'],'root':selected['root']}
+                    if p and p['device_id']!=device: continue
                     if not p or p['root']!=row['root'] or p['mode']!='write' or not p['allow_tasks']: continue
                     if row['device_id']!=device or row['provider'] not in ('pi','codex','claude') or row['status'] not in LIVE|{'exited','interrupted','quota_error','cleared','deleted'}: continue
                     if any(not isinstance(row[k],str) or len(row[k])>2048 for k in ('title','cwd','root','error')): continue

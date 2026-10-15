@@ -441,12 +441,14 @@ from shared.integration_contracts import register as register_integrations, deco
 register_integrations(Tool, TOOLS, OUTPUT_SCHEMAS)
 from shared.core_contracts import register as register_core, CORE_TOOLS, CORE_INSTRUCTIONS, REPLACED_MCP_TOOLS
 register_core(Tool, TOOLS, OUTPUT_SCHEMAS)
+from shared.routing_contracts import register as register_routing
+register_routing(Tool, Project, TOOLS, OUTPUT_SCHEMAS)
 from shared.query_contracts import register as register_queries, QUERY_TOOLS
 register_queries(Tool, TOOLS, OUTPUT_SCHEMAS)
 from shared.conversation_contracts import register as register_conversations
 register_conversations(Tool, TOOLS, OUTPUT_SCHEMAS)
 MUTATING = {name for name, tool in TOOLS.items() if tool.scope != 'read' and name not in COMPUTER_READ_TOOLS | READ_WITH_SCOPE}
-PROCESS_TOOLS |= {'exec', 'validation_run', 'lsp_query', 'worktrees_create', 'worktrees_remove'}
+PROCESS_TOOLS |= {'routed_exec', 'routed_job_control', 'exec', 'validation_run', 'lsp_query', 'worktrees_create', 'worktrees_remove'}
 
 
 from shared.role_contracts import register as register_roles, ROLE_SCOPE, ROLE_TOOLS

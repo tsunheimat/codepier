@@ -174,6 +174,7 @@ REQUIRED_FILES = {
 }
 
 PUBLIC_DOCS = {
+    'docs/PROJECT_ROUTING.md',
     'docs/EXTERNAL_PLUGINS.md',
     'docs/RESOURCE_MODEL.md', 'docs/CONVERSATIONS.md',
     'docs/PERSONAL_SPACES.md',

@@ -45,7 +45,11 @@ def frozen_policy(store, role):
                 for actions, ids in groups.items() for i in range(0, len(ids), 1000)],
                 vps_rules=[r.model_dump() for r in current.vps_rules],
                 connector_rules=[r.model_dump() for r in current.connector_rules],
-                plugin_rules=[r.model_dump() for r in current.plugin_rules])
+                plugin_rules=[r.model_dump() for r in current.plugin_rules],
+                route_rules=[{'route_id': r.route_id, 'projects': selected}
+                    for r in current.route_rules
+                    if (selected := [p['id'] for p in store.all('SELECT id FROM projects WHERE space_id=?', (role['space_id'],))
+                                     if (r.all_projects or p['id'] in r.projects) and project_actions(current, p['id'], created)])])
     except ValidationError as exc:
         raise DevError('CONNECTION_RESOURCE_LIMIT', '固定连接的资源快照过大；请缩小角色中的明确资源范围', 409) from exc
 
@@ -198,6 +202,9 @@ def make_connections_router(auth, runtime):
             store.db.execute('INSERT INTO client_connection_requests VALUES (?,?,?,?,?)',
                 (principal.space_id, principal.user_id, body.idempotency_key, fingerprint, result['grant_id']))
             if body.authorization_mode == 'fixed':
+                from hub.project_routing import fixed_route_snapshot
+                store.db.execute('UPDATE grants SET route_ceiling=? WHERE id=?',
+                    (json.dumps(fixed_route_snapshot(store, snapshot, principal.space_id), sort_keys=True), result['grant_id']))
                 store.db.execute('UPDATE grants SET connector_ceiling=? WHERE id=?', (json.dumps(tool_ceiling, sort_keys=True), result['grant_id']))
             iam.audit(store, principal, 'client_connection.created', result['grant_id'], detail={
                 'role_id': role['id'], 'authorization_mode': body.authorization_mode, 'profile_id': profile['id']})

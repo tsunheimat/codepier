@@ -18,6 +18,7 @@ CONTRACT_PROTOCOL = 1
 # Epoch 2 prevents legacy peers (which assume epoch 1 for every name)
 # from accepting primitives that they do not implement.
 TOOL_WIRE_VERSIONS: dict[str, int] = {name: 2 for name in ("read", "write", "edit", "exec")}
+TOOL_WIRE_VERSIONS.update(routed_exec=2, routed_job_control=2)
 TOOL_MINIMUM_RELEASES: dict[str, tuple[int, int, int]] = {}
 MINIMUM_RELEASE = (1, 0, 0)
 

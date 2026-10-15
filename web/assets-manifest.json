@@ -147,12 +147,20 @@
       "bytes": 1498
     },
     "product.js": {
-      "sha256": "4ab36c112ab4b94fa46487dcacc2d7fdf7ca4d2826c11c6914036e0b6b9a59ba",
-      "bytes": 24040
+      "sha256": "e367112974c7039ac3f92ec7542f90a6fefa7183772a8b1b8e9d57425a3b7b7f",
+      "bytes": 24131
+    },
+    "project-routing.css": {
+      "sha256": "e7ddb60e7f3b37460fcdd0acc166138b74cf60ee60dd02ce1c54e200bdd84875",
+      "bytes": 987
+    },
+    "project-routing.js": {
+      "sha256": "55b9ae5b01dbbac26aa2edfed7b552561cb6746206344c683c622bbcd9d11650",
+      "bytes": 24008
     },
     "roles.js": {
-      "sha256": "32a73a39ada162c9b0b85d62e71fddd94f2951aaf55ab43fef161981ce19b611",
-      "bytes": 16714
+      "sha256": "102d1f33dfd6a5d27e248accfb552375ace8996bfd7908cba1995e84e3543846",
+      "bytes": 17024
     },
     "skills.js": {
       "sha256": "92a4fb865f98d7a62f36083ef585863365f81cd4654d4dd7f72def23bf8037f8",
@@ -187,5 +195,5 @@
       "bytes": 24897
     }
   },
-  "template_sha256": "38c5cad1a45cf568205888220340bbeab17aa65d095f6fce9ea5a28d4bd96441"
+  "template_sha256": "e783bbdf3ae355bca02164ddde08579a3beddcb99e4994fddf4c164284cc2c36"
 }

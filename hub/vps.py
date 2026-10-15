@@ -89,19 +89,25 @@ class VPSService:
         self.runtime = runtime
         self.store = runtime.store
 
-    def public(self, row, visible_ids=None):
+    def public(self, row, visible_ids=None, principal=None):
         result = {key: row[key] for key in PUBLIC_FIELDS}
         result['enabled'] = bool(result['enabled'])
         result['has_password'] = True
         result['target'] = 'vps:' + row['id']
         projects = self.store.all('''SELECT p.id,p.alias,p.device_id,d.name AS device_name,
             p.mode,p.allow_tasks FROM vps_projects vp JOIN projects p ON p.id=vp.project_id
-            JOIN devices d ON d.id=p.device_id WHERE vp.vps_id=? ORDER BY p.alias_key''', (row['id'],))
+            LEFT JOIN devices d ON d.id=p.device_id WHERE vp.vps_id=? ORDER BY p.alias_key''', (row['id'],))
         result['projects'] = [{**p, 'online': self.runtime.online(p['device_id']),
                                'allow_tasks': bool(p['allow_tasks'])}
                               for p in projects if visible_ids is None or p['id'] in visible_ids]
         result['project_ids'] = [p['id'] for p in result['projects']]
-        route = self.store.one('SELECT p.id,p.alias,p.device_id,d.name AS device_name,d.enabled AS device_enabled,p.mode,p.allow_tasks FROM projects p JOIN devices d ON d.id=p.device_id WHERE p.id=?', (row['execution_project_id'],))
+        route = self.store.one('SELECT p.id,p.alias,p.device_id,d.name AS device_name,d.enabled AS device_enabled,p.mode,p.allow_tasks FROM projects p LEFT JOIN devices d ON d.id=p.device_id WHERE p.id=?', (row['execution_project_id'],))
+        if route and principal is not None:
+            try:
+                resolved = self.runtime.routing.select(self.runtime.project(route['id'], principal), 'ssh_exec', {}, principal)
+                route = {k: resolved[k] for k in ('id', 'alias', 'device_id', 'device_name', 'device_enabled', 'mode', 'allow_tasks')}
+            except DevError:
+                route = {**route, 'device_id': '', 'device_name': '', 'device_enabled': False}
         result['execution_route'] = ({**route, 'online': self.runtime.online(route['device_id']),
             'configured': True, 'available': route['mode'] == 'write' and bool(route['allow_tasks']) and bool(route['device_enabled'])}
             if route and (visible_ids is None or route['id'] in visible_ids) else {'configured': bool(route), 'available': False})
@@ -136,6 +142,7 @@ class VPSService:
             return False
         try:
             project = self.runtime.project(row['execution_project_id'], principal)
+            project = self.runtime.routing.select(project, 'ssh_exec', {}, principal)
             return (project['mode'] == 'write' and bool(project['allow_tasks']) and bool(project['device_enabled'])
                     and 'execute' in role_project_scopes(self.store, principal, project['id']))
         except DevError:
@@ -149,7 +156,7 @@ class VPSService:
         visible={p['id'] for p in self.runtime.list_projects(principal)}
         if 'read' not in self.actions(identifier, principal):
             raise DevError('VPS_NOT_FOUND','未找到已授权 VPS',404)
-        result = self.public(row, None if principal.admin else visible)
+        result = self.public(row, None if principal.admin else visible, principal)
         result['actions'] = sorted(self.actions(identifier, principal))
         result['can_execute'] = self.can_execute(row, principal)
         return result
@@ -188,7 +195,7 @@ class VPSService:
             results.append(row)
         offset, limit = args.get('offset', 0), args.get('limit', 50)
         end = offset + limit
-        return {'vps': [{**self.public(row, None if principal.admin else visible), 'actions': sorted(self.actions(row['id'], principal)), 'can_execute': self.can_execute(row, principal)} for row in results[offset:end]], 'total': len(results),
+        return {'vps': [{**self.public(row, None if principal.admin else visible, principal), 'actions': sorted(self.actions(row['id'], principal)), 'can_execute': self.can_execute(row, principal)} for row in results[offset:end]], 'total': len(results),
                 'next_offset': end if end < len(results) else None}
 
     def _validate_projects(self, identifiers, principal):

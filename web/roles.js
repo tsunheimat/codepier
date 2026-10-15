@@ -18,13 +18,19 @@ window.CodePierRoles = (() => {
       .join('、');
   function summary(role) {
     if (!role) return '<p class="form-note">角色已不存在。</p>';
+    const routeSummary = (role.route_rules || [])
+      .map(
+        (rule) =>
+          `<p>Route ${esc(rule.route_id)} → ${esc(rule.all_projects ? '全部现有及未来项目' : names(rule.projects, S.projects))}；仍需项目操作权与设备本机授权</p>`,
+      )
+      .join('');
     const pluginSummary = (role.plugin_rules || [])
       .map(
         (rule) =>
           `<p>Plugin ${esc(rule.integration_id)} → ${esc(rule.actions.join(' / '))} · ${esc(rule.scope === 'space' ? '空间范围' : names(rule.projects, S.projects))}；还需当前目标的插件同意</p>`,
       )
       .join('');
-    return `<div class="role-policy-summary">${pluginSummary}<p><strong>${esc(role.label)}</strong> · 版本 ${role.version} · ${role.enabled ? '已启用' : '已暂停'}</p>${role.project_rules.map((rule) => `<p>${esc(rule.actions.map((a) => labels[a]).join(' / '))} → ${esc(rule.all_projects ? '全部现有及未来项目' : names(rule.projects, S.projects) || '')}${rule.created_projects ? ' + 本角色创建的项目' : ''}${rule.excluded_projects.length ? '；此规则排除 ' + esc(names(rule.excluded_projects, S.projects)) : ''}</p>`).join('')}${role.device_rules.map((rule) => `<p>${esc(rule.actions.map((a) => labels[a]).join(' / '))} → ${esc(names(rule.devices, S.devices))}${rule.actions.includes('projects.create') ? `；新映射上限 ${esc(rule.max_project_mode)}${rule.allow_tasks ? ' + 任务' : ''}；${esc(rule.root_prefixes.length ? rule.root_prefixes.join('、') : 'Agent 本机允许的目录')}` : ''}</p>`).join('')}${role.vps_rules?.map((rule) => `<p>${esc(rule.actions.join(' / '))} → VPS ${esc(names(rule.vps, S.vps || []))}；执行还需明确路线与该项目执行权</p>`).join('') || ''}${role.connector_rules?.length ? `<p>MCP 工具规则：${esc(role.connector_rules.map((rule) => ((S.roleBindings || []).find((b) => b.id === rule.binding_id)?.alias || rule.binding_id) + ' → ' + rule.tools.join(', ')).join('；'))}。按 binding 与批准工具逐项授权。</p>` : ''}</div>`;
+    return `<div class="role-policy-summary">${routeSummary}${pluginSummary}<p><strong>${esc(role.label)}</strong> · 版本 ${role.version} · ${role.enabled ? '已启用' : '已暂停'}</p>${role.project_rules.map((rule) => `<p>${esc(rule.actions.map((a) => labels[a]).join(' / '))} → ${esc(rule.all_projects ? '全部现有及未来项目' : names(rule.projects, S.projects) || '')}${rule.created_projects ? ' + 本角色创建的项目' : ''}${rule.excluded_projects.length ? '；此规则排除 ' + esc(names(rule.excluded_projects, S.projects)) : ''}</p>`).join('')}${role.device_rules.map((rule) => `<p>${esc(rule.actions.map((a) => labels[a]).join(' / '))} → ${esc(names(rule.devices, S.devices))}${rule.actions.includes('projects.create') ? `；新映射上限 ${esc(rule.max_project_mode)}${rule.allow_tasks ? ' + 任务' : ''}；${esc(rule.root_prefixes.length ? rule.root_prefixes.join('、') : 'Agent 本机允许的目录')}` : ''}</p>`).join('')}${role.vps_rules?.map((rule) => `<p>${esc(rule.actions.join(' / '))} → VPS ${esc(names(rule.vps, S.vps || []))}；执行还需明确路线与该项目执行权</p>`).join('') || ''}${role.connector_rules?.length ? `<p>MCP 工具规则：${esc(role.connector_rules.map((rule) => ((S.roleBindings || []).find((b) => b.id === rule.binding_id)?.alias || rule.binding_id) + ' → ' + rule.tools.join(', ')).join('；'))}。按 binding 与批准工具逐项授权。</p>` : ''}</div>`;
   }
   async function html() {
     const result = await api('/api/access-roles');

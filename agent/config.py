@@ -104,6 +104,10 @@ def validate_config(value: object, config_path: Path) -> dict:
                 raise ValueError(f"任务 {name}: env 必须是文字键值对象")
     c["tasks"] = tasks
     c["shell"] = validate_shell(c.get("shell", {}))
+    from agent.routed_execution import validate_rch_config
+    c["rch"] = validate_rch_config(c.get("rch", {}))
+    if "builtin_root_policy" in c and c["rch"]["enabled"]:
+        raise ValueError("Built-in file roots do not grant RCH execution")
     if "builtin_root_policy" in c and (c["tasks"] or c["shell"]["enabled"]):
         raise ValueError("内置根目录不授予 Shell 或任务执行权限")
     c["mcp_policy"] = validate_policy(c.get("mcp_policy", {}))

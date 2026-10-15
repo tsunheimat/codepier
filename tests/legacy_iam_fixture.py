@@ -1,6 +1,6 @@
 """Construct the actual pre-IAM Store for forward-migration regression fixtures.
 
-Only fixture creation substitutes the IAM and Personal bootstrap migrations. Reopening the database
+Only fixture creation substitutes IAM, Personal bootstrap and project-routing migrations. Reopening the database
 uses the real current migrations, constraints and encryption-key checks. This
 avoids pretending a v8 database with extra triggers is a historical v5/v6 store.
 """
@@ -11,7 +11,9 @@ from hub.store import Store
 def legacy_store(directory):
     def mark_v7(db):
         db.execute("UPDATE meta SET value='7' WHERE key='schema'")
-    with patch('hub.iam_schema.migrate', mark_v7), patch('hub.space_bootstrap.migrate'):
+    # A pre-IAM fixture has no spaces or projects.space_id yet. The routing
+    # migration must run on the real forward reopen, after IAM creates them.
+    with patch('hub.iam_schema.migrate', mark_v7), patch('hub.space_bootstrap.migrate'), patch('hub.routing_schema.migrate'):
         return Store(directory)
 
 

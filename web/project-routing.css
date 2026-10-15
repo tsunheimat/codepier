@@ -1,0 +1,44 @@
+/* Shared-source cards can contain long mount paths and several actions. */
+#project-routing-panel {
+  min-width: 0;
+}
+#project-routing-panel .grant-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
+  align-items: start;
+  gap: 1rem;
+}
+#project-routing-panel .grant-row > div,
+#project-routing-panel p,
+#project-routing-panel code {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+#project-routing-panel .actions {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  justify-content: flex-start;
+}
+#project-routing-panel button {
+  max-width: 100%;
+  white-space: normal;
+  scroll-margin-block: 6rem;
+}
+#routing-form fieldset,
+#routing-form textarea,
+#routing-form select {
+  min-width: 0;
+  max-width: 100%;
+}
+@media (max-width: 700px) {
+  #project-routing-panel .grant-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #project-routing-panel .actions .btn {
+    min-height: 2.75rem;
+  }
+}

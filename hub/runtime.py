@@ -73,6 +73,7 @@ class Connection:
         self.native_chat_protocol = 0
         self.native_security_protocol = 0
         self.tool_protocol = None
+        self.project_routing_protocol = 0
 
     async def send(self, body):
         # A half-open peer must not hold the scheduler/send lock indefinitely.
@@ -93,6 +94,8 @@ class Connection:
 class Runtime:
     def __init__(self, store: Store):
         self.store = store
+        from hub.project_routing import ProjectRouting
+        self.routing = ProjectRouting(self)
         self.builtin_agent = None
         self._loop = None
         try:
@@ -254,27 +257,34 @@ class Runtime:
     @iam.read_decision
     def project(self, value: str, principal: Principal):
         principal = refresh_profile_principal(self.store, principal)
-        row = self.store.one("SELECT p.*,d.name AS device_name,d.enabled AS device_enabled FROM projects p JOIN devices d ON d.id=p.device_id WHERE (p.id=? OR p.alias_key=?) AND p.space_id=?", (value, alias_key(value), principal.space_id))
+        row = self.store.one("SELECT p.*,d.name AS device_name,d.enabled AS device_enabled FROM projects p LEFT JOIN devices d ON d.id=p.device_id WHERE (p.id=? OR p.alias_key=?) AND p.space_id=?", (value, alias_key(value), principal.space_id))
         if not row or not self.visible_project(row, principal):
             raise DevError("PROJECT_NOT_FOUND", "未找到已授权的项目别名，请先调用 projects_list", 404)
         self.authorize(principal, 'read', project_id=row['id'])
-        return row
+        return self.routing.hydrate(row, principal)
 
     def project_public(self, p):
+        if p.get('routing_managed'):
+            return {**{k: p[k] for k in ('id', 'alias', 'description', 'mode', 'allow_tasks', 'routing_managed', 'routing_version', 'source_root_id', 'subpath')},
+                'device_id': p.get('device_id') or '', 'device_name': p.get('device_name') or '', 'root': p.get('root') or '',
+                'allow_tasks': bool(p['allow_tasks']), 'source_bound': bool(p.get('source_root_id')),
+                'execution_routes': p.get('execution_routes', []),
+                'online': any(r.get('online') for r in p.get('execution_routes', []))}
         return {k: p[k] for k in ("id", "alias", "device_id", "root", "description", "mode", "allow_tasks", "device_name") if k in p} | {"online": self.online(p["device_id"]), "allow_tasks": bool(p.get("allow_tasks"))}
 
     @iam.read_decision
     def list_projects(self, principal):
         principal = refresh_profile_principal(self.store, principal)
         self.authorize(principal, 'read')
-        return [self.project_public(p) for p in self.store.all("SELECT p.*,d.name AS device_name FROM projects p JOIN devices d ON d.id=p.device_id WHERE p.space_id=? ORDER BY p.alias_key", (principal.space_id,)) if self.visible_project(p, principal)]
+        return [self.project_public(self.routing.hydrate(p, principal)) for p in self.store.all("SELECT p.*,d.name AS device_name FROM projects p LEFT JOIN devices d ON d.id=p.device_id WHERE p.space_id=? ORDER BY p.alias_key", (principal.space_id,)) if self.visible_project(p, principal)]
 
     @iam.read_decision
     def operation_row(self, id: str, principal: Principal, *, status_only=False):
         principal = refresh_profile_principal(self.store, principal)
-        columns = "id,grant_id,project_id,device_id,tool,state,space_id,owner_user_id,visibility" if status_only else "*"
+        columns = "id,grant_id,project_id,device_id,tool,state,space_id,owner_user_id,visibility,route_context" if status_only else "*"
         row = self.store.one(f"SELECT {columns} FROM operations WHERE id=?", (id,))
         principal = iam.require_record(self.store, principal, row)
+        self.routing.require_receipt(row, principal)
         if row['project_id']:
             self.authorize(principal, TOOLS[row['tool']].scope, project_id=row['project_id'])
         if row['tool'] == 'exec':
@@ -391,9 +401,16 @@ class Runtime:
         if args["before_created"] is not None:
             clauses.append("created<?")
             values.append(args["before_created"])
-        sql = "SELECT id,project_id,tool,state,created,updated,attempts,accepted_at,cancel_requested,error FROM operations"
+        sql = "SELECT id,project_id,tool,state,created,updated,attempts,accepted_at,cancel_requested,error,route_context FROM operations"
         rows = self.store.all(sql + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY created DESC LIMIT ?", (*values, args["limit"] + 1))
-        return {"operations": rows[:args["limit"]], "next_before_created": rows[args["limit"]-1]["created"] if len(rows) > args["limit"] else None}
+        visible = []
+        for row in rows[:args['limit']]:
+            try:
+                self.routing.require_receipt(row, principal)
+            except DevError:
+                continue
+            visible.append({key: value for key, value in row.items() if key != 'route_context'})
+        return {"operations": visible, "next_before_created": rows[args["limit"]-1]["created"] if len(rows) > args["limit"] else None}
 
     async def invoke(self, name: str, raw: dict, principal: Principal):
         context = iam.audit_context.set((self.store, principal.actor, principal.space_id, principal.user_id))
@@ -490,6 +507,9 @@ class Runtime:
             from hub.client_connections import effective_access
             result['resource_permissions'] = ({'projects': [], 'vps': [], 'mcp': []}
                 if result.get('role', {}).get('enabled') is False else effective_access(self, principal))
+        elif name in {'project_routes_get', 'project_tests_list'}:
+            project = self.project(args['project'], principal)
+            result = {'routes': project.get('execution_routes', []), 'routing_managed': bool(project.get('routing_managed'))} if name == 'project_routes_get' else self.routing.tests(project, principal)
         elif name == "projects_list":
             result = {"projects": self.list_projects(principal)}
         elif name == "vps":
@@ -518,7 +538,9 @@ class Runtime:
         elif name == "operations_cancel":
             return DeferredCall("cancel", args)
         else:
-            project = self.project(args["project"], principal)
+            project = self.routing.select(self.project(args["project"], principal), name, args, principal)
+            if name == "routed_job_control":
+                self.routing.authorize_job_control(project, args, principal)
             if name in MUTATING and name != "computer_session_close" and project["mode"] != "write":
                 raise DevError("READ_ONLY", "面板中的这个项目设为只读", 403)
             if name in PROCESS_TOOLS and not project["allow_tasks"]:
@@ -611,6 +633,8 @@ class Runtime:
         return project
 
     async def dispatch(self, name: str, args: dict, project: dict, principal: Principal, background=False):
+        project, name, args = await self.store.run(self.routing.before_admission, project, name, args, principal)
+        background = background or name in PROCESS_TOOLS
         async with self.dispatch_lock:
             id, completed = await self.store.run(self._admit_operation, name, args, project, principal, background)
             if completed is not None:
@@ -651,6 +675,7 @@ class Runtime:
 
     def _admit_operation(self, name: str, args: dict, project: dict, principal: Principal, background=False):
         principal = refresh_principal(self.store, principal)
+        project, name, args = self.routing.before_admission(project, name, args, principal)
         if getattr(self, "panel_maintenance", None):
             self.panel_maintenance.guard()
         idem = args.get("idempotency_key")
@@ -667,7 +692,9 @@ class Runtime:
             self.authorize(principal, TOOLS[name].scope, project_id=project['id'])
         elif name == 'system_validate' and not principal.admin:
             self.authorize(principal, 'projects.create', device_id=project['device_id'], creation=project)
-        snapshot = {k: project[k] for k in ("id", "alias", "root", "mode", "allow_tasks") if k in project}
+        snapshot = {k: project[k] for k in ("id", "alias", "root", "mode", "allow_tasks", "_route_context", "_execution_plan", "_source_boundary") if k in project}
+        if project.get("_source_boundary") and self.online(project["device_id"]):
+            self.routing.require_protocol(self.connections.get(project["device_id"]))
         if name in {"open_workspace", "show_changes", "apply_patch", "edit"}:
             snapshot["_coding_owner"] = "grant:" + principal.grant_id if principal.grant_id else principal.actor
             snapshot["_coding_device"] = project["device_id"]
@@ -733,9 +760,13 @@ class Runtime:
                 deadline_seconds = (min(self.queue_seconds, 15) if name in {"computer_action", "browser_action"} else
                                     min(self.queue_seconds, 60) if name in COMPUTER_TOOLS | {"browser_open", "browser_snapshot"} else
                                     min(self.queue_seconds, lifecycle_ttl) if name in DEVICE_ACTIONS else self.queue_seconds)
-                self.store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,idem,state,created,updated,payload,deadline,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?)",
+                # The source/route identity must become durable with the call.
+                # A crash between INSERT and a later UPDATE must never create a
+                # replayable routed operation without its shared-source hold.
+                route_context = json.dumps(project["_route_context"], sort_keys=True) if project.get("_route_context") else None
+                self.store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,idem,state,created,updated,payload,deadline,space_id,owner_user_id,route_context) VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?)",
                     (id, project["device_id"], project.get("id"), principal.actor, principal.grant_id, name,
-                     json.dumps(operation_summary(args), ensure_ascii=False), fingerprint, idem, now, now, payload, now + deadline_seconds, principal.space_id, principal.user_id))
+                     json.dumps(operation_summary(args), ensure_ascii=False), fingerprint, idem, now, now, payload, now + deadline_seconds, principal.space_id, principal.user_id, route_context))
                 self.store.audit(principal.actor, name, project.get("alias", ""), "queued", {"operation_id": id, "args": operation_summary(args)})
                 self.diagnostics.record(id, "hub_received")
                 self.publish("operation", {"id": id, "state": "queued", "tool": name})
@@ -803,7 +834,12 @@ class Runtime:
                     return exc.message
             return None
         project = self.store.one("SELECT * FROM projects WHERE id=?", (op["project_id"],))
-        if not project or project["root"] != request["project"]["root"] or project["device_id"] != op["device_id"] or project["alias"] != request["project"].get("alias"):
+        if request["project"].get("_route_context"):
+            denied = self.routing.revalidate(op, request, caller)
+            if denied:
+                return denied
+            project = self.routing.select(project, op["tool"], request["args"], caller)
+        elif not project or project["root"] != request["project"]["root"] or project["device_id"] != op["device_id"] or project["alias"] != request["project"].get("alias"):
             return "项目映射在排队期间被删除或修改，未在新的路径执行"
         if "vps_ref" in request:
             denied = self.vps.permission_error(request, op["project_id"], caller)
@@ -902,6 +938,11 @@ class Runtime:
                 self.complete(op, {"ok": False, "error": {"code": "RECOVERY_DATA_INVALID", "message": "持久请求无法解密，请检查 Hub 数据库与 master.key 是否配套"}})
                 return
             denied = self.permission_error(op, request)
+            if not denied and not op["cancel_requested"]:
+                blocker = self.routing.source_blocker(op)
+                if blocker:
+                    self.store.execute("UPDATE operations SET transport_error=?,next_attempt=? WHERE id=?", ("Waiting for shared source operation " + blocker, now + 1, id))
+                    return
             # Never trust a client-supplied origin, UA or project field. Durable
             # actor/grant columns originate from Auth, not tool arguments.
             panel = not op['grant_id'] and op['actor'].startswith('panel:')
@@ -950,6 +991,8 @@ class Runtime:
                 self.store.execute("UPDATE operations SET next_attempt=? WHERE id=?", (now + self.retry_seconds, id))
                 return
             try:
+                if request['project'].get('_source_boundary'):
+                    self.routing.require_protocol(con)
                 validate_call_epoch(op['tool'], request.get('tool_contract_version'))
                 require_compatible(getattr(con, 'tool_protocol', None), op['tool'])
             except DevError as exc:
@@ -1009,9 +1052,11 @@ class Runtime:
             result = {"ok": False, "error": {"code": "INVALID_AGENT_RESULT", "message": "Agent 返回的结果格式无效，请检查本机执行结果"}}
         if result["ok"] and isinstance(result.get("data"), dict) and "exit_code" in result["data"]:
             data = dict(result["data"])
-            data["command_ok"] = type(data["exit_code"]) is int and data["exit_code"] == 0 and not data.get("timed_out") and not data.get("cancelled")
+            data["command_ok"] = type(data["exit_code"]) is int and data["exit_code"] == 0 and not data.get("timed_out") and not data.get("cancelled") and not data.get("remote_execution_uncertain")
             result = {**result, "data": data}
         self.integrations.complete(op, result)
+        if op.get('route_context') and result.get('ok'):
+            result = {**result, 'data': {**(result.get('data') or {}), 'route': json.loads(op['route_context'])}}
         if op["tool"] == "artifacts_register" and result["ok"]:
             try:self.artifacts.register_result(op,result.get("data") or {})
             except DevError as exc:
@@ -1027,7 +1072,7 @@ class Runtime:
             state = "needs_review"
         elif error.get("code") == "CANCELLED" or data.get("cancelled"):
             state = "cancelled"
-        elif op["tool"] in {"tasks_run", "shell_exec", "ssh_exec", "vps_exec", "exec", "validation_run", "git_status", "git_diff", "git_log"} and result["ok"]:
+        elif op["tool"] in {"routed_exec", "routed_job_control", "tasks_run", "shell_exec", "ssh_exec", "vps_exec", "exec", "validation_run", "git_status", "git_diff", "git_log"} and result["ok"]:
             if not data.get("command_ok", False):
                 state = "failed"
                 error = {"message": "本机任务执行超时" if data.get("timed_out") else f"本机任务退出码 {data.get('exit_code')}；请查看操作输出"}
@@ -1037,6 +1082,10 @@ class Runtime:
         if op['tool'] in {'apply_patch', 'edit'} and data.get('success') is False:
             state = 'needs_review' if data.get('outcome') == 'partial' else 'failed'
             error = data.get('error') or {'message': '批量补丁未完成，请核查备份与回滚结果'}
+        if data.get("remote_execution_uncertain") or error.get("code") in {"RCH_ALREADY_SUBMITTED", "RCH_JOB_IDENTITY_CHANGED", "RCH_EXECUTION_UNCERTAIN"}:
+            state = "needs_review"
+            error = {"message": "Remote RCH outcome is unconfirmed; recover the original job identity, never replay it"}
+        self.routing.complete_control(op, data)
         output = str(data.get("output", op.get("output", "")))[-131072:]
         changed = self.store.execute("UPDATE operations SET state=?,result=?,error=?,output=?,updated=?,output_seq=output_seq+?,payload=NULL,transport_error=NULL WHERE id=? AND state NOT IN ('succeeded','failed','cancelled')",
             (state, encoded, error.get("message"), output, time.time(), int(output != (op.get("output") or "")), op["id"]))
@@ -1184,6 +1233,7 @@ class Runtime:
             if hello.get("type") != "hello":
                 raise ValueError("Invalid hello")
             connection.tool_protocol = negotiate(hello)
+            connection.project_routing_protocol = 1 if hello.get('project_routing_protocol') == 1 else 0
             connection.journal_id = hello.get("journal_id")
             connection.protocol = hello.get("delivery_protocol", 1)
             connection.cancel_pending_protocol = 1 if type(hello.get("cancel_pending_protocol")) is int and hello["cancel_pending_protocol"] == 1 else 0

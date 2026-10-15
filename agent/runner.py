@@ -230,7 +230,7 @@ class Agent:
                       "version": VERSION, "build": self.build.describe(), "platform": platform.system(), "hostname": platform.node(),
                       "python": platform.python_version(), "roots": config["allowed_roots"], "capabilities": list(TOOLS),
                       "management": self.lifecycle.describe(), "device_actions": self.lifecycle.actions(),
-                      "journal_id": self.journal.journal_id, "delivery_protocol": 2, "cancel_pending_protocol": 1, "native_security_protocol": 1, "native_protocol": 1, "native_chat_protocol": 3, **advertisement(self.build.catalog_sha256)}))
+                      "journal_id": self.journal.journal_id, "project_routing_protocol": 1, "delivery_protocol": 2, "cancel_pending_protocol": 1, "native_security_protocol": 1, "native_protocol": 1, "native_chat_protocol": 3, **advertisement(self.build.catalog_sha256)}))
         reply = channel.unpack(await asyncio.wait_for(socket.recv(), 10))
         if reply.get("type") != "ready":
             raise ValueError("面板未确认 Agent 身份")
@@ -416,7 +416,7 @@ class Agent:
                 async with asyncio.timeout(timeout) as timer:
                     # Imports publish one destination. A project-wide writer
                     # here also stalls unrelated projects under a mapped parent.
-                    if tool in CORE_REMOTE or tool == 'download_artifact' or tool in PATH_READ_TOOLS:
+                    if tool in CORE_REMOTE or tool in {'routed_exec', 'download_artifact'} or tool in PATH_READ_TOOLS:
                         claims = claims_for(self.engine, tool, project, args, root)
                         await stack.enter_async_context(self.resources.slot(identifier, claims,
                             lambda blockers: self.phase(identifier, 'waiting_resource', blocked_by=blockers)))
@@ -565,7 +565,7 @@ class Agent:
                 self.phase(id, "executing")
                 result = await self.computer.execute(tool, project, args, not_after=not_after, operation_id=id,
                     phase=lambda stage, **detail: self.phase(id, stage, **detail))
-            elif tool in {"tasks_list", "searches_get", "searches_cancel", 'readiness_get', 'lsp_status', 'browser_status', 'integration_control', 'validations_list', 'browser_close'}:
+            elif tool in {"routed_job_control", "tasks_list", "searches_get", "searches_cancel", 'readiness_get', 'lsp_status', 'browser_status', 'integration_control', 'validations_list', 'browser_close'}:
                 # Config/status queries do not read project contents. Keep them
                 # available while a shell owns the project and all workers are busy.
                 args = TOOLS[tool].model.model_validate(args).model_dump()
@@ -680,6 +680,9 @@ class Agent:
 
     async def execute(self, id, tool, project, args):
         from shared.integration_contracts import REMOTE_TOOLS
+        if tool in {'routed_exec', 'routed_job_control'}:
+            from agent.routed_execution import execute, control
+            return await (execute if tool == 'routed_exec' else control)(self, id, project, args)
         if tool == 'exec':
             if args['task']:
                 from shared.contracts import Task

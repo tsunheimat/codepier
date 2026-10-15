@@ -52,7 +52,9 @@ window.CodePierProduct = (() => {
         if (p.querySelector('h2')?.textContent === '我的连接委派') p.remove();
       body =
         t.innerHTML + (window.CodePierExternalPlugins ? await CodePierExternalPlugins.html() : '');
-    } else body = projectsHTML();
+    } else
+      body =
+        projectsHTML() + (window.CodePierProjectRouting ? await CodePierProjectRouting.html() : '');
     return `<div id="resources-page">${heading('资源', 'RESOURCES', '先建立资源，再配置角色规则，最后连接客户端。')}${tabs(
       'resources',
       tab,

@@ -104,6 +104,8 @@ class FileEngine:
         return path if "builtin_root_policy" in self.config else path.resolve()
 
     def root(self, project: dict, write: bool = False) -> tuple[Path, dict]:
+        from agent.routed_execution import source_boundary
+        source_boundary(project)
         raw = Path(project["root"]).expanduser()
         if not raw.is_absolute():
             raise DevError("INVALID_ROOT", "项目根目录必须是本机绝对路径")

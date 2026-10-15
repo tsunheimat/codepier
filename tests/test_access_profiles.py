@@ -347,6 +347,8 @@ def test_v5_migration_keeps_legacy_grants_tokens_and_master_key(tmp_path):
         assert current.pop('owner_user_id') == 'owner'
         assert current.pop('identity_id') is None
         assert current.pop('user_epoch') == 1
+        # The additive routing migration must not grant old connections a route.
+        assert current.pop('route_ceiling') is None
         assert current == before
         assert upgraded.all('SELECT * FROM tokens') == tokens
         assert upgraded.one('SELECT count(*) AS n FROM access_profiles')['n'] == 0

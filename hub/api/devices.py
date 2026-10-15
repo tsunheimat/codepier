@@ -213,7 +213,7 @@ def make_devices_router(context: HubContext):
             with store.lock, store.db:
                 principal = auth.panel(request, True)
                 iam.require_device(store, principal, id, manage=True)
-                if store.one("SELECT id FROM projects WHERE device_id=? LIMIT 1", (id,)):
+                if store.one("SELECT id FROM projects WHERE device_id=? LIMIT 1", (id,)) or store.one("SELECT id FROM source_mounts WHERE device_id=? UNION SELECT id FROM action_routes WHERE device_id=? LIMIT 1", (id,id)):
                     raise DevError("DEVICE_HAS_PROJECTS", "请先移除这个设备的项目映射", 409)
                 store.execute("DELETE FROM devices WHERE id=?", (id,))
                 store.audit(principal.actor, "device.deleted", id)

@@ -19,6 +19,7 @@ from hub.resources import make_resources_router
 from hub.gateway.service import Gateway
 from hub.gateway.registry import make_router as make_gateway_router
 from hub.external_plugins.registry import make_router as make_plugins_router
+from hub.routing_api import make_router as make_routing_router
 from hub.auth import Auth
 from hub.config import HubConfig
 from hub.builtin_agent import BuiltinAgent
@@ -116,7 +117,7 @@ def create_app(data_dir: str | None = None):
             app.include_router(make(context))
         app.include_router(oidc.router)
         for make in (make_iam_router, make_profiles_router, make_roles_router, make_gateway_router,
-                     make_connections_router, make_conversations_router, make_resources_router, make_plugins_router):
+                     make_connections_router, make_conversations_router, make_resources_router, make_plugins_router, make_routing_router):
             app.include_router(make(auth, runtime))
         app.include_router(runtime.oauth.router)
         app.include_router(make_router(auth, runtime, public_url))

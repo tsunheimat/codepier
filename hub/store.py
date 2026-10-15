@@ -168,6 +168,8 @@ class Store:
         migrate_spaces(self.db)
         from hub.external_plugins.schema import migrate as migrate_plugins
         migrate_plugins(self.db)
+        from hub.routing_schema import migrate as migrate_routing
+        migrate_routing(self.db)
 
     @contextmanager
     def transaction(self, *, immediate=True):
@@ -239,7 +241,7 @@ class Store:
         # Conservative invalidation is safe even if the transaction rolls back.
         # No SQL text or bound value is retained in this process-local revision.
         import re
-        if re.search(r"\b(?:sessions|session_security|users|iam_users|spaces|memberships|membership_blocks|external_identities|oidc_providers|access_roles|access_profiles|role_assignments|role_created_projects|grants|tokens|projects|devices|external_integrations|project_integrations|external_plugin_consents|gateway_[a-z_]+)\b", sql, re.I):
+        if re.search(r"\b(?:sessions|session_security|users|iam_users|spaces|memberships|membership_blocks|external_identities|oidc_providers|access_roles|access_profiles|role_assignments|role_created_projects|grants|tokens|projects|devices|external_integrations|project_integrations|external_plugin_consents|source_roots|source_mounts|action_routes|space_route_defaults|project_action_routes|space_execution_settings|project_execution_settings|gateway_[a-z_]+)\b", sql, re.I):
             self.session_revision += 1
 
     def after_commit(self, callback):

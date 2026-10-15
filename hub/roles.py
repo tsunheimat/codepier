@@ -26,6 +26,8 @@ from shared.util import DevError
 from hub import iam
 from hub.external_plugins.rules import PluginRule, intersect as intersect_plugins, validate_rules as validate_plugin_rules
 
+from hub.routing_policy import RouteRule, intersect as intersect_routes, validate_rules as validate_route_rules
+
 CAPABILITIES = frozenset({'read', 'write', 'execute', 'computer'})
 MAX_ROLES = 200
 
@@ -96,6 +98,7 @@ class RolePolicy(AccessModel):
     connector_rules: list[ConnectorRule] = Field(default_factory=list, max_length=32)
     vps_rules: list[VPSRule] = Field(default_factory=list, max_length=32)
     plugin_rules: list[PluginRule] = Field(default_factory=list, max_length=32)
+    route_rules: list[RouteRule] = Field(default_factory=list, max_length=128)
 
     @model_validator(mode='after')
     def bounded_plugin_surface(self):
@@ -219,7 +222,7 @@ def connection_policy(store, grant):
         # This evaluated internal policy can have >32 rows after expansion.
         return RolePolicy.model_construct(project_rules=projects, device_rules=[],
                                           vps_rules=vps, connector_rules=connectors,
-                                          plugin_rules=intersect_plugins(ceiling, current))
+                                          plugin_rules=intersect_plugins(ceiling, current), route_rules=intersect_routes(ceiling, current))
     except (ValueError, TypeError, KeyError) as exc:
         raise DevError('INVALID_TOKEN', '固定连接的资源同意或身份绑定无效', 401) from exc
 
@@ -403,7 +406,10 @@ def role_values(store, body, space_id=None):
         if not binding or not set(rule.tools) <= {tool['name'] for tool in json.loads(binding['tools'])}:
             raise DevError('GATEWAY_RULE_INVALID', 'MCP 规则必须引用当前空间已批准的工具与 binding')
     validate_plugin_rules(store, body.plugin_rules, space_id)
+    validate_route_rules(store, body.route_rules, space_id)
     policy = body.model_dump(include={'project_rules', 'device_rules'})
+    if body.route_rules:
+        policy['route_rules'] = [rule.model_dump() for rule in body.route_rules]
     if body.plugin_rules:
         policy['plugin_rules'] = [rule.model_dump() for rule in body.plugin_rules]
     if body.vps_rules:
@@ -473,6 +479,8 @@ def make_roles_router(auth, runtime):
                 raise DevError('ROLE_NOT_FOUND', '角色不存在', 404)
             if 'connector_rules' not in body.model_fields_set:
                 body = body.model_copy(update={'connector_rules': _policy(row).connector_rules})
+            if 'route_rules' not in body.model_fields_set:
+                body = body.model_copy(update={'route_rules': _policy(row).route_rules})
             if 'plugin_rules' not in body.model_fields_set:
                 body = body.model_copy(update={'plugin_rules': _policy(row).plugin_rules})
             if 'vps_rules' not in body.model_fields_set:

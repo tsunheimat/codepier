@@ -15,7 +15,7 @@ QUERY_TOOLS = frozenset({'project_query', 'task_query'})
 
 class ProjectQuery(Workspace):
     operation: Literal['list', 'open', 'help', 'tree', 'skills', 'skill', 'tasks', 'status', 'readiness',
-                       'dashboard'] = 'list'
+                       'dashboard', 'routes', 'tests'] = 'list'
     capture_baseline: Literal[False] = False
 
     @model_validator(mode='after')

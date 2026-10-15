@@ -22,6 +22,8 @@ Audit 的「全部操作 / 按会话」自动关联带有宿主 session 标识�
 
 Devices / Agents 放在 Resources；Project 详情打开该项目的开发工具与文件产物；成员与角色使用/委派分配放在 Access。新安装直接建立正常 Personal Space，不创建 Legacy 默认空间；现有空兼容容器按完整引用检查退役，已有业务资料保留原空间。见 [Personal Space 与导航](docs/PERSONAL_SPACES.md)。
 
+共享 NFS 项目可在 Space 中统一登记源目录和各设备挂载路径，再批量选择子文件夹。逻辑项目按动作选择 Files / Git / Shell / Test 等路线；测试可通过声明式 Hooks 交给 RCH。原设备项目需明确接入后才使用新路线，绑定不授予权限。见 [共享项目、动作路由与 RCH](docs/PROJECT_ROUTING.md)。
+
 ## 可以用它做什么
 
 | 场景 | 功能 |

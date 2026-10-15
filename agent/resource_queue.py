@@ -94,7 +94,7 @@ def claims_for(engine, tool, project, args, root):
     if tool in {'read', 'write', 'edit', 'download_artifact'}:
         path = engine.path(root, args['path'], False).resolve()
         return [Claim('agent', 'path', canonical_path(path), tool != 'read')]
-    if tool != 'exec':
+    if tool not in {'exec', 'routed_exec'}:
         return []
     if args.get('task'):
         task = engine.config.get('tasks', {}).get(args['task'], {})
@@ -106,7 +106,9 @@ def claims_for(engine, tool, project, args, root):
     cwd = Path(args['cwd']).expanduser()
     if not cwd.is_absolute():
         cwd = root / cwd
-    claims = []
+    # Routed commands retain a conservative source claim, but must also keep
+    # caller-declared service/path claims (including cross-project services).
+    claims = [Claim('agent', 'path', canonical_path(root), True)] if tool == 'routed_exec' else []
     for resource in args['resources']:
         name = resource['name']
         if resource['kind'] == 'path':

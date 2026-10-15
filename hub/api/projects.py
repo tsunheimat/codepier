@@ -58,6 +58,8 @@ def make_projects_router(context: HubContext):
                         raise DevError('PROJECT_CHANGED','原保存已完成，但项目随后改变；请刷新核对，未覆盖新配置',409)
                     return True, runtime.project_public(runtime.project(plan['target'],principal))
                 old = store.one("SELECT * FROM projects WHERE id=? AND space_id=?", (id,principal.space_id)) if id else None
+                if old and old.get('routing_managed'):
+                    raise DevError('PROJECT_ROUTING_MANAGED', 'Use the shared-source routing editor for this logical project', 409)
                 if id and not old:
                     raise DevError("NOT_FOUND", "项目映射不存在", 404)
                 exists = store.one("SELECT id FROM projects WHERE alias_key=? AND space_id=?", (alias_key(alias),principal.space_id))

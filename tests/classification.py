@@ -36,7 +36,8 @@ def module_tiers(filename):
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
             imports.add(node.module)
-            if node.module == 'tests.support' and any(alias.name in {'running_stack', 'Stack'} for alias in node.names):
+            if (node.module == 'tests.support' and any(alias.name in {'running_stack', 'Stack'} for alias in node.names)
+                    or node.module == 'tests.routing_support' and any(alias.name in {'routing_stack', 'RoutingFixture'} for alias in node.names)):
                 shared_stack = True
         elif isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names)

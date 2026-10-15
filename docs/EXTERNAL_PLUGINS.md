@@ -4,6 +4,10 @@ CodePier external plugins are **declarative, project-aware adapters over approve
 
 The version-one implementation supports JSON manifests, reusable space integrations, project attachments, explicit action grants and target consent, generated management forms, and existing gateway receipts. Python extension code, arbitrary HTTP transports, workflow orchestration and external task scheduling are not implemented.
 
+Shared NFS project management, per-action devices, execution hooks and RCH are
+implemented separately; see [Project routing](PROJECT_ROUTING.md). External
+plugin attachments select remote service resources, not source-device ownership.
+
 ## Model
 
 | Object | Ownership and purpose |

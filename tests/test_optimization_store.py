@@ -293,5 +293,7 @@ def test_mutating_catalog_is_computed_after_all_registrations():
 def test_process_catalog_contains_only_registered_process_tools():
     from shared.contracts import PROCESS_TOOLS, TOOLS
     assert PROCESS_TOOLS == {'tasks_run', 'shell_exec', 'ssh_exec', 'exec',
+                             'routed_exec', 'routed_job_control',
                              'validation_run', 'lsp_query', 'worktrees_create', 'worktrees_remove'}
+    assert TOOLS['routed_exec'].scope == TOOLS['routed_job_control'].scope == 'execute'
     assert PROCESS_TOOLS <= TOOLS.keys()
