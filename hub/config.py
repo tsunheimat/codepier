@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from shared.config import DEFAULT_HUB_PORT, DEFAULT_PUBLIC_URL, ConfigurationError, RuntimeConfig, env_bool, env_csv, env_int, env_timezone
 from shared.util import normalize_url
+from hub.auth_policy import AuthPolicy
 
 # The one provider a deployment may declare through CODEPIER_OIDC_*.
 OIDC_SEED_PROVIDER_ID = "idp_env"
@@ -46,7 +47,7 @@ class OIDCSeed:
             client_id=client_id,
             client_secret=client_secret,
             discovery_url=os.getenv("CODEPIER_OIDC_DISCOVERY_URL", "").strip(),
-            scopes=os.getenv("CODEPIER_OIDC_SCOPES", "").strip() or "openid profile email",
+            scopes=os.getenv("CODEPIER_OIDC_SCOPES", "").strip() or "openid profile email offline_access",
             group_claim=os.getenv("CODEPIER_OIDC_GROUP_CLAIM", "").strip() or "groups",
             required_group=os.getenv("CODEPIER_OIDC_REQUIRED_GROUP", "").strip(),
             endpoint_origins=env_csv("CODEPIER_OIDC_ENDPOINT_ORIGINS"),
@@ -113,6 +114,7 @@ class HubConfig:
     oidc_public_url: str = ""
     host: str = "0.0.0.0"
     builtin_agent_enabled: bool = True
+    auth_policy: AuthPolicy = AuthPolicy()
 
     @classmethod
     def from_env(cls) -> HubConfig:
@@ -134,4 +136,5 @@ class HubConfig:
                    oidc_seed=OIDCSeed.from_env(), oidc_public_url=oidc_public_url,
                    oidc_bootstrap_admin=bootstrap == "first-login",
                    host=os.getenv("HUB_HOST", "0.0.0.0"),
-                   builtin_agent_enabled=env_bool("HUB_BUILTIN_AGENT_ENABLED", True))
+                   builtin_agent_enabled=env_bool("HUB_BUILTIN_AGENT_ENABLED", True),
+                   auth_policy=AuthPolicy.from_env())

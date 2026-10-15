@@ -219,15 +219,18 @@ def test_stale_userinfo_denial_does_not_disable_newer_identity(oidc,concurrent):
     assert store.one('SELECT enabled FROM external_identities WHERE id=?',(identity['id'],))['enabled']==1
 
 
-def test_authoritative_refresh_rejection_disables_current_identity(oidc):
-    app,b,fake,_,_=oidc;_,session=login(oidc);store=app.state.store
+def test_authoritative_refresh_rejection_suspends_access_without_deleting_login(oidc):
+    app,b,fake,_,_=oidc;user,session=login(oidc);store=app.state.store
     identity=store.one('SELECT * FROM external_identities WHERE user_id=?',(session['user_id'],))
     secured=json.loads(store.decrypt(identity['upstream_tokens']));secured['expires_at']=0
     store.execute('UPDATE external_identities SET upstream_tokens=? WHERE id=?',(store.encrypt(json.dumps(secured)),identity['id']))
     fake.fail_refresh=True
-    with pytest.raises(DevError) as caught:asyncio.run(app.state.oidc.sync_identity(identity['id']))
-    assert caught.value.code=='OIDC_CREDENTIAL_REJECTED'
-    assert store.one('SELECT enabled FROM external_identities WHERE id=?',(identity['id'],))['enabled']==0
+    assert asyncio.run(app.state.oidc.sync_identity(identity['id']))=='OIDC_REAUTH_REQUIRED'
+    current=store.one('SELECT * FROM external_identities WHERE id=?',(identity['id'],))
+    assert current['enabled']==1 and current['fresh_until']==0
+    assert user.get('/api/session').json()['authenticated'] is True
+    assert user.get('/api/projects').status_code==403
+    assert store.one('SELECT id_hash FROM sessions WHERE id_hash=?',(session['id_hash'],))
 
 
 def test_pending_mcp_role_revoke_never_runs_after_device_reconnect(team):

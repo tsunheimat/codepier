@@ -274,6 +274,13 @@ def test_refresh_replay_revokes_family_but_wrong_client_does_not(api):
     new = response.json()
     assert client.post("/oauth/token", data={**form, "client_id": "unrelated-client"}).status_code == 400
     assert rpc(client, new["access_token"], {"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 200
+    retry = client.post("/oauth/token", data=form)
+    assert retry.status_code == 200
+    assert retry.json()['access_token'] == new['access_token']
+    assert retry.json()['refresh_token'] == new['refresh_token']
+    assert 0 < retry.json()['expires_in'] <= new['expires_in']
+    # A bounded response-loss window is not indefinite refresh-token reuse.
+    app.state.store.execute("UPDATE oauth_refresh_receipts SET expires=1")
     assert client.post("/oauth/token", data=form).status_code == 400
     assert rpc(client, new["access_token"], {"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 401
     assert client.post("/oauth/token", data={**form, "refresh_token": new["refresh_token"]}).status_code == 400

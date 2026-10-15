@@ -170,6 +170,8 @@ class Store:
         migrate_plugins(self.db)
         from hub.routing_schema import migrate as migrate_routing
         migrate_routing(self.db)
+        from hub.auth_schema import migrate as migrate_auth
+        migrate_auth(self.db)
 
     @contextmanager
     def transaction(self, *, immediate=True):

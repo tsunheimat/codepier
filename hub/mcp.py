@@ -44,7 +44,7 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         error={'code':code,'message':error_view(message)}
         if data is not None:error['data']=error_view(data)
         return JSONResponse({'jsonrpc':'2.0','id':identifier,'error':error},status_code=status,
-           headers={'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','Access-Control-Expose-Headers':'WWW-Authenticate',**(headers or {})})
+           headers={'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','Access-Control-Expose-Headers':'WWW-Authenticate, Retry-After',**(headers or {})})
 
     def origin_allowed(request):
         origin=request.headers.get('origin')
@@ -80,7 +80,14 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         except DevError as exc:
             metadata=public_base+'/.well-known/oauth-protected-resource/mcp'
             if authorization=='role':metadata+='?authorization=role'
-            return failure(None,-32001,exc.message,exc.status,headers={'WWW-Authenticate':f'Bearer resource_metadata="{metadata}", scope="{auth_scope}"'})
+            headers={'WWW-Authenticate':f'Bearer resource_metadata="{metadata}", scope="{auth_scope}"'}
+            if exc.code in {'ENTITLEMENTS_STALE','ENTITLEMENTS_UNAVAILABLE'}:
+                # The CodePier bearer is valid. Re-consenting to this issuer
+                # cannot repair an upstream IdP outage and replaces grant-owned
+                # worktrees/operations unnecessarily. Report the actual state.
+                headers={'Retry-After':'10'} if exc.status==503 else {}
+            return failure(None,-32001,exc.message,exc.status,
+                           data={'code':exc.code,**exc.details},headers=headers)
         mark('authenticated')
         if request.headers.get('content-type','').split(';',1)[0].strip().lower()!='application/json':
             return failure(None,-32600,'Content-Type must be application/json',415)

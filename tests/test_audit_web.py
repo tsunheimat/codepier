@@ -62,7 +62,32 @@ function modalAdapter(){
   run('modal=()=>makeModal();');
 }
 async function scenario(name){
-  if(name==='editor_restores_html_stripped_first_newline'){
+  if(name==='identity_stale_boot_keeps_space_and_draft'){
+    editor('private unsent');type('private unsent');run("S.space_id='team';");
+    fetchImpl=async()=>response({id:'owner',spaces:[],default_space_id:'different',
+      identity_access:{code:'ENTITLEMENTS_UNAVAILABLE',message:'retry fixture',retryable:true}});
+    let error;try{await run('CodePierIdentity.bootstrap()');}catch(e){error=e;}
+    assert.equal(error.code,'ENTITLEMENTS_UNAVAILABLE');
+    assert.equal(run('S.space_id'),'team');assert.equal(work().content,'private unsent');
+    assert.ok(run('S.session'));assert.equal(run('S.page'),'workbench');
+    run("S.page='identity'");await run('CodePierIdentity.bootstrap()');
+    assert.equal(run('S.page'),'identity');assert.ok(run('S.session'));
+  }else if(name.startsWith('identity_retry_')){
+    editor();run("S.space_id='team';S.renderSeq=1");context.retryCalls=0;
+    run('recoverPanelAccess=()=>{retryCalls++;return Promise.resolve();}');
+    const code=name==='identity_retry_permanent'?'ENTITLEMENTS_STALE':'ENTITLEMENTS_UNAVAILABLE';
+    run(`schedulePanelAccessRetry({code:'${code}'})`);
+    const retry=[...timers.values()].find(t=>t.ms===10000);
+    if(name==='identity_retry_permanent'){assert.equal(retry,undefined);return;}
+    assert.ok(retry);
+    if(name==='identity_retry_new_login')run("S.session={csrf:'other'}");
+    if(name==='identity_retry_new_space')run("S.space_id='other'");
+    if(name==='identity_retry_navigation')run("S.page='identity'");
+    if(name==='identity_retry_new_render')run('S.renderSeq++');
+    if(name==='identity_retry_logout')run('S.session=null');
+    retry.fn();await tick();
+    assert.equal(context.retryCalls,name==='identity_retry_current'?1:0);
+  }else if(name==='editor_restores_html_stripped_first_newline'){
     editor();work().content="\nleading newline";run("bindEditor()");assert.equal(elements.get('#code-editor').value,'\nleading newline');
   }else if(name==='read_preserves_input'){
     editor();const read=deferred();fetchImpl=()=>read.promise;
@@ -180,6 +205,14 @@ scenario(process.argv[1]).then(()=>console.log('SCENARIO_COMPLETED')).catch(erro
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for UI behavior tests")
 @pytest.mark.parametrize("scenario", [
+    "identity_stale_boot_keeps_space_and_draft",
+    "identity_retry_current",
+    "identity_retry_new_login",
+    "identity_retry_new_space",
+    "identity_retry_navigation",
+    "identity_retry_new_render",
+    "identity_retry_logout",
+    "identity_retry_permanent",
     "editor_restores_html_stripped_first_newline",
     "read_preserves_input",
     "move_preserves_input",

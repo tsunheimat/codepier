@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import time
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from hub.auth import Auth
+from hub.auth_policy import REFRESH_TOMBSTONE_SECONDS
 from hub.access_profiles import effective_grant, validate_profile_consent
 from hub.access import access_defaults, project_selection
 from hub.runtime import Runtime
@@ -59,6 +61,7 @@ class OAuth:
         with self.store.lock, self.store.db:
             self.store.db.execute("DELETE FROM oauth_requests WHERE expires<=? OR used=1", (now,))
             self.store.db.execute("DELETE FROM oauth_codes WHERE expires<=?", (now,))
+            self.store.db.execute("DELETE FROM oauth_refresh_receipts WHERE expires<=?", (now,))
             self.store.db.execute("DELETE FROM tokens WHERE expires<=?", (now,))
 
     def validate_redirect(self, value: str):
@@ -135,17 +138,131 @@ class OAuth:
         extra = urlencode(params)
         return urlunsplit((u.scheme, u.netloc, u.path, u.query + ("&" if u.query else "") + extra, ""))
 
-    def new_tokens(self, grant_id: str):
+    def renewal_scopes(self, grant):
+        """Validate the durable delegation, not an expiring resource snapshot.
+
+        Refresh grants no resource access by itself. Every access-token use still
+        checks current membership, identity freshness, role and project policy.
+        A temporary IdP outage must not prevent renewing CodePier credentials.
+        Explicit credential/account/profile/role/Space revocations still reject.
+        """
+        if not grant or grant['revoked']:
+            raise DevError('INVALID_TOKEN', '授权已撤销', 401)
+        user = iam.user_security(self.store, grant['user_id'])
+        if user['epoch'] != grant['user_epoch']:
+            raise DevError('INVALID_TOKEN', '用户授权版本已改变', 401)
+        identity = iam.check_identity(self.store, grant.get('identity_id'), require_fresh=False)
+        if identity and identity['user_id'] != grant['user_id']:
+            raise DevError('INVALID_TOKEN', '身份绑定不匹配', 401)
+        if (not self.store.one('SELECT 1 FROM spaces WHERE id=? AND active=1', (grant['space_id'],))
+                or self.store.one('SELECT 1 FROM membership_blocks WHERE space_id=? AND user_id=? AND blocked=1',
+                                  (grant['space_id'], grant['user_id']))):
+            raise DevError('INVALID_TOKEN', '空间授权已停用', 401)
+        profile = None
+        if grant.get('profile_id'):
+            profile = self.store.one('SELECT * FROM access_profiles WHERE id=?', (grant['profile_id'],))
+            if (not profile or not profile['enabled'] or profile['user_id'] != grant['user_id']
+                    or profile['space_id'] != grant['space_id']):
+                raise DevError('INVALID_TOKEN', '访问 Profile 已停用或绑定已改变', 401)
+        if grant.get('role_id'):
+            role = self.store.one('SELECT * FROM access_roles WHERE id=? AND space_id=?',
+                                  (grant['role_id'], grant['space_id']))
+            # Pausing a role denies its actions, not the durable delegation.
+            # Credential rotation must survive a pause/resume without re-consent.
+            if not role or not profile or profile['role_id'] != role['id']:
+                raise DevError('INVALID_TOKEN', '角色授权已删除或绑定已改变', 401)
+        if grant['authorization_mode'] == 'role':
+            if not grant.get('role_id') or set(json.loads(grant['scopes'])) != {ROLE_SCOPE}:
+                raise DevError('INVALID_TOKEN', '角色授权记录无效', 401)
+            return {ROLE_SCOPE}
+        if grant['authorization_mode'] != 'fixed':
+            raise DevError('INVALID_TOKEN', '授权模式无效', 401)
+        from hub.access_profiles import stored_permissions
+        try:
+            scopes, _ = stored_permissions(grant)
+            if profile:
+                cap, _ = stored_permissions(profile)
+                scopes &= cap
+            if 'read' not in scopes:
+                raise ValueError('No read scope')
+            return scopes
+        except (ValueError, TypeError, KeyError) as exc:
+            raise DevError('INVALID_TOKEN', '授权记录无效', 401) from exc
+
+    def new_tokens(self, grant_id: str, *, renewal=False):
         self.store.require_transaction()
         grant = self.store.one("SELECT * FROM grants WHERE id=?", (grant_id,))
-        scopes, _, _ = effective_grant(self.store, grant)
+        scopes = self.renewal_scopes(grant) if renewal else effective_grant(self.store, grant)[0]
         if grant.get('authorization_mode') == 'role':
             scopes = {ROLE_SCOPE}  # OAuth delegation is stable; capabilities are live policy.
         now = time.time()
+        policy = self.auth.policy
         access, refresh = "rda_" + token(), "rdr_" + token()
-        self.store.db.execute("INSERT INTO tokens VALUES (?,?,?,'access',?,?)", (token(16), digest(access), grant_id, now + 3600, now))
-        self.store.db.execute("INSERT INTO tokens VALUES (?,?,?,'refresh',?,?)", (token(16), digest(refresh), grant_id, now + 30 * 86400, now))
-        return {"access_token": access, "token_type": "Bearer", "expires_in": 3600, "refresh_token": refresh, "scope": " ".join(sorted(scopes))}
+        self.store.db.execute("INSERT INTO tokens VALUES (?,?,?,'access',?,?)", (token(16), digest(access), grant_id, now + policy.access_seconds, now))
+        self.store.db.execute("INSERT INTO tokens VALUES (?,?,?,'refresh',?,?)", (token(16), digest(refresh), grant_id, policy.refresh_deadline(now), now))
+        return {"access_token": access, "token_type": "Bearer", "expires_in": policy.access_seconds,
+                "refresh_token": refresh, "scope": " ".join(sorted(scopes))}
+
+    def refresh_tokens(self, form):
+        """Atomically rotate once; bounded retries return the identical pair.
+
+        Receipts are encrypted and survive a response loss or Hub restart. The
+        grace deadline never slides. A predecessor cannot roll a client back
+        after its successor has rotated, nor mint an independent token branch.
+        """
+        def rejected(error='invalid_grant'):
+            return JSONResponse({'error': error}, status_code=400,
+                                headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
+        with self.store.transaction():
+            if form.get('resource', self.resource()) != self.resource():
+                return rejected('invalid_target')
+            now = time.time()
+            row = self.store.one("SELECT t.*,g.client_id,g.revoked,g.resource FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.hash=? AND t.kind IN ('refresh','refresh_used')",
+                                 (digest(form.get('refresh_token', '')),))
+            if (not row or row['revoked'] or row['expires'] <= now
+                    or row['client_id'] != form.get('client_id') or row['resource'] != self.resource()):
+                return rejected()
+            grant = self.store.one('SELECT * FROM grants WHERE id=?', (row['grant_id'],))
+            # Invalid client/resource/scope requests must never poison the family.
+            if form.get('scope') is not None and set(form['scope'].split()) != set(json.loads(grant['scopes'])):
+                return rejected('invalid_scope')
+            self.renewal_scopes(grant)
+            actor = 'oauth:' + row['client_id']
+            if row['kind'] == 'refresh_used':
+                receipt = self.store.one('SELECT * FROM oauth_refresh_receipts WHERE predecessor_hash=? AND grant_id=? AND expires>?',
+                                         (row['hash'], row['grant_id'], now))
+                if receipt and self.auth.policy.refresh_retry_seconds:
+                    successor = self.store.one("SELECT 1 FROM tokens WHERE hash=? AND grant_id=? AND kind='refresh' AND expires>?",
+                                               (receipt['successor_hash'], row['grant_id'], now))
+                    if not successor:
+                        # A delayed in-window request is not evidence of theft,
+                        # but returning an already-used successor would be unsafe.
+                        return rejected()
+                    result = json.loads(self.store.decrypt(receipt['response']))
+                    access = self.store.one("SELECT expires FROM tokens WHERE hash=? AND grant_id=? AND kind='access'",
+                                            (digest(result['access_token']), row['grant_id']))
+                    if not access or access['expires'] <= now:
+                        return rejected()
+                    # Replaying a receipt never restarts the access-token clock.
+                    result['expires_in'] = min(result['expires_in'], math.ceil(access['expires'] - now))
+                    self.store.audit(actor, 'oauth.refresh_retry', row['grant_id'],
+                                     detail={'rotation_reused': True}, commit=False)
+                    return JSONResponse(result, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
+                self.store.db.execute('UPDATE grants SET revoked=1 WHERE id=?', (row['grant_id'],))
+                self.store.db.execute('DELETE FROM oauth_refresh_receipts WHERE grant_id=?', (row['grant_id'],))
+                self.store.audit(actor, 'oauth.refresh_reuse', row['grant_id'], 'revoked',
+                                 {'reason': 'outside_retry_window'}, commit=False)
+                return rejected()
+            self.store.db.execute("UPDATE tokens SET kind='refresh_used',expires=? WHERE hash=? AND kind='refresh'",
+                                  (now + REFRESH_TOMBSTONE_SECONDS, row['hash']))
+            result = self.new_tokens(row['grant_id'], renewal=True)
+            grace = self.auth.policy.refresh_retry_seconds
+            if grace:
+                self.store.db.execute('INSERT INTO oauth_refresh_receipts VALUES(?,?,?,?,?)',
+                                      (row['hash'], row['grant_id'], digest(result['refresh_token']),
+                                       self.store.encrypt(json.dumps(result)), now + grace))
+            self.store.audit(actor, 'oauth.refresh', row['grant_id'], detail={'retry_window_seconds': grace}, commit=False)
+            return JSONResponse(result, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
 
     @staticmethod
     async def json_object(request: Request):
@@ -342,20 +459,7 @@ class OAuth:
                             self.store.db.execute("DELETE FROM oauth_codes WHERE hash=?", (row["hash"],))
                             result = self.new_tokens(row["grant_id"])
                     elif form.get("grant_type") == "refresh_token":
-                        with self.store.lock, self.store.db:
-                            row = self.store.db.execute("SELECT t.*,g.client_id,g.revoked,g.resource FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.hash=? AND t.kind IN ('refresh','refresh_used')", (digest(form.get("refresh_token", "")),)).fetchone()
-                            if not row or row["revoked"] or row["expires"] <= time.time() or row["client_id"] != form.get("client_id") or row["resource"] != self.resource():
-                                return JSONResponse({"error": "invalid_grant"}, status_code=400)
-                            if row["kind"] == "refresh_used":
-                                # Both holders are indistinguishable after a token is
-                                # stolen. Reuse revokes the entire rotation family.
-                                self.store.db.execute("UPDATE grants SET revoked=1 WHERE id=?", (row["grant_id"],))
-                                return JSONResponse({"error": "invalid_grant"}, status_code=400)
-                            granted = self.store.one('SELECT scopes FROM grants WHERE id=?', (row['grant_id'],))
-                            if form.get('scope') is not None and set(form['scope'].split()) != set(json.loads(granted['scopes'])):
-                                return JSONResponse({'error': 'invalid_scope', 'error_description': 'Refresh cannot change the consented OAuth scope.'}, status_code=400)
-                            self.store.db.execute("UPDATE tokens SET kind='refresh_used' WHERE hash=?", (row["hash"],))
-                            result = self.new_tokens(row["grant_id"])
+                        return self.refresh_tokens(form)
                     else:
                         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
                     return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})

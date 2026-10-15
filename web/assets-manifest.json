@@ -19,8 +19,8 @@
       "bytes": 28999
     },
     "app.js": {
-      "sha256": "cf974282ee0ed69d965a5c0d8bb9aa8419c4690374b16e8c26dead86cb318caf",
-      "bytes": 142563
+      "sha256": "43466aa000704dc17403ef037e847ab4c1b2a58d86091646d052145166fab963",
+      "bytes": 143629
     },
     "appearance.js": {
       "sha256": "7fc8e8ffa85a4bb5836b8919cdf6ff12813cfb4a9e4736709f5858e5d8782bb1",
@@ -95,8 +95,8 @@
       "bytes": 446
     },
     "identity.js": {
-      "sha256": "2db9b993f71320d9c981b27f4c8b21455002f0e18a577d1d74ddf81d36098bfc",
-      "bytes": 34837
+      "sha256": "4223c8956b71a372d7b33a3d5807e97e51d44f0b2e7ce3e338ef2819536ab8aa",
+      "bytes": 36241
     },
     "insights.js": {
       "sha256": "fc4d93433ebd2e9160016c251a1dea0482f9603faf8e9805cf1bc4700b5f3ffd",

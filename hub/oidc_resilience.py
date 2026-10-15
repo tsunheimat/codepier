@@ -29,7 +29,7 @@ class SyncScheduler:
         # Rank inside each provider BEFORE limiting the global batch. One broken
         # provider cannot occupy all slots while another has eligible identities.
         return self.store.all('''WITH eligible AS (
-            SELECT i.*,p.version AS provider_version,u.epoch AS user_epoch,
+            SELECT i.*,p.version AS provider_version,p.freshness_seconds,u.epoch AS user_epoch,
                    COALESCE(s.attempted_at,0) AS attempted_at,
                    ROW_NUMBER() OVER (PARTITION BY i.provider_id ORDER BY
                        COALESCE(s.attempted_at,0),i.checked_at,i.id) AS provider_rank
@@ -38,12 +38,12 @@ class SyncScheduler:
             JOIN iam_users u ON u.user_id=i.user_id
             LEFT JOIN oidc_sync_state s ON s.identity_id=i.id
             WHERE i.enabled=1 AND p.enabled=1 AND u.active=1
-              AND i.upstream_tokens IS NOT NULL AND i.checked_at<?
+              AND i.upstream_tokens IS NOT NULL AND i.checked_at+MIN(60.0,p.freshness_seconds/3.0)<=?
               AND (s.identity_id IS NULL OR s.next_attempt<=?
                    OR s.provider_version<>p.version
                    OR s.observed_checked_at<>i.checked_at))
             SELECT * FROM eligible ORDER BY provider_rank,attempted_at,checked_at,id LIMIT ?''',
-            (now - SYNC_INTERVAL, now, SYNC_BATCH))
+            (now, now, SYNC_BATCH))
 
     def claim(self, snapshot):
         now = time.time()
@@ -117,7 +117,14 @@ class SyncScheduler:
                 return
             previous_failures = state['failures']
             failures = min(previous_failures + 1, 31) if code else 0
-            delay = min(MAX_BACKOFF, SYNC_INTERVAL * 2 ** min(failures - 1, 5)) if code else SYNC_INTERVAL
+            interval = min(SYNC_INTERVAL, snapshot.get('freshness_seconds', 900) / 3)
+            delay = min(MAX_BACKOFF, SYNC_INTERVAL * 2 ** min(failures - 1, 5)) if code else interval
+            if code in {'OIDC_UPSTREAM_ERROR', 'OIDC_KEYS_UNAVAILABLE'}:
+                # Back off boundedly without sleeping through the remaining
+                # verified window. After expiry, recover promptly when the IdP
+                # returns; never extend authority from a failed attempt.
+                remaining = current['fresh_until'] - now
+                delay = min(delay, max(10, remaining / 2) if remaining > 0 else SYNC_INTERVAL)
             self.store.db.execute('''UPDATE oidc_sync_state SET next_attempt=?,failures=?,code=?,observed_checked_at=?
                 WHERE identity_id=? AND attempted_at=?''',
                 (now + delay, failures, code, current['checked_at'], snapshot['id'], attempt))

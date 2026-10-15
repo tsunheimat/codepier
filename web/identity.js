@@ -15,6 +15,19 @@ window.CodePierIdentity = (() => {
     `<div class="field"><label for="iam-${name}">${esc(label)}</label><input id="iam-${name}" name="${name}" value="${esc(value)}" ${extra}></div>`;
   const select = (name, label, options, value) =>
     `<div class="field"><label for="iam-${name}">${esc(label)}</label><select id="iam-${name}" name="${name}">${options.map(([id, text]) => `<option value="${esc(id)}" ${id === value ? 'selected' : ''}>${esc(text)}</option>`).join('')}</select></div>`;
+  function renewalNote(identity) {
+    if (!identity.enabled) return '';
+    const status = identity.reauthentication_required
+      ? '身份提供者要求重新认证；已有 CodePier 登录和 MCP 授权未删除。'
+      : identity.sync_code
+        ? '身份同步状态：' + identity.sync_code + '；下次尝试：' + timeText(identity.next_attempt)
+        : identity.has_refresh_token === false
+          ? '身份提供者未提供续期凭据；请启用 offline_access 并重新认证一次，否则到期后无法自动续期。'
+          : identity.has_refresh_token === true
+            ? '已取得身份提供者续期凭据。'
+            : '';
+    return status ? `<p class="form-note">${esc(status)}</p>` : '';
+  }
   function current() {
     return me?.spaces.find((x) => x.id === S.space_id);
   }
@@ -76,7 +89,13 @@ window.CodePierIdentity = (() => {
     }
   }
   async function bootstrap() {
-    me = await api('/api/iam/me');
+    const identity = await api('/api/iam/me');
+    // An expired IdP snapshot is not a deliberate Space switch. Keep private
+    // drafts quarantined until the same context can be verified again. The
+    // identity page stays reachable for diagnostics and reauthentication.
+    if (identity.identity_access && S.page !== 'identity')
+      throw Object.assign(new Error(identity.identity_access.message), identity.identity_access);
+    me = identity;
     S.identity = me;
     const saved = sessionValue('codepier-space:' + me.id);
     const selected =
@@ -138,6 +157,10 @@ window.CodePierIdentity = (() => {
   }
   async function refresh() {
     const identity = await api('/api/iam/me');
+    if (identity.identity_access && S.page !== 'identity') {
+      await recoverPanelAccess();
+      return;
+    }
     me = identity;
     S.identity = identity;
     if (S.space_id && !me.spaces.some((x) => x.id === S.space_id)) {
@@ -233,8 +256,8 @@ window.CodePierIdentity = (() => {
           `<button class="btn primary" data-iam="new-space">新建团队空间</button><button class="btn" data-iam="accept-invite">接受邀请</button>`,
         ) +
         `<section class="panel"><div class="panel-head"><h2>空间</h2></div><div class="panel-body"><p class="form-note">空间选择仅作用于当前标签页。MCP 连接固定绑定授权空间，不会跟随这里的切换。</p>${me.spaces.map((s) => `<div class="grant-row"><div><h3>${esc(s.label)}</h3><small>${esc(levels[s.level])} · ${s.kind === 'team' ? '团队空间' : '个人空间'}</small></div><button class="btn small" data-iam-space="${esc(s.id)}">${s.id === S.space_id ? '当前空间' : '进入空间'}</button></div>`).join('') || empty('目前没有可用空间。')}${(me.disabled_spaces || []).map((s) => `<div class="grant-row"><span>${esc(s.label)} · 已停用</span><button class="btn" data-iam-restore="${esc(s.id)}">恢复空间</button></div>`).join('')}</div></section>` +
-        `<section class="panel"><div class="panel-head"><h2>登录身份</h2></div><div class="panel-body"><p>${me.local_login ? '本地密码登录已启用。' : '本账号仅使用外部身份登录。'}</p>${me.identities.map((i) => `<div class="grant-row"><div><strong>${esc(i.label)}</strong><p>${i.enabled ? '已关联' : '已停用 / 已解除关联'} · 权限有效至 ${esc(timeText(i.fresh_until))}</p></div><button class="btn danger small" data-iam-unlink="${esc(i.id)}">解除关联</button></div>`).join('')}<div class="actions">${providers.map((p) => `<button class="btn" data-iam-link="${esc(p.id)}">关联 ${esc(p.label)}</button><a class="btn ghost" href="/auth/oidc/${encodeURIComponent(p.id)}/start?return_to=%2F%23identity">重新认证</a>`).join('')}</div><p class="form-note">关联 / 解除关联要求近期登录。不会按邮箱自动合并账号；解除关联会撤销该身份的会话和 MCP 凭据。</p></div></section>` +
-        `<section class="panel"><div class="panel-head"><h2>登录会话</h2></div><div class="panel-body">${sessionData.sessions.map((s) => `<div class="grant-row"><div><strong>${s.id === sessionData.current ? '当前浏览器' : '其他浏览器'}</strong><p>到期 ${esc(timeText(s.expires))}</p></div><button class="btn danger small" data-iam-session="${esc(s.id)}">退出此会话</button></div>`).join('')}</div></section>`
+        `<section class="panel"><div class="panel-head"><h2>登录身份</h2></div><div class="panel-body"><p>${me.local_login ? '本地密码登录已启用。' : '本账号仅使用外部身份登录。'}</p>${me.identities.map((i) => `<div class="grant-row"><div><strong>${esc(i.label)}</strong><p>${i.enabled ? '已关联' : '已停用 / 已解除关联'} · 权限有效至 ${esc(timeText(i.fresh_until))}</p>${renewalNote(i)}</div><button class="btn danger small" data-iam-unlink="${esc(i.id)}">解除关联</button></div>`).join('')}<div class="actions">${providers.map((p) => `<button class="btn" data-iam-link="${esc(p.id)}">关联 ${esc(p.label)}</button><a class="btn ghost" href="/auth/oidc/${encodeURIComponent(p.id)}/start?return_to=%2F%23identity">重新认证</a>`).join('')}</div><p class="form-note">关联 / 解除关联要求近期登录。不会按邮箱自动合并账号；解除关联会撤销该身份的会话和 MCP 凭据。</p></div></section>` +
+        `<section class="panel"><div class="panel-head"><h2>登录会话</h2></div><div class="panel-body">${sessionData.sessions.map((s) => `<div class="grant-row"><div><strong>${s.id === sessionData.current ? '当前浏览器' : '其他浏览器'}</strong><p>${s.expires >= 253402300799 ? '有效至主动撤销（浏览器可能清除登录 Cookie）' : '到期 ' + esc(timeText(s.expires))}</p></div><button class="btn danger small" data-iam-session="${esc(s.id)}">退出此会话</button></div>`).join('')}</div></section>`
       );
     }
     if (page === 'members') {
@@ -381,7 +404,7 @@ window.CodePierIdentity = (() => {
         p?.discovery_url || '',
         'type="url"',
       ) +
-      field('scopes', 'OIDC scopes', p?.scopes || 'openid profile', 'required') +
+      field('scopes', 'OIDC scopes', p?.scopes || 'openid profile offline_access', 'required') +
       field(
         'endpoint_origins',
         '额外批准的端点来源（逗号分隔）',

@@ -45,11 +45,20 @@ def default_space(store, user_id):
 def check_identity(store, identity_id, *, require_fresh=True):
     if not identity_id:
         return None
-    row = store.one('SELECT i.*,p.enabled AS provider_enabled FROM external_identities i JOIN oidc_providers p ON p.id=i.provider_id WHERE i.id=?', (identity_id,))
+    row = store.one('SELECT i.*,p.enabled AS provider_enabled,p.version AS provider_version FROM external_identities i JOIN oidc_providers p ON p.id=i.provider_id WHERE i.id=?', (identity_id,))
     if not row or not row['enabled'] or not row['provider_enabled']:
         raise DevError('IDENTITY_DISABLED', '外部身份或身份提供者已停用', 401)
     if require_fresh and row['fresh_until'] <= time.time():
-        raise DevError('ENTITLEMENTS_STALE', '身份权限校验已过期；请在面板重新登录身份提供者', 403)
+        from hub.identity_status import current_sync_state, TRANSIENT_SYNC_CODES
+        state = current_sync_state(store, row)
+        code = state['code'] if state else ''
+        if code in TRANSIENT_SYNC_CODES:
+            raise DevError('ENTITLEMENTS_UNAVAILABLE',
+                           '身份提供者暂不可用，权限校验正在重试；登录和 MCP 授权已保留', 503,
+                           retryable=True, retry_after_seconds=10, sync_code=code)
+        raise DevError('ENTITLEMENTS_STALE',
+                       '身份权限尚未重新确认；登录和 MCP 授权已保留，请检查身份同步或重新认证', 403,
+                       sync_code=code, reauthentication_required=code=='OIDC_REAUTH_REQUIRED')
     return row
 
 
@@ -95,8 +104,8 @@ def validate_grant(store, grant):
     user = user_security(store, grant['user_id'])
     if user['epoch'] != grant.get('user_epoch', 1):
         raise DevError('INVALID_TOKEN', '用户授权版本已改变', 401)
-    membership(store, grant['user_id'], grant.get('space_id'))
     identity = check_identity(store, grant.get('identity_id'))
+    membership(store, grant['user_id'], grant.get('space_id'))
     if identity and identity['user_id'] != grant['user_id']:
         raise DevError('INVALID_TOKEN', '身份绑定不匹配', 401)
     if grant.get('authorization_mode') == 'role':
@@ -130,10 +139,10 @@ def _live_principal(store, principal):
     from hub.principal import validate_credential
     principal = validate_credential(store, principal)
     user = user_security(store, principal.user_id)
-    member = membership(store, principal.user_id, principal.space_id)
     if principal.user_epoch is not None and user['epoch'] != principal.user_epoch:
         raise DevError('INVALID_TOKEN', '用户会话/授权已失效', 401)
     identity = check_identity(store, principal.identity_id)
+    member = membership(store, principal.user_id, principal.space_id)
     if identity and identity['user_id'] != principal.user_id:
         raise DevError('INVALID_TOKEN', '身份绑定不匹配', 401)
     if principal.grant_id:

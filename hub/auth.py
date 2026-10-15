@@ -12,12 +12,14 @@ from shared.role_contracts import ROLE_SCOPE
 from hub.roles import validate_role_consent
 from hub import iam
 
-SESSION_SECONDS = 12 * 3600
+from hub.auth_policy import AuthPolicy
 
 
 class Auth:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, *, policy: AuthPolicy | None = None):
         self.store = store
+        self.policy = policy or AuthPolicy()
+        self.store.auth_policy = self.policy
         # Unknown users still pay password verification cost.
         from shared.crypto import password_hash
         self.dummy = password_hash(token())
@@ -39,7 +41,51 @@ class Auth:
                        user_epoch=user['epoch'], instance_admin=bool(user['instance_admin']),
                        authenticated_at=security['authenticated_at'] if security else 0)
         iam.check_identity(self.store, session['identity_id'], require_fresh=False)
+        if (self.policy.session_max_seconds and
+                session['authenticated_at'] + self.policy.session_max_seconds <= time.time()):
+            raise DevError('LOGIN_REQUIRED', '登录已达到配置的最长有效期', 401)
+        # This is a request-local observation, not authority. Session maintenance
+        # rechecks the database after the handler and never revives expired rows.
+        request.scope['codepier.panel_session'] = session['id_hash']
         return session
+
+    def set_session_cookie(self, response, secret, *, secure):
+        now = time.time()
+        # Browser retention is separate from server-side idle expiry. Ordinary
+        # API responses must not re-set this cookie: a late response from an old
+        # tab/login could overwrite a newer account's cookie. Only explicit
+        # login/callback responses set credentials. Browser retention is finite.
+        from hub.auth_policy import UNTIL_REVOKED
+        deadline = now + self.policy.session_max_seconds if self.policy.session_max_seconds else UNTIL_REVOKED
+        response.set_cookie('rd_session', secret, httponly=True, samesite='lax',
+                            secure=secure, max_age=self.policy.cookie_age(deadline, now), path='/')
+
+    def maintain_session(self, request: Request):
+        """Renew a verified session after a successful same-origin API response.
+
+        Existing *valid* sessions adopt the configured lifetime on use. Expired,
+        deleted, disabled and epoch-revoked sessions are never resurrected. This
+        runs on the DB worker, outside authorization's read-only decision scope.
+        """
+        observed = request.scope.get('codepier.panel_session')
+        if not observed:
+            return None
+        try:
+            self.check_origin(request)
+            with self.store.transaction():
+                session = self.session(request)
+                if session['id_hash'] != observed:
+                    return None
+                now = time.time()
+                expires = self.policy.session_deadline(now, session['authenticated_at'])
+                # Throttle writes; an absolute limit may also shorten an old row.
+                interval = min(60, max(1, self.policy.session_idle_seconds / 4))
+                if expires < session['expires'] or expires - session['expires'] >= interval:
+                    self.store.db.execute('UPDATE sessions SET expires=? WHERE id_hash=? AND expires>?',
+                                          (expires, observed, now))
+                return expires
+        except DevError:
+            return None
 
     @staticmethod
     def check_origin(request: Request):
@@ -89,7 +135,7 @@ class Auth:
     def new_session(self, user_id, *, identity_id=None, provider_sid=None):
         user = iam.user_security(self.store, user_id)
         secret, csrf, now = token(), token(), time.time()
-        self.store.db.execute('INSERT INTO sessions VALUES (?,?,?,?)', (digest(secret), user_id, csrf, now + SESSION_SECONDS))
+        self.store.db.execute('INSERT INTO sessions VALUES (?,?,?,?)', (digest(secret), user_id, csrf, self.policy.session_deadline(now, now)))
         self.store.db.execute('INSERT INTO session_security(session_hash,epoch,authenticated_at,identity_id,provider_sid) VALUES (?,?,?,?,?)',
                               (digest(secret), user['epoch'], now, identity_id, provider_sid))
         return {'cookie': secret, 'csrf': csrf, 'username': user['username'], 'user_id': user_id}

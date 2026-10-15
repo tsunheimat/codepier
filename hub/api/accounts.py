@@ -5,7 +5,6 @@ from hub.api.context import HubContext
 import asyncio
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from hub.auth import SESSION_SECONDS
 from hub import iam
 from hub.iam_api import spaces_for
 from shared.crypto import digest, password_hash, password_verify
@@ -34,7 +33,7 @@ def make_accounts_router(context: HubContext):
     async def login(request: Request, body: Login):
         value = await auth.login(request, body.username, body.password)
         response = JSONResponse({"username": value["username"], "user_id": value["user_id"], "csrf": value["csrf"]})
-        response.set_cookie("rd_session", value["cookie"], httponly=True, samesite="lax", secure=request.url.scheme == "https", max_age=SESSION_SECONDS, path="/")
+        auth.set_session_cookie(response, value["cookie"], secure=request.url.scheme == "https")
         return response
 
     @router.post("/api/logout")

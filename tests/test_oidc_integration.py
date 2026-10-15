@@ -205,7 +205,7 @@ def test_closed_admission_does_not_admit_unknown_subject(oidc):
 def test_explicit_link_does_not_link_by_email_and_requires_original_session(oidc):
     app,b,fake,row,_=oidc
     state,response=start(oidc,b['alice'],link=True)
-    assert parse_qs(urlsplit(response.json()['redirect']).query)['prompt']==['login']
+    assert set(parse_qs(urlsplit(response.json()['redirect']).query)['prompt'][0].split())=={'login','consent'}
     wrong=callback(oidc,state,response,browser=b['bob']);assert wrong.status_code==401
     accepted=callback(oidc,state,response,browser=b['alice']);assert accepted.status_code==303,accepted.text
     identity=app.state.store.one('SELECT * FROM external_identities')

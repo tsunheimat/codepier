@@ -173,6 +173,7 @@ function clearSpaceSnapshots() {
   });
 }
 function suspendPanelContext(discard = false, keepLogin = false) {
+  clearPanelAccessRetry();
   const session = S.session,
     space = S.space_id;
   closeModal();
@@ -229,6 +230,32 @@ function endSession(discard = false) {
   renderLogin();
 }
 let accessRecovery = null;
+let panelAccessRetry = null;
+function clearPanelAccessRetry() {
+  clearTimeout(panelAccessRetry);
+  panelAccessRetry = null;
+}
+function schedulePanelAccessRetry(error) {
+  clearPanelAccessRetry();
+  if (error.code !== 'ENTITLEMENTS_UNAVAILABLE' || !S.session) return;
+  const session = S.session,
+    space = S.space_id,
+    page = S.page,
+    generation = S.renderSeq,
+    host = $('#page');
+  panelAccessRetry = setTimeout(() => {
+    panelAccessRetry = null;
+    if (
+      S.session === session &&
+      S.space_id === space &&
+      S.page === page &&
+      S.renderSeq === generation &&
+      $('#page') === host &&
+      !$('.modal')
+    )
+      void recoverPanelAccess();
+  }, 10000);
+}
 function recoverPanelAccess() {
   if (!S.session) return Promise.resolve();
   if (accessRecovery?.session === S.session) return accessRecovery.promise;
@@ -245,6 +272,7 @@ function recoverPanelAccess() {
       stopEvents();
       $('#app').innerHTML =
         `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<button class="btn primary" data-action="retry-identity">重试身份与空间校验</button><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
+      schedulePanelAccessRetry(error);
     })
     .finally(() => {
       if (accessRecovery === recovery) accessRecovery = null;
@@ -698,6 +726,7 @@ async function revalidateSuspendedWork() {
 }
 
 async function bootAuthenticated() {
+  clearPanelAccessRetry();
   try {
     await CodePierIdentity.bootstrap();
   } catch (error) {
@@ -710,7 +739,8 @@ async function bootAuthenticated() {
     S.identity = null;
     S.space_id = null;
     $('#app').innerHTML =
-      `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<button class="btn primary" data-action="retry-identity">重试身份与空间校验</button><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
+      `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<button class="btn primary" data-action="retry-identity">重试身份与空间校验</button><a class="btn ghost" href="/#identity" target="_blank" rel="noopener">检查身份与重新认证</a><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
+    schedulePanelAccessRetry(error);
     return;
   }
   if (S.suspendedUser && S.suspendedUser !== sessionOwner(S.session)) discardLocalWork();
@@ -721,7 +751,8 @@ async function bootAuthenticated() {
       if (error.code === 'SESSION_CHANGED' || !S.session) return;
       stopEvents();
       $('#app').innerHTML =
-        `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<p>草稿仍隔离在本标签页中；重新确认权限前不会恢复显示或重发请求。</p><button class="btn primary" data-action="retry-identity">重新校验工作区权限</button><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
+        `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<p>草稿仍隔离在本标签页中；重新确认权限前不会恢复显示或重发请求。</p><button class="btn primary" data-action="retry-identity">重新校验工作区权限</button><a class="btn ghost" href="/#identity" target="_blank" rel="noopener">检查身份与重新认证</a><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
+      schedulePanelAccessRetry(error);
       return;
     }
   }

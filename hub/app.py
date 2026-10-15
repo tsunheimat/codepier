@@ -59,7 +59,7 @@ def create_app(data_dir: str | None = None):
     store = None
     try:
         store = Store(directory)
-        runtime, auth = Runtime(store), Auth(store)
+        runtime, auth = Runtime(store), Auth(store, policy=config.auth_policy)
         runtime.gateway = Gateway(store)
         runtime.gateway.conversations = runtime.conversations
         def public_url():
