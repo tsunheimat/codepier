@@ -2,7 +2,7 @@ name: Development source snapshot
 
 on:
   push:
-    branches: [feat/multiuser-oidc]
+    branches: [refactor/workspace-abstract]
   workflow_dispatch:
 
 permissions:
