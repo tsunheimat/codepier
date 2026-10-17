@@ -229,6 +229,7 @@ class Agent:
         await socket.send(channel.pack({"type": "hello", "name": config.get("name", platform.node()),
                       "version": VERSION, "build": self.build.describe(), "platform": platform.system(), "hostname": platform.node(),
                       "python": platform.python_version(), "roots": config["allowed_roots"], "capabilities": list(TOOLS),
+                      "shell_enabled": bool(config.get("shell", {}).get("enabled")), "workspace_protocol": 1,
                       "management": self.lifecycle.describe(), "device_actions": self.lifecycle.actions(),
                       "journal_id": self.journal.journal_id, "project_routing_protocol": 1, "delivery_protocol": 2, "cancel_pending_protocol": 1, "native_security_protocol": 1, "native_protocol": 1, "native_chat_protocol": 3, **advertisement(self.build.catalog_sha256)}))
         reply = channel.unpack(await asyncio.wait_for(socket.recv(), 10))

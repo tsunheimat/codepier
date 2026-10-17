@@ -1,11 +1,11 @@
-"""Live IAM/Role checks for one immutable binding, never actions x resources."""
+"""Live workspace/Profile checks for one immutable binding, never actions x resources."""
 from __future__ import annotations
 
 import json
 
 from hub import iam
 from hub.access_profiles import refresh_profile_principal
-from hub.roles import role_binding, connection_policy
+from hub.permissions import connection_policy
 from hub.gateway.catalog import fingerprint
 from shared.util import DevError
 
@@ -13,12 +13,10 @@ from shared.util import DevError
 def grant_context(store, principal):
     principal = refresh_profile_principal(store, principal)
     if not principal.grant_id:
-        raise DevError('GATEWAY_ROLE_REQUIRED', '外部 MCP 需要明确同意的客户端连接', 403)
+        raise DevError('GATEWAY_CONNECTION_REQUIRED', '外部 MCP 需要明确同意的客户端连接', 403)
     grant = store.one('SELECT * FROM grants WHERE id=?', (principal.grant_id,))
-    if grant['authorization_mode'] != 'role' and not grant.get('resource_policy'):
-        raise DevError('GATEWAY_ROLE_REQUIRED', '此传统固定连接未同意外部 MCP；请建立明确配置的连接', 403)
     consent = store.one('SELECT * FROM gateway_consents WHERE grant_id=?', (principal.grant_id,))
-    if not consent or consent['consent_version'] != 1 or any(consent[key] != grant[key] for key in ('user_id', 'space_id', 'profile_id', 'role_id')):
+    if not consent or consent['consent_version'] != 1 or any(consent[key] != grant[key] for key in ('user_id', 'space_id', 'profile_id')):
         raise DevError('GATEWAY_CONSENT_REQUIRED', '请由此凭据的账号在面板明确同意外部 MCP 委派', 403)
     policy = connection_policy(store, grant)
     return principal, policy
@@ -31,15 +29,15 @@ def accessible(account, principal):
 def binding_rows(store, binding_id, space_id):
     binding = store.one('SELECT * FROM gateway_bindings WHERE id=? AND space_id=?', (binding_id, space_id))
     account = store.one('SELECT * FROM gateway_accounts WHERE id=? AND space_id=?', (binding['account_id'], space_id)) if binding else None
-    connector = store.one('SELECT * FROM gateway_connectors WHERE id=? AND space_id=?', (account['connector_id'], space_id)) if account else None
+    connector = store.one('SELECT * FROM gateway_connectors WHERE id=?', (account['connector_id'],)) if account else None
     if not binding or not account or not connector:
         raise DevError('GATEWAY_TOOL_NOT_FOUND', '工具或连接不存在于当前授权范围', 404)
     return binding, account, connector
 
 
 def within_fixed_consent(store, principal, binding_id, tool):
-    grant = store.one('SELECT authorization_mode,connector_ceiling FROM grants WHERE id=?', (principal.grant_id,))
-    if grant['authorization_mode'] == 'role':
+    grant = store.one('SELECT consent_mode,connector_ceiling FROM grants WHERE id=?', (principal.grant_id,))
+    if grant['consent_mode'] == 'live':
         return True
     try:
         return json.loads(grant['connector_ceiling'])[binding_id].get(tool['name']) == fingerprint(tool)
@@ -50,7 +48,7 @@ def within_fixed_consent(store, principal, binding_id, tool):
 def require_tool(store, principal, binding_id, tool_name):
     principal, policy = grant_context(store, principal)
     if not any(rule.binding_id == binding_id and tool_name in rule.tools for rule in policy.connector_rules):
-        raise DevError('GATEWAY_POLICY_DENIED', '当前角色未允许此工具与连接组合', 403)
+        raise DevError('GATEWAY_POLICY_DENIED', 'The workspace Profile does not allow this tool/binding pair', 403)
     binding, account, connector = binding_rows(store, binding_id, principal.space_id)
     if not accessible(account, principal) or not all(row['enabled'] for row in (binding, account, connector)):
         raise DevError('GATEWAY_POLICY_DENIED', '连接已暂停、移除或不属于此账号', 403)
@@ -71,7 +69,7 @@ def visible_tools(store, principal):
     except DevError:
         return []
     visible, seen = [], set()
-    # Bound by RolePolicy (32 rules) and gateway catalog limits. No cross-await
+    # Bound by AccessPolicy (32 rules) and gateway catalog limits. No cross-await
     # permission cache or backend discovery request is performed by tools/list.
     for rule in policy.connector_rules:
         try:
@@ -89,21 +87,21 @@ def visible_tools(store, principal):
     return visible
 
 
-def consent_grant(store, principal, grant_id, expected_role_version):
-    """Explicit downstream delegation, in the same transaction as issuance."""
+def consent_grant(store, principal, grant_id, expected_profile_version):
+    """Explicit downstream consent, bound to the new connection identity."""
     import time
     store.require_transaction()
     grant = store.one('SELECT * FROM grants WHERE id=? AND user_id=? AND space_id=?',
-                      (grant_id, principal.user_id, principal.space_id))
-    if not grant or (grant['authorization_mode'] != 'role' and not grant.get('resource_policy')):
-        raise DevError('GATEWAY_ROLE_REQUIRED', '外部 MCP 委派需要明确的角色资源同意', 403)
-    iam.validate_grant(store, grant)
-    connection_policy(store, grant)
-    role = store.one('SELECT * FROM access_roles WHERE id=?', (grant['role_id'],))
-    if not role['enabled'] or role['version'] != expected_role_version:
-        raise DevError('ROLE_CHANGED', '角色政策已改变，请重新阅读再同意', 409)
-    store.db.execute("""INSERT INTO gateway_consents(grant_id,user_id,space_id,profile_id,role_id,consent_version,created)
-        VALUES(?,?,?,?,?,1,?) ON CONFLICT(grant_id) DO UPDATE SET consent_version=1,created=excluded.created""",
-        (grant_id, principal.user_id, principal.space_id, grant['profile_id'], grant['role_id'], time.time()))
-    store.audit(principal.actor, 'gateway.delegation_consented', grant_id,
-                detail={'role_id': role['id'], 'role_version': role['version'], 'future_reviewed_connector_rules': grant['authorization_mode'] == 'role'}, commit=False)
+                      (grant_id,principal.user_id,principal.space_id))
+    if not grant:
+        raise DevError('CONNECTION_NOT_FOUND','Connection not found',404)
+    iam.validate_grant(store,grant)
+    connection_policy(store,grant)
+    profile = store.one('SELECT * FROM access_profiles WHERE id=? AND space_id=?',(grant['profile_id'],grant['space_id']))
+    if not profile or not profile['enabled'] or profile['version']!=expected_profile_version:
+        raise DevError('PROFILE_CHANGED','The Profile changed; review its permissions again',409)
+    store.db.execute("""INSERT INTO gateway_consents(grant_id,user_id,space_id,profile_id,consent_version,created)
+        VALUES(?,?,?,?,1,?) ON CONFLICT(grant_id) DO UPDATE SET consent_version=1,created=excluded.created""",
+        (grant_id,principal.user_id,principal.space_id,grant['profile_id'],time.time()))
+    store.audit(principal.actor,'gateway.delegation_consented',grant_id,
+        detail={'profile_id':profile['id'],'profile_version':profile['version'],'live_profile':grant['consent_mode']=='live'},commit=False)

@@ -19,19 +19,16 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from hub.auth import Auth
 from hub.auth_policy import REFRESH_TOMBSTONE_SECONDS
-from hub.access_profiles import effective_grant, validate_profile_consent
-from hub.access import access_defaults, project_selection
+from hub.access_profiles import effective_grant
 from hub.runtime import Runtime
 from shared.crypto import digest, token
 from shared.util import DevError, valid_json_value
-from shared.role_contracts import ROLE_SCOPE
-from hub.roles import validate_role_consent, public_role
+from shared.workspace_contracts import WORKSPACE_SCOPE
 from hub import iam
 
 
-# Discovery must never combine mutually exclusive fixed and role modes. MCP
-# clients may request every scope advertised by protected-resource metadata.
-LEGACY_OAUTH_SCOPES = ["read", "write", "execute", "computer"]
+# One OAuth delegation scope; resource actions are selected in workspace Profiles.
+OAUTH_SCOPES = [WORKSPACE_SCOPE]
 
 
 class OAuth:
@@ -40,9 +37,6 @@ class OAuth:
         self.public_url = public_url
         self.auth.resource = self.resource
         self.store.oauth_resource = self.resource
-        # Older databases did not persist the audience. Bind existing OAuth
-        # grants once, before a later public URL change can retarget them.
-        self.store.execute("UPDATE grants SET resource=? WHERE client_id IS NOT NULL AND resource IS NULL", (self.resource(),))
         self.redirect_hosts = {host.lower() for host in env_csv("OAUTH_REDIRECT_HOSTS", "chatgpt.com,chat.openai.com,platform.openai.com,localhost,127.0.0.1,::1")}
         self.router = APIRouter()
         self.routes()
@@ -96,9 +90,9 @@ class OAuth:
         resource = params.get("resource", self.resource())
         if resource != self.resource():
             raise DevError("INVALID_TARGET", "资源标识不匹配")
-        scopes = params.get("scope", "read").split()
-        if set(scopes) != {ROLE_SCOPE} and (not scopes or not set(scopes).issubset({"read", "write", "execute", "computer"}) or "read" not in scopes):
-            raise DevError("INVALID_SCOPE", "使用传统 read/write/execute/computer，或单独申请 codepier.role_access；两种模式不能混用")
+        scopes = params.get("scope", WORKSPACE_SCOPE).split()
+        if scopes != [WORKSPACE_SCOPE]:
+            raise DevError("INVALID_SCOPE", "Only codepier.workspace is supported; choose resource permissions at workspace/Profile consent")
         state = params.get("state", "")
         if len(state) > 2048:
             raise DevError("INVALID_STATE", "state 过长")
@@ -113,23 +107,22 @@ class OAuth:
             raise DevError("AUTH_REQUEST_EXPIRED", "授权请求已过期或已经处理，请从 ChatGPT 重新连接", 410)
         return row
 
-    def bound_request(self, identifier, request, principal, *, select_space=False):
-        """Pin consent to the authenticated human and browser session.
-
-        A Space selection can change only while rendering a fresh consent page
-        in the same login session. Approval must match that page's Space.
-        Client identifiers or OAuth scopes never confer Space membership.
-        """
-        session=self.auth.session(request)
-        row=self.get_request(identifier)
-        if row['bound_user_id'] is not None and (row['bound_user_id']!=principal.user_id or row['bound_session_hash']!=session['id_hash']):
-            raise DevError('CONSENT_IDENTITY_CHANGED','授权属于另一登录会话；请重新发起连接',403)
-        if row['bound_user_id'] is None or select_space:
-            self.store.db.execute('UPDATE oauth_requests SET bound_user_id=?,bound_session_hash=?,space_id=? WHERE id=? AND used=0',
-                                  (principal.user_id,session['id_hash'],principal.space_id,identifier))
-            row.update(bound_user_id=principal.user_id,bound_session_hash=session['id_hash'],space_id=principal.space_id)
-        if row['space_id']!=principal.space_id:
-            raise DevError('CONSENT_SPACE_CHANGED','空间已改变；请重新读取授权页面',409)
+    def bound_request(self, identifier, request, principal, *, select_space=False, expected_version=None):
+        session = self.auth.session(request)
+        row = self.get_request(identifier)
+        if row['bound_user_id'] is not None and (row['bound_user_id'] != principal.user_id or row['bound_session_hash'] != session['id_hash']):
+            raise DevError('CONSENT_IDENTITY_CHANGED', 'This consent request belongs to another login session', 403)
+        if row['bound_user_id'] is None:
+            self.store.db.execute('UPDATE oauth_requests SET bound_user_id=?,bound_session_hash=? WHERE id=? AND used=0',
+                                  (principal.user_id, session['id_hash'], identifier))
+            row.update(bound_user_id=principal.user_id, bound_session_hash=session['id_hash'])
+        if select_space:
+            if type(expected_version) is not int or expected_version != row['selection_version']:
+                raise DevError('CONSENT_SELECTION_CHANGED', 'The workspace selection changed in another page; reload consent', 409)
+            iam.membership(self.store, principal.user_id, principal.space_id)
+            self.store.db.execute('UPDATE oauth_requests SET space_id=?,selection_version=selection_version+1 WHERE id=? AND used=0',
+                                  (principal.space_id, identifier))
+            row.update(space_id=principal.space_id, selection_version=row['selection_version']+1)
         return row
 
     @staticmethod
@@ -139,62 +132,28 @@ class OAuth:
         return urlunsplit((u.scheme, u.netloc, u.path, u.query + ("&" if u.query else "") + extra, ""))
 
     def renewal_scopes(self, grant):
-        """Validate the durable delegation, not an expiring resource snapshot.
-
-        Refresh grants no resource access by itself. Every access-token use still
-        checks current membership, identity freshness, role and project policy.
-        A temporary IdP outage must not prevent renewing CodePier credentials.
-        Explicit credential/account/profile/role/Space revocations still reject.
-        """
-        if not grant or grant['revoked']:
-            raise DevError('INVALID_TOKEN', '授权已撤销', 401)
+        # Refresh preserves a valid credential through transient IdP synchronization
+        # failures. Explicit account, membership and connection revocation still wins.
+        if not grant or grant['revoked'] or not grant.get('space_id') or not grant.get('profile_id'):
+            raise DevError('INVALID_TOKEN', 'Connection is revoked or lacks a workspace/Profile binding', 401)
         user = iam.user_security(self.store, grant['user_id'])
         if user['epoch'] != grant['user_epoch']:
-            raise DevError('INVALID_TOKEN', '用户授权版本已改变', 401)
+            raise DevError('INVALID_TOKEN', 'Account credentials were revoked', 401)
         identity = iam.check_identity(self.store, grant.get('identity_id'), require_fresh=False)
         if identity and identity['user_id'] != grant['user_id']:
-            raise DevError('INVALID_TOKEN', '身份绑定不匹配', 401)
-        if (not self.store.one('SELECT 1 FROM spaces WHERE id=? AND active=1', (grant['space_id'],))
-                or self.store.one('SELECT 1 FROM membership_blocks WHERE space_id=? AND user_id=? AND blocked=1',
-                                  (grant['space_id'], grant['user_id']))):
-            raise DevError('INVALID_TOKEN', '空间授权已停用', 401)
-        profile = None
-        if grant.get('profile_id'):
-            profile = self.store.one('SELECT * FROM access_profiles WHERE id=?', (grant['profile_id'],))
-            if (not profile or not profile['enabled'] or profile['user_id'] != grant['user_id']
-                    or profile['space_id'] != grant['space_id']):
-                raise DevError('INVALID_TOKEN', '访问 Profile 已停用或绑定已改变', 401)
-        if grant.get('role_id'):
-            role = self.store.one('SELECT * FROM access_roles WHERE id=? AND space_id=?',
-                                  (grant['role_id'], grant['space_id']))
-            # Pausing a role denies its actions, not the durable delegation.
-            # Credential rotation must survive a pause/resume without re-consent.
-            if not role or not profile or profile['role_id'] != role['id']:
-                raise DevError('INVALID_TOKEN', '角色授权已删除或绑定已改变', 401)
-        if grant['authorization_mode'] == 'role':
-            if not grant.get('role_id') or set(json.loads(grant['scopes'])) != {ROLE_SCOPE}:
-                raise DevError('INVALID_TOKEN', '角色授权记录无效', 401)
-            return {ROLE_SCOPE}
-        if grant['authorization_mode'] != 'fixed':
-            raise DevError('INVALID_TOKEN', '授权模式无效', 401)
-        from hub.access_profiles import stored_permissions
-        try:
-            scopes, _ = stored_permissions(grant)
-            if profile:
-                cap, _ = stored_permissions(profile)
-                scopes &= cap
-            if 'read' not in scopes:
-                raise ValueError('No read scope')
-            return scopes
-        except (ValueError, TypeError, KeyError) as exc:
-            raise DevError('INVALID_TOKEN', '授权记录无效', 401) from exc
+            raise DevError('INVALID_TOKEN', 'External identity does not belong to this connection', 401)
+        iam.membership(self.store, grant['user_id'], grant['space_id'])
+        profile = self.store.one('SELECT id FROM access_profiles WHERE id=? AND space_id=?',
+                                (grant['profile_id'], grant['space_id']))
+        if not profile or grant['consent_mode'] not in {'fixed', 'live'}:
+            raise DevError('INVALID_TOKEN', 'The bound workspace Profile no longer exists', 401)
+        return {WORKSPACE_SCOPE}
 
     def new_tokens(self, grant_id: str, *, renewal=False):
         self.store.require_transaction()
         grant = self.store.one("SELECT * FROM grants WHERE id=?", (grant_id,))
         scopes = self.renewal_scopes(grant) if renewal else effective_grant(self.store, grant)[0]
-        if grant.get('authorization_mode') == 'role':
-            scopes = {ROLE_SCOPE}  # OAuth delegation is stable; capabilities are live policy.
+        scopes = {WORKSPACE_SCOPE}  # Stable delegation scope, not flattened resource capabilities.
         now = time.time()
         policy = self.auth.policy
         access, refresh = "rda_" + token(), "rdr_" + token()
@@ -224,7 +183,7 @@ class OAuth:
                 return rejected()
             grant = self.store.one('SELECT * FROM grants WHERE id=?', (row['grant_id'],))
             # Invalid client/resource/scope requests must never poison the family.
-            if form.get('scope') is not None and set(form['scope'].split()) != set(json.loads(grant['scopes'])):
+            if form.get('scope') is not None and set(form['scope'].split()) != {WORKSPACE_SCOPE}:
                 return rejected('invalid_scope')
             self.renewal_scopes(grant)
             actor = 'oauth:' + row['client_id']
@@ -296,13 +255,11 @@ class OAuth:
         @router.get("/.well-known/oauth-protected-resource/mcp")
         @database_endpoint(self.store)
         def protected_metadata(request: Request):
-            mode = request.query_params.get("authorization", "fixed")
-            if mode not in {"fixed", "role"}:
-                raise DevError("INVALID_REQUEST", "Unknown authorization mode")
-            scopes = [ROLE_SCOPE] if mode == "role" else LEGACY_OAUTH_SCOPES
-            return JSONResponse({"resource": self.resource(), "authorization_servers": [self.public_url()],
-                "scopes_supported": scopes, "bearer_methods_supported": ["header"],
-                "resource_name": "CodePier Agent"}, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
+            if request.query_params.get('authorization') is not None:
+                raise DevError('INVALID_REQUEST', 'Authorization mode URL selectors are not supported')
+            return JSONResponse({'resource': self.resource(), 'authorization_servers': [self.public_url()],
+                'scopes_supported': OAUTH_SCOPES, 'bearer_methods_supported': ['header'],
+                'resource_name': 'CodePier'}, headers={'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store'})
 
         @router.get("/.well-known/oauth-authorization-server")
         @database_endpoint(self.store)
@@ -313,9 +270,8 @@ class OAuth:
                 "response_types_supported": ["code"], "grant_types_supported": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_methods_supported": ["none"], "code_challenge_methods_supported": ["S256"],
                 # RFC 8414 permits omitting supported scopes from this list.
-                # Role clients discover their sole scope through the selected
-                # resource metadata / challenge, never a mixed default list.
-                "scopes_supported": LEGACY_OAUTH_SCOPES}, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
+                # Resource-use policies are not encoded as global OAuth action scopes.
+                "scopes_supported": OAUTH_SCOPES}, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
 
         @router.post("/oauth/register")
         async def register(request: Request):
@@ -354,89 +310,64 @@ class OAuth:
         @router.get("/api/oauth/requests/{id}")
         @database_endpoint(self.store)
         def auth_details(id: str, request: Request):
-            with self.store.lock,self.store.db:
-                self.store.db.execute('BEGIN IMMEDIATE')
+            with self.store.transaction():
                 principal = self.auth.panel(request)
-                row = self.bound_request(id,request,principal,select_space=True)
-            return {"id": id,"space_id":principal.space_id,"user_id":principal.user_id,"username":self.auth.session(request)['username'], "client_name": row["client_name"], "client_id": row["client_id"], "redirect_uri": row["redirect_uri"],
-                    "scopes": json.loads(row["scopes"]), "resource": row["resource"], "expires": row["expires"],
-                    "access_defaults": access_defaults(self.store, principal.user_id)}
+                row = self.bound_request(id, request, principal)
+                from hub.iam_api import spaces_for
+                spaces = spaces_for(self.store, principal.user_id)
+            return {'id': id, 'selected_space_id': row['space_id'], 'selection_version': row['selection_version'],
+                    'spaces': spaces, 'client_name': row['client_name'], 'client_id': row['client_id'],
+                    'redirect_uri': row['redirect_uri'], 'resource': row['resource'], 'expires': row['expires']}
+
+        @router.post('/api/oauth/requests/{id}/select-space')
+        async def select_space(id: str, request: Request):
+            await self.store.run(self.auth.session_write, request)
+            body = await self.json_object(request)
+            if set(body) != {'space_id', 'selection_version'} or not isinstance(body['space_id'], str):
+                raise DevError('INVALID_REQUEST', 'Select a workspace with the current consent selection version')
+            def finish():
+                with self.store.transaction():
+                    principal = self.auth.panel(request, True, space_id=body['space_id'])
+                    row = self.bound_request(id, request, principal, select_space=True, expected_version=body['selection_version'])
+                    from hub.access_profiles import public_profile
+                    profiles = [public_profile(p) for p in self.store.all('SELECT * FROM access_profiles WHERE space_id=? AND enabled=1 ORDER BY label_key,id', (principal.space_id,))]
+                    return {'selected_space_id': principal.space_id, 'selection_version': row['selection_version'], 'profiles': profiles}
+            return await self.store.run(finish)
 
         @router.post("/api/oauth/requests/{id}/decide")
         async def decide(id: str, request: Request):
-            await self.store.run(self.auth.panel, request, True)
+            await self.store.run(self.auth.session_write, request)
             body = await self.json_object(request)
+            allowed = {'allow', 'space_id', 'selection_version', 'profile_id', 'profile_version', 'consent_mode',
+                       'confirm_live_profile', 'confirm_external_mcp'}
+            if not set(body) <= allowed or type(body.get('allow')) is not bool:
+                raise DevError('INVALID_REQUEST', 'Use workspace/Profile consent fields and an explicit allow decision')
             def finish():
-                # Parsing yields; re-read the session before deciding whose consent this is.
-                with self.store.lock,self.store.db:
-                    self.store.db.execute('BEGIN IMMEDIATE')
-                    principal=self.auth.panel(request,True)
-                    row=self.bound_request(id,request,principal)
-                if type(body.get("allow")) is not bool:
-                    raise DevError("INVALID_REQUEST", "allow 必须为布尔值")
-                if body.get("allow") is not True:
-                    with self.store.lock, self.store.db:
-                        principal=self.auth.panel(request, True)
-                        self.bound_request(id,request,principal)
-                        used = self.store.db.execute("UPDATE oauth_requests SET used=1 WHERE id=? AND used=0 AND expires>?", (id, time.time())).rowcount
-                        if not used:
-                            raise DevError("AUTH_REQUEST_EXPIRED", "授权请求已处理", 410)
-                    self.store.audit(principal.actor, "oauth.consent", row["client_name"], "denied")
-                    return {"redirect": self.redirect(row["redirect_uri"], {"error": "access_denied", "state": row["state"]})}
-                scopes = body.get("scopes", [])
-                projects = body.get("projects", [])
-                mode = body.get('authorization_mode', 'fixed')
-                external_consent = body.get('confirm_external_mcp', False)
-                if type(external_consent) is not bool:
-                    raise DevError('INVALID_CONSENT', '外部 MCP 同意必须为布尔值')
-                if (not isinstance(scopes, list) or any(not isinstance(x, str) for x in scopes)
-                        or not set(scopes).issubset(set(json.loads(row['scopes'])))):
-                    raise DevError('INVALID_SCOPE', '不得超出客户端申请的 OAuth 范围')
-                if mode == 'role':
-                    if scopes != [ROLE_SCOPE] or projects or body.get('all_projects', False) is not False:
-                        raise DevError('INVALID_SCOPE', '角色授权仅使用 codepier.role_access；项目范围由角色政策决定')
-                    projects = []
-                elif mode == 'fixed' and 'read' in scopes and set(scopes) <= {'read', 'write', 'execute', 'computer'}:
-                    projects = project_selection(self.store, projects, body.get('all_projects', False),space_id=principal.space_id)
-                else:
-                    raise DevError('INVALID_SCOPE', '请明确选择传统固定授权或动态角色授权')
-                profile_id = body.get('profile_id')
-                gid, code = token(16), token()
-                with self.store.lock, self.store.db:
-                    self.store.db.execute("BEGIN IMMEDIATE")
-                    principal=self.auth.panel(request, True)
-                    row=self.bound_request(id,request,principal)
-                    role_id = None
-                    if mode == 'role':
-                        role = validate_role_consent(self.store, principal.user_id, profile_id, body.get('profile_version'),
-                                                     body.get('role_version'), body.get('confirm_dynamic_role'),space_id=principal.space_id)
-                        role_id = role['id']
-                    else:
-                        validate_profile_consent(self.store, principal.user_id, profile_id, scopes, projects, body.get('profile_version'),space_id=principal.space_id)
-                        if not principal.admin:
-                            if '*' in projects:
-                                raise DevError('ROLE_REQUIRED','普通成员的持续授权请选择获授予的动态角色',403)
-                            permissions=iam.project_permissions(self.store,principal)
-                            for project_id in projects:
-                                if not set(scopes)<=permissions.get(project_id,set()):
-                                    raise DevError('DELEGATION_DENIED','不得委派超出当前账号的项目权限',403)
-                    if row["resource"] != self.resource():
-                        raise DevError("INVALID_TARGET", "资源标识已变化，请重新发起授权")
-                    used = self.store.db.execute("UPDATE oauth_requests SET used=1 WHERE id=? AND used=0 AND expires>?", (id, time.time())).rowcount
+                with self.store.transaction():
+                    account = self.auth.panel(request, True)
+                    row = self.bound_request(id, request, account)
+                    if type(body.get('selection_version')) is not int or body['selection_version'] != row['selection_version']:
+                        raise DevError('CONSENT_SELECTION_CHANGED', 'The consent selection changed; reload it before confirming', 409)
+                    if not body['allow']:
+                        self.store.db.execute('UPDATE oauth_requests SET used=1 WHERE id=? AND used=0', (id,))
+                        iam.audit(self.store, account, 'oauth.consent_denied', id)
+                        return {'redirect': self.redirect(row['redirect_uri'], {'error':'access_denied','state':row['state']})}
+                    if not row['space_id'] or body.get('space_id') != row['space_id']:
+                        raise DevError('CONSENT_WORKSPACE_REQUIRED', 'Select the workspace before choosing its Profile', 409)
+                    principal = self.auth.panel(request, True, space_id=row['space_id'])
+                    if row['resource'] != self.resource():
+                        raise DevError('INVALID_TARGET', 'The resource audience changed; start a new authorization request')
+                    result = self.auth.issue_connection(principal, row['client_name'], body.get('profile_id'), body.get('profile_version'),
+                        client_id=row['client_id'], consent_mode=body.get('consent_mode', 'fixed'),
+                        confirm_live_profile=body.get('confirm_live_profile', False),
+                        confirm_external_mcp=body.get('confirm_external_mcp', False), issue_token=False)
+                    used = self.store.db.execute('UPDATE oauth_requests SET used=1 WHERE id=? AND used=0 AND expires>?', (id, time.time())).rowcount
                     if not used:
-                        raise DevError("AUTH_REQUEST_EXPIRED", "授权请求已处理", 410)
-                    self.store.db.execute("INSERT INTO grants(id,user_id,label,client_id,scopes,projects,revoked,created,resource,profile_id,authorization_mode,role_id,space_id,owner_user_id,identity_id,user_epoch) VALUES (?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?)", (gid, principal.user_id, row["client_name"], row["client_id"], json.dumps(sorted(set(scopes))), json.dumps(projects), time.time(), row["resource"], profile_id, mode, role_id,principal.space_id,principal.user_id,principal.identity_id,principal.user_epoch))
-                    if external_consent:
-                        from hub.gateway.policy import consent_grant
-                        consent_grant(self.store, principal, gid, body.get('role_version'))
-                    if mode == 'role':
-                        from hub.access_profiles import profile_audit
-                        profile_audit(self.store, principal.actor, 'role.consent', gid,
-                                      {'profile_id': profile_id, 'role': public_role(role), 'mode': mode, 'future_policy_changes_consented': True})
-                    self.store.db.execute("INSERT INTO oauth_codes VALUES (?,?,?,?,?,?,?)", (digest(code), row["client_id"], row["redirect_uri"], row["challenge"], row["resource"], gid, time.time() + 300))
-                self.store.audit(principal.actor, "oauth.consent", row["client_name"], detail={"grant_id": gid, "scopes": scopes, "projects": projects, "profile_id": profile_id, "authorization_mode": mode, "role_id": role_id})
-                return {"redirect": self.redirect(row["redirect_uri"], {"code": code, "state": row["state"]})}
-
+                        raise DevError('AUTH_REQUEST_EXPIRED', 'This consent request has already been handled', 410)
+                    code = token()
+                    self.store.db.execute('INSERT INTO oauth_codes VALUES(?,?,?,?,?,?,?)',
+                        (digest(code),row['client_id'],row['redirect_uri'],row['challenge'],row['resource'],result['grant_id'],time.time()+300))
+                    return {'redirect': self.redirect(row['redirect_uri'], {'code':code,'state':row['state']})}
             return await self.store.run(finish)
 
         @router.post("/oauth/token")

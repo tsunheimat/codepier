@@ -10,7 +10,7 @@ from pydantic import Field
 from hub import iam
 from hub.access import AccessModel
 from hub.db_worker import database_endpoint
-from hub.roles import _policy, created_ids, project_actions, vps_actions
+from hub.permissions import _policy, project_actions, vps_actions
 from hub.gateway.policy import binding_rows, accessible
 from shared.conversation_contracts import Conversations
 from shared.util import DevError
@@ -24,7 +24,7 @@ class ProjectMCPAssociations(AccessModel):
 def make_resources_router(auth, runtime):
     router, store = APIRouter(), runtime.store
 
-    @router.get('/api/resources/{kind}/{identifier}')
+    @router.get('/api/spaces/{space_id}/resources/{kind}/{identifier}')
     @database_endpoint(store)
     def detail(kind: Literal['project', 'vps', 'mcp'], identifier: str, request: Request):
         principal = auth.panel(request)
@@ -54,16 +54,19 @@ def make_resources_router(auth, runtime):
                     associations.append(runtime.conversations.resource('project', row['project_id'], principal))
                 except DevError:
                     continue
-        roles = store.all('SELECT * FROM access_roles WHERE space_id=? ORDER BY label_key', (principal.space_id,)) if principal.admin else iam.assigned_roles(store, principal.user_id, principal.space_id)
-        access = []
-        for role in roles:
-            policy = _policy(role)
-            actions = (project_actions(policy, identifier, created_ids(store, role['id'])) if kind == 'project'
-                       else vps_actions(policy, identifier) if kind == 'vps'
-                       else {t for rule in policy.connector_rules if rule.binding_id == identifier for t in rule.tools})
+        access=[]
+        try:
+            iam.require_space_capability(store,principal,'profiles')
+            profiles=store.all('SELECT * FROM access_profiles WHERE space_id=? ORDER BY label_key',(principal.space_id,))
+        except DevError:
+            profiles=[]
+        for profile in profiles:
+            policy=_policy(profile)
+            actions=(project_actions(policy,identifier) if kind=='project' else vps_actions(policy,identifier) if kind=='vps'
+                     else {t for rule in policy.connector_rules if rule.binding_id==identifier for t in rule.tools})
             if actions:
-                access.append({'role_id': role['id'], 'role': role['label'], 'enabled': bool(role['enabled']),
-                               'actions' if kind != 'mcp' else 'tools': sorted(actions)})
+                access.append({'profile_id':profile['id'],'profile':profile['label'],'enabled':bool(profile['enabled']),
+                               'actions' if kind!='mcp' else 'tools':sorted(actions)})
         conversations = runtime.conversations.invoke(Conversations(resource_type=kind, resource_id=identifier).model_dump(), principal)
         operations = []
         if kind == 'mcp':
@@ -89,11 +92,12 @@ def make_resources_router(auth, runtime):
                 'conversations': conversations['conversations'], 'next_conversation_offset': conversations['next_offset'],
                 'operations': operations, 'audit': audit, 'record_limit': 50}
 
-    @router.put('/api/projects/{identifier}/mcp-services')
+    @router.put('/api/projects/{project_id}/mcp-services')
     @database_endpoint(store)
-    def associate(identifier: str, request: Request, body: ProjectMCPAssociations):
+    def associate(project_id: str, request: Request, body: ProjectMCPAssociations):
+        identifier=project_id
         with store.transaction():
-            principal = auth.admin(request, True)
+            principal = iam.require_space_capability(store,auth.panel(request,True),'resources')
             runtime.project(identifier, principal)
             existing = {r['binding_id'] for r in store.all('SELECT binding_id FROM project_mcp_resources WHERE project_id=?', (identifier,))}
             if existing != set(body.expected_binding_ids):

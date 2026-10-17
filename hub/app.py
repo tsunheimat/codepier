@@ -12,14 +12,13 @@ from hub import iam
 from hub.iam_api import make_iam_router
 from hub.oidc import OIDCService
 from hub.access_profiles import make_profiles_router
-from hub.roles import make_roles_router
 from hub.client_connections import make_connections_router
 from hub.conversations import make_conversations_router
 from hub.resources import make_resources_router
 from hub.gateway.service import Gateway
 from hub.gateway.registry import make_router as make_gateway_router
 from hub.external_plugins.registry import make_router as make_plugins_router
-from hub.routing_api import make_router as make_routing_router
+from hub.workspace_api import make_workspace_router
 from hub.auth import Auth
 from hub.config import HubConfig
 from hub.builtin_agent import BuiltinAgent
@@ -34,8 +33,7 @@ from hub.api.activity import make_activity_router
 from hub.call_log import register_call_log
 from hub.api.settings import make_settings_router
 from hub.api.system import make_system_router
-from hub.api.models import Model, ComputerDecision, Login, DeviceCreate, DeviceUpdate, ProjectInput, ToolCall, TokenInput, PasswordInput, SettingsInput
-from hub.access import make_access_router
+from hub.api.models import Model, ComputerDecision, Login, DeviceCreate, DeviceUpdate, ToolCall, PasswordInput, SettingsInput
 from hub.artifacts import make_artifact_router
 from hub.agent_install import make_agent_install_router
 from hub.native_cli import make_native_router
@@ -116,12 +114,12 @@ def create_app(data_dir: str | None = None):
                      make_activity_router, make_settings_router, make_system_router):
             app.include_router(make(context))
         app.include_router(oidc.router)
-        for make in (make_iam_router, make_profiles_router, make_roles_router, make_gateway_router,
-                     make_connections_router, make_conversations_router, make_resources_router, make_plugins_router, make_routing_router):
+        for make in (make_iam_router, make_profiles_router, make_gateway_router,
+                     make_connections_router, make_conversations_router, make_resources_router, make_plugins_router, make_workspace_router):
             app.include_router(make(auth, runtime))
         app.include_router(runtime.oauth.router)
         app.include_router(make_router(auth, runtime, public_url))
-        for make in (make_artifact_router, make_access_router, make_native_router,
+        for make in (make_artifact_router, make_native_router,
                      make_vps_router, make_panel_update_router):
             app.include_router(make(auth, runtime))
         app.include_router(make_agent_install_router(runtime, auth))

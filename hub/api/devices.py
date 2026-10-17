@@ -16,7 +16,12 @@ from hub.builtin_roots import load_settings, save_settings
 
 @iam.read_decision
 def device_rows(store, runtime, principal):
-    candidates = store.all("SELECT id,name,enabled,info,last_seen,created,owner_user_id FROM devices WHERE space_id=? ORDER BY created",(principal.space_id,))
+    if principal.space_id:
+        candidates = store.all("SELECT d.id,d.name,d.enabled,d.info,d.last_seen,d.created,d.owner_user_id FROM devices d JOIN space_devices sd ON sd.device_id=d.id WHERE sd.space_id=? AND sd.enabled=1 ORDER BY d.created", (principal.space_id,))
+    else:
+        candidates = store.all("SELECT id,name,enabled,info,last_seen,created,owner_user_id FROM devices" +
+                               (" ORDER BY created" if principal.instance_admin else " WHERE owner_user_id=? ORDER BY created"),
+                               () if principal.instance_admin else (principal.user_id,))
     rows=[]
     for row in candidates:
         try: iam.require_device(store,principal,row['id'])
@@ -32,11 +37,11 @@ def device_rows(store, runtime, principal):
         if not isinstance(info, dict):
             info = {}
         row["builtin"] = row["id"] == builtin_id
-        row["can_manage"] = bool(principal.admin or row.get('owner_user_id')==principal.user_id)
+        row["can_manage"] = bool(principal.instance_admin or row.get('owner_user_id')==principal.user_id)
         row["can_configure_roots"] = bool(row["builtin"] and principal.instance_admin and row["can_manage"])
         row["info"] = info
         row["online"] = runtime.online(row["id"])
-        row["project_count"] = store.one("SELECT count(*) AS n FROM projects WHERE device_id=?", (row["id"],))["n"]
+        row["project_count"] = store.one("SELECT count(DISTINCT p.id) AS n FROM projects p JOIN space_folders f ON f.id=p.folder_id LEFT JOIN space_storage_mappings sm ON sm.storage_binding_id=f.storage_binding_id WHERE (f.device_id=? OR sm.device_id=?) AND (? IS NULL OR p.space_id=?)", (row["id"], row["id"], principal.space_id, principal.space_id))["n"]
         management = info.get("management") if isinstance(info.get("management"), dict) else {}
         actions = info.get("device_actions") if isinstance(info.get("device_actions"), list) else []
         actions = sorted(set(actions) & DEVICE_ACTIONS)
@@ -149,12 +154,10 @@ def make_devices_router(context: HubContext):
             hub_url = normalize_url(body.hub_url)
         except ValueError as exc:
             raise DevError("INVALID_URL", str(exc)) from exc
-        if iam.membership(store,principal.user_id,principal.space_id)['level']=='guest':
-            raise DevError('DEVICE_CREATE_DENIED','访客不能登记设备',403)
-        if store.one('SELECT count(*) AS n FROM devices WHERE space_id=?',(principal.space_id,))['n']>=200:
+        if store.one('SELECT count(*) AS n FROM devices WHERE owner_user_id=?',(principal.user_id,))['n']>=200:
             raise DevError('DEVICE_LIMIT','空间设备数量达到上限',409)
         id, secret = uuid.uuid4().hex, token(32)
-        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)", (id, body.name, store.encrypt(secret), time.time(),principal.space_id,principal.user_id))
+        store.execute("INSERT INTO devices(id,name,secret,created,owner_user_id) VALUES (?,?,?,?,?)", (id, body.name, store.encrypt(secret), time.time(),principal.user_id))
         store.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", ("device_hub_url:"+id, hub_url))
         store.audit(principal.actor, "device.created", body.name)
         runtime.publish("device", {"id": id})
@@ -213,8 +216,8 @@ def make_devices_router(context: HubContext):
             with store.lock, store.db:
                 principal = auth.panel(request, True)
                 iam.require_device(store, principal, id, manage=True)
-                if store.one("SELECT id FROM projects WHERE device_id=? LIMIT 1", (id,)) or store.one("SELECT id FROM source_mounts WHERE device_id=? UNION SELECT id FROM action_routes WHERE device_id=? LIMIT 1", (id,id)):
-                    raise DevError("DEVICE_HAS_PROJECTS", "请先移除这个设备的项目映射", 409)
+                if store.one("SELECT device_id FROM space_devices WHERE device_id=? UNION SELECT device_id FROM storage_mappings WHERE device_id=? LIMIT 1", (id,id)):
+                    raise DevError("DEVICE_HAS_PROJECTS", "Remove this device from workspace bindings and storage mappings first", 409)
                 store.execute("DELETE FROM devices WHERE id=?", (id,))
                 store.audit(principal.actor, "device.deleted", id)
                 wake_builtin(id)

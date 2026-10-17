@@ -13,6 +13,8 @@ from fastapi import APIRouter, Request
 from pydantic import Field, SecretStr
 
 from hub import iam
+from dataclasses import replace
+from hub.workspace_resources import owned_resource
 from hub.access import AccessModel
 from hub.gateway import catalog, network, policy
 from shared.util import DevError
@@ -62,7 +64,7 @@ class BindingPublish(Publish):
 
 
 class Consent(AccessModel):
-    expected_role_version: int = Field(ge=1)
+    expected_profile_version: int = Field(ge=1)
     confirmed: Literal[True]
 
 
@@ -107,7 +109,7 @@ def limit(store, table, space_id, maximum):
 
 def make_router(auth, runtime):
     gateway, store = runtime.gateway, runtime.store
-    router = APIRouter(prefix='/api/mcp-gateway')
+    router = APIRouter()
 
     def actor(request, write=False, instance=False):
         gateway.require_enabled()
@@ -119,21 +121,20 @@ def make_router(auth, runtime):
             raise DevError('GATEWAY_GRANT_NOT_FOUND', '找不到此账号的连接授权', 404)
         return row
 
-    @router.get('')
+    @router.get('/api/spaces/{space_id}/mcp-gateway')
     @database_endpoint(store)
     def overview(request: Request):
         principal = auth.panel(request)
         if not gateway.enabled:
             return {'enabled': False, 'connectors': [], 'accounts': [], 'bindings': [], 'grants': [], 'calls': []}
-        connectors = store.all('SELECT * FROM gateway_connectors WHERE space_id=? ORDER BY created,id', (principal.space_id,))
+        connectors = store.all('SELECT * FROM gateway_connectors WHERE owner_user_id=? OR EXISTS(SELECT 1 FROM gateway_accounts a WHERE a.connector_id=gateway_connectors.id AND a.space_id=?) ORDER BY created,id', (principal.user_id,principal.space_id))
         accounts = [r for r in store.all('SELECT * FROM gateway_accounts WHERE space_id=? ORDER BY created,id', (principal.space_id,)) if policy.accessible(r, principal)]
         allowed = {r['id'] for r in accounts}
         bindings = [public_binding(r) for r in store.all('SELECT * FROM gateway_bindings WHERE space_id=? ORDER BY alias,id', (principal.space_id,)) if r['account_id'] in allowed]
-        grants = store.all('''SELECT g.id,g.label,g.role_id,g.authorization_mode,g.resource_policy,r.version AS role_version,c.consent_version
-            FROM grants g JOIN access_roles r ON r.id=g.role_id
+        grants = store.all("""SELECT g.id,g.label,g.profile_id,g.consent_mode,g.resource_policy,p.version AS profile_version,c.consent_version
+            FROM grants g JOIN access_profiles p ON p.id=g.profile_id AND p.space_id=g.space_id
             LEFT JOIN gateway_consents c ON c.grant_id=g.id
-            WHERE g.space_id=? AND g.user_id=? AND (g.authorization_mode='role' OR g.resource_policy IS NOT NULL)
-            AND g.revoked=0 ORDER BY g.created DESC LIMIT 200''', (principal.space_id, principal.user_id))
+            WHERE g.space_id=? AND g.user_id=? AND g.revoked=0 ORDER BY g.created DESC LIMIT 200""", (principal.space_id,principal.user_id))
         for grant in grants:
             snapshot = grant.pop('resource_policy')
             try:
@@ -146,39 +147,50 @@ def make_router(auth, runtime):
                 'user_id': principal.user_id, 'connectors': connectors, 'accounts': [public_account(r) for r in accounts],
                 'bindings': bindings, 'grants': grants, 'calls': calls}
 
-    @router.post('/connectors', status_code=201)
+    @router.get('/api/mcp-gateway/connectors')
+    @database_endpoint(store)
+    def connector_inventory(request: Request):
+        principal=actor(request)
+        return {'connectors':store.all('SELECT * FROM gateway_connectors'+(' ORDER BY created,id' if principal.instance_admin else ' WHERE owner_user_id=? ORDER BY created,id'),
+                                      () if principal.instance_admin else (principal.user_id,))}
+
+    @router.post('/api/mcp-gateway/connectors', status_code=201)
     @database_endpoint(store)
     def create_connector(request: Request, body: ConnectorCreate):
         principal = actor(request, True, instance=True)
         endpoint = network.endpoint(body.endpoint, body.networks, body.allow_http)
         identifier = 'gwc_' + uuid.uuid4().hex
         with store.transaction():
-            limit(store, 'gateway_connectors', principal.space_id, 64)
-            store.db.execute('''INSERT INTO gateway_connectors(id,space_id,label,endpoint,protocol,networks,allow_http,created)
-                VALUES(?,?,?,?,?,?,?,?)''', (identifier, principal.space_id, body.label, endpoint, body.protocol,
+            if store.one('SELECT count(*) AS n FROM gateway_connectors WHERE owner_user_id=?',(principal.user_id,))['n']>=64:
+                raise DevError('GATEWAY_CONFIG_LIMIT','The account connector limit was reached',409)
+            store.db.execute('''INSERT INTO gateway_connectors(id,owner_user_id,label,endpoint,protocol,networks,allow_http,created)
+                VALUES(?,?,?,?,?,?,?,?)''', (identifier, principal.user_id, body.label, endpoint, body.protocol,
                                              json.dumps(body.networks), int(body.allow_http), time.time()))
             store.audit(principal.actor, 'gateway.connector_created', identifier, detail={'protocol': body.protocol}, commit=False)
         return store.one('SELECT * FROM gateway_connectors WHERE id=?', (identifier,))
 
-    @router.patch('/connectors/{identifier}')
+    @router.patch('/api/mcp-gateway/connectors/{identifier}')
     @database_endpoint(store)
     def toggle_connector(identifier: str, request: Request, body: Toggle):
         principal = actor(request, True, instance=True)
         with store.transaction():
-            changed = store.db.execute('UPDATE gateway_connectors SET enabled=?,version=version+1 WHERE id=? AND space_id=? AND version=?',
-                                      (int(body.enabled), identifier, principal.space_id, body.expected_version)).rowcount
+            owned_resource(store,principal,'gateway_connectors',identifier)
+            changed = store.db.execute('UPDATE gateway_connectors SET enabled=?,version=version+1 WHERE id=? AND version=?',
+                                      (int(body.enabled),identifier,body.expected_version)).rowcount
             if not changed:
                 raise DevError('GATEWAY_CONFIG_CHANGED', '连接不存在或版本已变化', 409)
             store.audit(principal.actor, 'gateway.connector_changed', identifier, detail={'enabled': body.enabled}, commit=False)
         return {'ok': True}
 
-    @router.post('/accounts', status_code=201)
+    @router.post('/api/spaces/{space_id}/mcp-gateway/accounts', status_code=201)
     @database_endpoint(store)
     def create_account(request: Request, body: AccountCreate):
         principal = actor(request, True)
         if body.sharing == 'space' and not principal.admin:
             raise DevError('SPACE_ADMIN_REQUIRED', '共享服务帐户必须由空间管理员建立', 403)
-        if not store.one('SELECT id FROM gateway_connectors WHERE id=? AND space_id=? AND enabled=1', (body.connector_id, principal.space_id)):
+        iam.require_space_capability(store,principal,'resources')
+        connector=owned_resource(store,replace(principal,space_id=None),'gateway_connectors',body.connector_id)
+        if not connector['enabled']:
             raise DevError('GATEWAY_CONNECTOR_NOT_FOUND', '找不到可用的 MCP 连接', 404)
         secret = store.encrypt(token_value(body.token))
         identifier = 'gwa_' + uuid.uuid4().hex
@@ -189,7 +201,7 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'gateway.account_created', identifier, detail={'sharing': body.sharing}, commit=False)
         return public_account(store.one('SELECT * FROM gateway_accounts WHERE id=?', (identifier,)))
 
-    @router.patch('/accounts/{identifier}')
+    @router.patch('/api/spaces/{space_id}/mcp-gateway/accounts/{identifier}')
     @database_endpoint(store)
     def update_account(identifier: str, request: Request, body: AccountUpdate):
         principal = actor(request, True)
@@ -204,15 +216,15 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'gateway.account_changed', identifier, detail={'enabled': body.enabled, 'credential_rotated': body.token is not None}, commit=False)
         return public_account(store.one('SELECT * FROM gateway_accounts WHERE id=?', (identifier,)))
 
-    @router.post('/accounts/{identifier}/discover')
+    @router.post('/api/spaces/{space_id}/mcp-gateway/accounts/{identifier}/discover')
     async def discover(identifier: str, request: Request):
         principal = await store.run(actor, request, True)
         return await gateway.discover(principal, identifier, lambda: actor(request, True))
 
-    @router.post('/bindings', status_code=201)
+    @router.post('/api/spaces/{space_id}/mcp-gateway/bindings', status_code=201)
     @database_endpoint(store)
     def create_binding(request: Request, body: BindingCreate):
-        principal = actor(request, True)
+        principal = iam.require_space_capability(store,actor(request,True),'resources')
         with store.transaction():
             account = managed_account(store, principal, body.account_id)
             tools = selected_tools(account, body)
@@ -227,10 +239,10 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'gateway.tools_published', identifier, detail={'tools': body.tools}, commit=False)
         return public_binding(store.one('SELECT * FROM gateway_bindings WHERE id=?', (identifier,)))
 
-    @router.post('/bindings/{identifier}/publish')
+    @router.post('/api/spaces/{space_id}/mcp-gateway/bindings/{identifier}/publish')
     @database_endpoint(store)
     def publish_binding(identifier: str, request: Request, body: BindingPublish):
-        principal = actor(request, True)
+        principal = iam.require_space_capability(store,actor(request,True),'resources')
         with store.transaction():
             binding, _, _ = policy.binding_rows(store, identifier, principal.space_id)
             account = managed_account(store, principal, binding['account_id'])
@@ -241,10 +253,10 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'gateway.tools_published', identifier, detail={'tools': body.tools}, commit=False)
         return public_binding(store.one('SELECT * FROM gateway_bindings WHERE id=?', (identifier,)))
 
-    @router.patch('/bindings/{identifier}')
+    @router.patch('/api/spaces/{space_id}/mcp-gateway/bindings/{identifier}')
     @database_endpoint(store)
     def toggle_binding(identifier: str, request: Request, body: Toggle):
-        principal = actor(request, True)
+        principal = iam.require_space_capability(store,actor(request,True),'resources')
         with store.transaction():
             binding, _, _ = policy.binding_rows(store, identifier, principal.space_id)
             managed_account(store, principal, binding['account_id'])
@@ -254,16 +266,16 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'gateway.binding_changed', identifier, detail={'enabled': body.enabled}, commit=False)
         return {'ok': True}
 
-    @router.post('/grants/{identifier}/consent')
+    @router.post('/api/spaces/{space_id}/mcp-gateway/grants/{identifier}/consent')
     @database_endpoint(store)
     def consent(identifier: str, request: Request, body: Consent):
         principal = actor(request, True)
         with store.transaction():
             grant = owned_grant(principal, identifier)
-            policy.consent_grant(store, principal, identifier, body.expected_role_version)
+            policy.consent_grant(store, principal, identifier, body.expected_profile_version)
         return {'ok': True, 'consent_version': 1}
 
-    @router.delete('/grants/{identifier}/consent')
+    @router.delete('/api/spaces/{space_id}/mcp-gateway/grants/{identifier}/consent')
     @database_endpoint(store)
     def revoke_consent(identifier: str, request: Request):
         principal = actor(request, True)

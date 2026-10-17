@@ -14,36 +14,7 @@ import time
 from pathlib import Path
 from cryptography.fernet import Fernet
 
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS sessions (id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, csrf TEXT NOT NULL, expires REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, secret TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, info TEXT NOT NULL DEFAULT '{}', last_seen REAL, created REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, alias TEXT NOT NULL, alias_key TEXT UNIQUE NOT NULL, device_id TEXT NOT NULL REFERENCES devices(id), root TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'write', allow_tasks INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS vps_connections (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT UNIQUE NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535), username TEXT NOT NULL, secret TEXT NOT NULL, host_key_policy TEXT NOT NULL DEFAULT 'strict', provider TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '', system TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1, connection_revision INTEGER NOT NULL DEFAULT 1, created REAL NOT NULL, updated REAL NOT NULL, UNIQUE(host,port,username));
-CREATE TABLE IF NOT EXISTS vps_projects (vps_id TEXT NOT NULL REFERENCES vps_connections(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, binding_id TEXT NOT NULL, PRIMARY KEY(vps_id,project_id));
-CREATE INDEX IF NOT EXISTS vps_project_lookup ON vps_projects(project_id,vps_id);
-CREATE TABLE IF NOT EXISTS access_roles (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL, label_key TEXT NOT NULL, policy TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), version INTEGER NOT NULL CHECK(version>0), created REAL NOT NULL, updated REAL NOT NULL, create_key TEXT NOT NULL, create_fingerprint TEXT NOT NULL, UNIQUE(user_id,label_key), UNIQUE(user_id,create_key));
-CREATE TABLE IF NOT EXISTS role_created_projects (role_id TEXT NOT NULL REFERENCES access_roles(id), project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created REAL NOT NULL, PRIMARY KEY(role_id,project_id));
-CREATE TABLE IF NOT EXISTS access_profiles (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL, label_key TEXT NOT NULL, scopes TEXT NOT NULL, projects TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), version INTEGER NOT NULL CHECK(version>0), created REAL NOT NULL, updated REAL NOT NULL, create_key TEXT NOT NULL, create_fingerprint TEXT NOT NULL, UNIQUE(user_id,label_key), UNIQUE(user_id,create_key));
-CREATE TABLE IF NOT EXISTS grants (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL, client_id TEXT, scopes TEXT NOT NULL, projects TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, grant_id TEXT NOT NULL REFERENCES grants(id), kind TEXT NOT NULL, expires REAL NOT NULL, created REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS oauth_clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, redirects TEXT NOT NULL, created REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS oauth_requests (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, state TEXT NOT NULL, scopes TEXT NOT NULL, resource TEXT NOT NULL, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS oauth_codes (hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, resource TEXT NOT NULL, grant_id TEXT NOT NULL, expires REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, device_id TEXT, project_id TEXT, actor TEXT NOT NULL, grant_id TEXT, tool TEXT NOT NULL, args_summary TEXT NOT NULL, fingerprint TEXT NOT NULL, idem TEXT, state TEXT NOT NULL, result TEXT, error TEXT, output TEXT NOT NULL DEFAULT '', created REAL NOT NULL, updated REAL NOT NULL);
-
-CREATE INDEX IF NOT EXISTS op_recent ON operations(created DESC);
-CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT, status TEXT NOT NULL, detail TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS audit_recent ON audit(at DESC);
-CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT NOT NULL, at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS operation_events (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, source TEXT NOT NULL, seq INTEGER NOT NULL, stage TEXT NOT NULL, at REAL NOT NULL, elapsed_ms INTEGER, detail TEXT NOT NULL DEFAULT '{}', UNIQUE(operation_id,source,seq));
-CREATE INDEX IF NOT EXISTS operation_events_lookup ON operation_events(operation_id,id);
-CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, device_id TEXT NOT NULL, grant_id TEXT, actor TEXT NOT NULL, root TEXT NOT NULL, name TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, created REAL NOT NULL, expires REAL NOT NULL, source_operation_id TEXT NOT NULL DEFAULT '');
-CREATE INDEX IF NOT EXISTS artifacts_scope ON artifacts(grant_id,project_id,created DESC,id DESC);
-"""
+from hub.workspace_schema import SCHEMA
 
 class Store:
     def __init__(self, directory: str | Path):
@@ -120,58 +91,8 @@ class Store:
         return CipherSuite(self.directory, key_path.read_bytes().strip())
 
     def _migrate(self):
-        # Execute DDL within the caller's transaction; executescript would
-        # implicitly commit it before applying the schema.
-        for statement in SCHEMA.split(";"):
-            if statement.strip() and not statement.lstrip().startswith("PRAGMA"):
-                self.db.execute(statement)
-        self.db.execute("INSERT OR IGNORE INTO meta VALUES ('schema', '1')")
-        version = self.db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()[0]
-        if version not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}:
-            raise RuntimeError(f"Unsupported Hub database schema version: {version}")
-        # Additive migration: v1 databases and their audit history remain readable.
-        columns = {r[1] for r in self.db.execute("PRAGMA table_info(operations)")}
-        additions = {
-            "payload": "TEXT", "journal_id": "TEXT", "attempts": "INTEGER NOT NULL DEFAULT 0",
-            "next_attempt": "REAL NOT NULL DEFAULT 0", "deadline": "REAL",
-            "accepted_at": "REAL", "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
-            "output_seq": "INTEGER NOT NULL DEFAULT 0", "transport_error": "TEXT",
-        }
-        for name, definition in additions.items():
-            if name not in columns:
-                self.db.execute(f"ALTER TABLE operations ADD COLUMN {name} {definition}")
-        grant_columns = {r[1] for r in self.db.execute("PRAGMA table_info(grants)")}
-        if "resource" not in grant_columns:
-            self.db.execute("ALTER TABLE grants ADD COLUMN resource TEXT")
-        self.db.execute("CREATE INDEX IF NOT EXISTS op_pending ON operations(state,next_attempt)")
-        if "profile_id" not in grant_columns:
-            self.db.execute("ALTER TABLE grants ADD COLUMN profile_id TEXT REFERENCES access_profiles(id)")
-        self.db.execute("CREATE INDEX IF NOT EXISTS grants_profile ON grants(profile_id)")
-        if "authorization_mode" not in grant_columns:
-            self.db.execute("ALTER TABLE grants ADD COLUMN authorization_mode TEXT NOT NULL DEFAULT 'fixed' CHECK(authorization_mode IN ('fixed','role'))")
-        if "role_id" not in grant_columns:
-            self.db.execute("ALTER TABLE grants ADD COLUMN role_id TEXT REFERENCES access_roles(id)")
-        profile_columns = {r[1] for r in self.db.execute("PRAGMA table_info(access_profiles)")}
-        if "role_id" not in profile_columns:
-            self.db.execute("ALTER TABLE access_profiles ADD COLUMN role_id TEXT REFERENCES access_roles(id)")
-        self.db.execute("CREATE INDEX IF NOT EXISTS profiles_role ON access_profiles(role_id)")
-        self.db.execute("CREATE INDEX IF NOT EXISTS grants_role ON grants(role_id)")
-        from hub.iam_schema import migrate
-        migrate(self.db)
-        from hub.gateway.schema import migrate as migrate_gateway
-        migrate_gateway(self.db)
-        from hub.mcp_tasks_schema import migrate as migrate_tasks
-        migrate_tasks(self.db)
-        from hub.resource_schema import migrate as migrate_resources
-        migrate_resources(self.db)
-        from hub.space_bootstrap import migrate as migrate_spaces
-        migrate_spaces(self.db)
-        from hub.external_plugins.schema import migrate as migrate_plugins
-        migrate_plugins(self.db)
-        from hub.routing_schema import migrate as migrate_routing
-        migrate_routing(self.db)
-        from hub.auth_schema import migrate as migrate_auth
-        migrate_auth(self.db)
+        from hub.workspace_schema import initialize
+        initialize(self.db)
 
     @contextmanager
     def transaction(self, *, immediate=True):
@@ -215,14 +136,11 @@ class Store:
             user = self.one('SELECT id FROM users WHERE username=?', (actor[6:],))
             if user:
                 uid = user['id']
-                if sid is None:
-                    from hub.iam import default_space
-                    sid = default_space(self, uid)
         # Do not retarget a scoped caller's audit entry using an untrusted ID
         # from a denied cross-Space request. Also avoid loading operation bodies
         # just to audit a thin status read.
         tables = {'operation': 'operations', 'project': 'projects', 'device': 'devices',
-                  'profile': 'access_profiles', 'role': 'access_roles',
+                  'profile': 'access_profiles',
                   'artifact': 'artifacts', 'grant': 'grants', 'vps': 'vps_connections'}
         if target_kind is not None and target_kind not in tables:
             raise ValueError('Unknown audit target kind')
@@ -243,7 +161,7 @@ class Store:
         # Conservative invalidation is safe even if the transaction rolls back.
         # No SQL text or bound value is retained in this process-local revision.
         import re
-        if re.search(r"\b(?:sessions|session_security|users|iam_users|spaces|memberships|membership_blocks|external_identities|oidc_providers|access_roles|access_profiles|role_assignments|role_created_projects|grants|tokens|projects|devices|external_integrations|project_integrations|external_plugin_consents|source_roots|source_mounts|action_routes|space_route_defaults|project_action_routes|space_execution_settings|project_execution_settings|gateway_[a-z_]+)\b", sql, re.I):
+        if re.search(r"\b(?:sessions|session_security|users|iam_users|spaces|memberships|membership_blocks|external_identities|oidc_providers|access_profiles|grants|tokens|projects|devices|external_integrations|project_integrations|external_plugin_consents|space_devices|storage_pools|storage_mappings|space_storage|space_storage_mappings|space_folders|space_vps|vps_projects|space_shell_settings|project_shell_settings|space_execution_settings|project_execution_settings|gateway_[a-z_]+)\b", sql, re.I):
             self.session_revision += 1
 
     def after_commit(self, callback):

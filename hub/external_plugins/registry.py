@@ -43,7 +43,7 @@ class Toggle(Contract):
 
 class ConsentInput(Contract):
     confirmed: Literal[True]
-    expected_role_version: int = Field(ge=1)
+    expected_profile_version: int = Field(ge=1)
     review_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
@@ -83,7 +83,7 @@ def make_router(auth, runtime):
 
     def admin(request, write=False):
         runtime.gateway.require_enabled()
-        return auth.admin(request, write)
+        return iam.require_space_capability(store,auth.panel(request,write),'resources')
 
     def own_grant(request, identifier, write=False):
         principal = auth.panel(request, write)
@@ -92,9 +92,9 @@ def make_router(auth, runtime):
         if not grant:
             raise DevError('PLUGIN_GRANT_NOT_FOUND', 'Client connection does not belong to this account', 404)
         iam.validate_grant(store, grant)
-        if not grant.get('profile_id') or not grant.get('role_id'):
-            raise DevError('PLUGIN_CONNECTION_REQUIRED', 'Use a role-backed client connection with explicit external MCP consent', 403)
-        return principal, grant, runtime.grant_principal(grant)
+        if not grant.get('profile_id'):
+            raise DevError('PLUGIN_CONNECTION_REQUIRED', 'Use a workspace/Profile connection with explicit external MCP consent', 403)
+        return principal, grant, runtime.grant_principal(grant['id'])
 
     @router.get('/api/external-plugins')
     @database_endpoint(store)
@@ -102,14 +102,14 @@ def make_router(auth, runtime):
         auth.panel(request)
         return {'api_version': 1, 'plugins': plugins.registry.catalog(), 'installation': 'deployment-owned'}
 
-    @router.get('/api/external-integrations')
+    @router.get('/api/spaces/{space_id}/external-integrations')
     @database_endpoint(store)
     def list_integrations(request: Request):
         principal = admin(request)
         rows = store.all('SELECT * FROM external_integrations WHERE space_id=? ORDER BY alias,id', (principal.space_id,))
         return {'integrations': [public_integration(r) for r in rows]}
 
-    @router.put('/api/external-integrations/{alias}')
+    @router.put('/api/spaces/{space_id}/external-integrations/{alias}')
     @database_endpoint(store)
     def save_integration(alias: str, request: Request, body: IntegrationInput):
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,19}', alias):
@@ -142,7 +142,7 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'plugin.integration_saved', identifier, detail={'plugin_id': spec.id}, commit=False)
             return public_integration(store.one('SELECT * FROM external_integrations WHERE id=?', (identifier,)))
 
-    @router.patch('/api/external-integrations/{identifier}')
+    @router.patch('/api/spaces/{space_id}/external-integrations/{identifier}')
     @database_endpoint(store)
     def toggle_integration(identifier: str, request: Request, body: Toggle):
         principal = admin(request, True)
@@ -154,7 +154,7 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'plugin.integration_toggled', identifier, detail={'enabled': body.enabled}, commit=False)
         return {'ok': True}
 
-    @router.get('/api/external-integrations/{identifier}/projects')
+    @router.get('/api/spaces/{space_id}/external-integrations/{identifier}/projects')
     @database_endpoint(store)
     def attachments(identifier: str, request: Request):
         principal = admin(request)
@@ -164,7 +164,7 @@ def make_router(auth, runtime):
             WHERE pi.integration_id=? AND p.space_id=? ORDER BY pi.project_id''', (identifier, principal.space_id))
         return {'attachments': [{**r, 'config': json.loads(r['config'])} for r in rows]}
 
-    @router.put('/api/external-integrations/{identifier}/projects/{project_id}')
+    @router.put('/api/spaces/{space_id}/external-integrations/{identifier}/projects/{project_id}')
     @database_endpoint(store)
     def attach(identifier: str, project_id: str, request: Request, body: AttachmentInput):
         principal = admin(request, True)
@@ -187,7 +187,7 @@ def make_router(auth, runtime):
             row = store.one('SELECT * FROM project_integrations WHERE integration_id=? AND project_id=?', (identifier, project_id))
             return {**row, 'config': json.loads(row['config'])}
 
-    @router.delete('/api/external-integrations/{identifier}/projects/{project_id}')
+    @router.delete('/api/spaces/{space_id}/external-integrations/{identifier}/projects/{project_id}')
     @database_endpoint(store)
     def detach(identifier: str, project_id: str, request: Request, expected_version: int = Query(ge=1)):
         principal = admin(request, True)
@@ -201,36 +201,36 @@ def make_router(auth, runtime):
             store.audit(principal.actor, 'plugin.project_detached', project_id, detail={'integration_id': identifier}, commit=False)
         return {'ok': True, 'resource_deleted': False}
 
-    @router.get('/api/external-integrations/grants/{identifier}/consent')
+    @router.get('/api/spaces/{space_id}/external-integrations/grants/{identifier}/consent')
     @database_endpoint(store)
     def preview(identifier: str, request: Request):
         _, grant, caller = own_grant(request, identifier)
-        role = store.one('SELECT version FROM access_roles WHERE id=?', (grant['role_id'],))
-        if not role:
-            raise DevError('PLUGIN_ROLE_CHANGED', 'Role is no longer available', 409)
+        profile = store.one('SELECT version FROM access_profiles WHERE id=? AND space_id=?',(grant['profile_id'],grant['space_id']))
+        if not profile:
+            raise DevError('PLUGIN_PROFILE_CHANGED','Profile is no longer available', 409)
         approved = store.one('SELECT 1 AS ok FROM external_plugin_consents WHERE grant_id=?', (grant['id'],))
-        return {**plugins.consent_preview(caller), 'role_version': role['version'], 'has_consent': bool(approved)}
+        return {**plugins.consent_preview(caller), 'profile_version':profile['version'], 'has_consent': bool(approved)}
 
-    @router.post('/api/external-integrations/grants/{identifier}/consent')
+    @router.post('/api/spaces/{space_id}/external-integrations/grants/{identifier}/consent')
     @database_endpoint(store)
     def consent(identifier: str, request: Request, body: ConsentInput):
         with store.transaction():
             principal, grant, caller = own_grant(request, identifier, True)
-            role = store.one('SELECT version,enabled FROM access_roles WHERE id=?', (grant['role_id'],))
-            if not role or not role['enabled'] or role['version'] != body.expected_role_version:
-                raise DevError('PLUGIN_ROLE_CHANGED', 'Role changed; review the current actions', 409)
+            profile=store.one('SELECT version,enabled FROM access_profiles WHERE id=? AND space_id=?',(grant['profile_id'],grant['space_id']))
+            if not profile or not profile['enabled'] or profile['version']!=body.expected_profile_version:
+                raise DevError('PLUGIN_PROFILE_CHANGED','Profile changed; review the current actions', 409)
             selection = plugins.consent_preview(caller)
             if not selection['snapshot'] or selection['review_hash'] != body.review_hash:
                 raise DevError('PLUGIN_REVIEW_CHANGED', 'No eligible actions or the reviewed targets changed', 409)
-            store.db.execute('''INSERT INTO external_plugin_consents(grant_id,space_id,user_id,profile_id,role_id,snapshot,created)
-                VALUES(?,?,?,?,?,?,?) ON CONFLICT(grant_id) DO UPDATE SET space_id=excluded.space_id,
-                user_id=excluded.user_id,profile_id=excluded.profile_id,role_id=excluded.role_id,
+            store.db.execute('''INSERT INTO external_plugin_consents(grant_id,space_id,user_id,profile_id,snapshot,created)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(grant_id) DO UPDATE SET space_id=excluded.space_id,
+                user_id=excluded.user_id,profile_id=excluded.profile_id,
                 snapshot=excluded.snapshot,created=excluded.created''', (grant['id'], grant['space_id'], grant['user_id'],
-                grant['profile_id'], grant['role_id'], catalog.encoded(selection['snapshot']), time.time()))
+                grant['profile_id'], catalog.encoded(selection['snapshot']), time.time()))
             store.audit(principal.actor, 'plugin.actions_consented', grant['id'], detail={'review_hash': selection['review_hash']}, commit=False)
         return {'ok': True, 'review_hash': selection['review_hash'], 'follows_future_plugin_changes': False}
 
-    @router.delete('/api/external-integrations/grants/{identifier}/consent')
+    @router.delete('/api/spaces/{space_id}/external-integrations/grants/{identifier}/consent')
     @database_endpoint(store)
     def revoke(identifier: str, request: Request):
         with store.transaction():

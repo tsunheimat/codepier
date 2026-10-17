@@ -29,13 +29,14 @@ def help_result(tool='', action=''):
     catalogs = {**CORE_ACTIONS,
         **{name: {'file': name, **CORE_ACTIONS[name]} for name in ('read', 'write', 'edit')},
         'exec': {'run': 'exec'}, 'vps': {'list': 'vps'},
+        'session': {op:'session' for op in ('open','exec','read','write','resize','signal','status','close')},
+        'get_execution_options': {'get':'get_execution_options'},
         'workspace': {**CORE_ACTIONS['workspace'], **WORKSPACE},
         'process': {**CORE_ACTIONS['process'], **{operation: 'operations_' + operation
             for operation in ('list', 'get', 'wait', 'cancel', 'trace')},
             'diagnostics': 'diagnostics_get', 'activity': 'activity_list'},
         'browser': {op: 'browser_' + op for op in ('status', 'open', 'snapshot', 'action', 'close')},
         'computer': COMPUTER}
-    catalogs['conversations'] = {op: 'conversations' for op in ('list', 'get', 'associate')}
     if not tool or not action:
         return {'tools': {name: {'operations': sorted(actions),
             'help': {'tool': 'project_query', 'arguments': {'operation': 'help', 'tool': name, 'action': '<operation>'}}}

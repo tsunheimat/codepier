@@ -86,13 +86,13 @@ class Gateway:
     def tools(self, principal):
         if not self.enabled:
             return []
-        result = [catalog.definition(binding['alias'], tool, principal.authorization_mode) for binding, tool in policy.visible_tools(self.store, principal)]
+        result = [catalog.definition(binding['alias'], tool) for binding, tool in policy.visible_tools(self.store, principal)]
         result.extend(self.plugins.tools(principal))
         try:
             policy.grant_context(self.store, principal)
         except DevError:
             return result
-        return result + [catalog.status_definition(principal.authorization_mode)]
+        return result + [catalog.status_definition()]
 
     def list_tools(self, principal, native, cursor=None):
         return catalog.page(native + self.tools(principal), cursor,

@@ -451,8 +451,9 @@ MUTATING = {name for name, tool in TOOLS.items() if tool.scope != 'read' and nam
 PROCESS_TOOLS |= {'routed_exec', 'routed_job_control', 'exec', 'validation_run', 'lsp_query', 'worktrees_create', 'worktrees_remove'}
 
 
-from shared.role_contracts import register as register_roles, ROLE_SCOPE, ROLE_TOOLS
-register_roles(Tool, Empty, Args, TOOLS, OUTPUT_SCHEMAS)
+from shared.workspace_contracts import WORKSPACE_SCOPE
+from shared.workspace_tools import register as register_workspace_resources, WORKSPACE_TOOLS
+register_workspace_resources(Tool, Empty, Args, TOOLS, OUTPUT_SCHEMAS)
 READ_WITH_SCOPE = READ_WITH_SCOPE | {'devices_list'}
 MUTATING = {name for name, tool in TOOLS.items() if tool.scope != 'read' and name not in COMPUTER_READ_TOOLS | READ_WITH_SCOPE}
 
@@ -535,9 +536,15 @@ def _compact_input_schema(schema, *, output=False):
     return result
 
 
-def tool_definitions(profile="core", authorization="fixed"):
+from shared.session_contracts import register as register_session_tools
+register_session_tools(Tool, TOOLS, OUTPUT_SCHEMAS)
+PROCESS_TOOLS = frozenset(PROCESS_TOOLS) | {'session'}
+MUTATING = frozenset(MUTATING) | {'session'}
+
+
+def tool_definitions(profile="core", authorization="workspace"):
     from shared.mcp_presentation import output_schema
-    if authorization not in {"fixed", "role"}:
+    if authorization != "workspace":
         raise ValueError("Unknown authorization mode")
     if profile not in {"core", "full", "coding"}:
         raise ValueError("Unknown MCP tool profile")
@@ -546,7 +553,7 @@ def tool_definitions(profile="core", authorization="fixed"):
              "annotations": {"readOnlyHint": t.scope in {"read", "devices.read"} or name in COMPUTER_READ_TOOLS, "destructiveHint": t.destructive,
                              "idempotentHint": True, "openWorldHint": t.scope in {"execute", "computer"}},
              "_meta": {"securitySchemes": [{"type": "oauth2", "scopes": [t.scope]}]}}
-            for name, t in TOOLS.items() if name in CORE_TOOLS | QUERY_TOOLS or name in {"get_profile", "get_access_context"}]
+            for name, t in TOOLS.items() if name in CORE_TOOLS | QUERY_TOOLS | WORKSPACE_TOOLS | {'session'} or name in {"get_profile", "get_access_context"}]
     if profile in {"full", "coding", "core"}:
         for definition in result:
             definition['inputSchema'] = _compact_input_schema(definition['inputSchema'])
@@ -559,9 +566,9 @@ def tool_definitions(profile="core", authorization="fixed"):
     for item in result:
         if item['name'] == 'get_profile':
             item['_meta']['openai/profile'] = True
-        if authorization == 'role':
-            schemes = [{'type': 'oauth2', 'scopes': [ROLE_SCOPE]}]
+        if authorization == 'workspace':
+            schemes = [{'type': 'oauth2', 'scopes': [WORKSPACE_SCOPE]}]
             item['securitySchemes'] = schemes
             item['_meta']['securitySchemes'] = schemes
-            item['_meta']['codepier/authorizationMode'] = 'role'
+            item['_meta']['codepier/authorizationMode'] = 'workspace'
     return result

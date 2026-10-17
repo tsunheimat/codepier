@@ -10,7 +10,7 @@ import time
 
 from jsonschema import Draft202012Validator
 from shared.util import DevError, valid_json_value
-from shared.role_contracts import ROLE_SCOPE
+from shared.workspace_contracts import WORKSPACE_SCOPE
 
 TOOL_NAME = re.compile(r'^[A-Za-z0-9_.-]{1,128}$')
 ALIAS = re.compile(r'^[a-z][a-z0-9_]{0,19}$')
@@ -85,22 +85,22 @@ def public_name(alias, name):
     return full
 
 
-def definition(alias, tool, authorization='role'):
+def definition(alias, tool):
     value = dict(tool)
     value['name'] = public_name(alias, tool['name'])
     value['description'] = f'[{alias}] ' + tool['description']
-    schemes = [{'type': 'oauth2', 'scopes': [ROLE_SCOPE if authorization == 'role' else 'read']}]
+    schemes = [{'type': 'oauth2', 'scopes': [WORKSPACE_SCOPE]}]
     value['securitySchemes'] = schemes
     value['_meta'] = {'securitySchemes': schemes}
     return value
 
 
-def status_definition(authorization='role'):
+def status_definition():
     return {'name': STATUS_TOOL, 'description': 'Read the receipt of a gateway call using its original call_id. Never executes or retries the backend operation. Results remain bound to the original grant and current permission.',
             'inputSchema': {'type': 'object', 'properties': {'call_id': {'type': 'string', 'maxLength': 64}},
                             'required': ['call_id'], 'additionalProperties': False},
             'annotations': {'readOnlyHint': True, 'destructiveHint': False, 'idempotentHint': True, 'openWorldHint': False},
-            '_meta': {'securitySchemes': [{'type': 'oauth2', 'scopes': [ROLE_SCOPE if authorization == 'role' else 'read']}]}}
+            '_meta': {'securitySchemes': [{'type': 'oauth2', 'scopes': [WORKSPACE_SCOPE]}]}}
 
 
 def validate_arguments(tool, arguments, *, schema_check=True):

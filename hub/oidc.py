@@ -27,6 +27,7 @@ from typing import Literal
 
 from hub.db_worker import database_endpoint
 from hub.access import AccessModel
+from hub.permissions import AccessPolicy, validate_policy
 from hub import iam
 from hub.config import OIDC_SEED_PROVIDER_ID
 from shared.config import ConfigurationError
@@ -118,9 +119,7 @@ class ProviderInput(AccessModel):
 class GroupMappingInput(AccessModel):
     group_name: str = Field(min_length=1,max_length=200)
     space_id: str = Field(min_length=1,max_length=100)
-    level: Literal['admin','member','guest'] = 'member'
-    role_id: str | None = Field(default=None,max_length=100)
-    may_delegate: bool = False
+    policy: AccessPolicy
     expected_version: int | None = Field(default=None,ge=1)
 
 
@@ -389,7 +388,7 @@ class OIDCService:
         return {'group_policy_source':'userinfo','group_policy_required':required,'warnings':warnings}
 
     def warn_group_compatibility(self):
-        # Runs once at Hub startup, including an upgrade/reopen of schema 10.
+        # Runs once at workspace Hub startup.
         # No provider labels, group names or identity/credential data are logged.
         if self.store.one("SELECT 1 AS ok FROM oidc_providers p WHERE p.required_group<>'' OR EXISTS (SELECT 1 FROM group_mappings m WHERE m.provider_id=p.id) LIMIT 1"):
             import logging
@@ -402,14 +401,11 @@ class OIDCService:
         """Called in a write transaction. Remove only this identity's sources."""
         store=self.store;prefix='oidc:'+identity['id']+':'
         store.db.execute('UPDATE memberships SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',(identity['user_id'],len(prefix),prefix))
-        store.db.execute('UPDATE role_assignments SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',(identity['user_id'],len(prefix),prefix))
         expires=time.time()+provider['freshness_seconds']
         for mapping in store.all('SELECT * FROM group_mappings WHERE provider_id=?',(provider['id'],)):
             if mapping['group_name'] not in groups:continue
             source=prefix+mapping['id']
-            store.db.execute('INSERT INTO memberships(space_id,user_id,source,level,active,expires) VALUES(?,?,?,?,1,?) ON CONFLICT(space_id,user_id,source) DO UPDATE SET level=excluded.level,active=1,expires=excluded.expires,version=memberships.version+1',(mapping['space_id'],identity['user_id'],source,mapping['level'],expires))
-            if mapping['role_id']:
-                store.db.execute('INSERT INTO role_assignments(role_id,user_id,space_id,source,may_delegate,active,expires) VALUES(?,?,?,?,?,1,?) ON CONFLICT(role_id,user_id,source) DO UPDATE SET may_delegate=excluded.may_delegate,active=1,expires=excluded.expires,version=role_assignments.version+1',(mapping['role_id'],identity['user_id'],mapping['space_id'],source,mapping['may_delegate'],expires))
+            store.db.execute('INSERT INTO memberships(space_id,user_id,source,policy,active,expires) VALUES(?,?,?,?,1,?) ON CONFLICT(space_id,user_id,source) DO UPDATE SET policy=excluded.policy,active=1,expires=excluded.expires,version=memberships.version+1',(mapping['space_id'],identity['user_id'],source,mapping['policy'],expires))
         store.db.execute("UPDATE external_identities SET groups_json=?,checked_at=?,fresh_until=?,enabled=1,disabled_reason='' WHERE id=?",(json.dumps(groups),time.time(),expires,identity['id']))
         self.runtime.wake_delivery();self.runtime.publish('iam',{'user_id':identity['user_id']})
 
@@ -421,7 +417,7 @@ class OIDCService:
         """
         prefix='oidc:'+identity['id']+':'
         self.store.db.execute('UPDATE external_identities SET enabled=0,disabled_reason=?,fresh_until=0 WHERE id=?',(reason,identity['id']))
-        for table in ('memberships','role_assignments'):
+        for table in ('memberships',):
             self.store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',(identity['user_id'],len(prefix),prefix))
         self.store.db.execute('DELETE FROM sessions WHERE id_hash IN (SELECT session_hash FROM session_security WHERE identity_id=?)',(identity['id'],))
         if revoke:
@@ -457,7 +453,7 @@ class OIDCService:
                 store.db.execute('UPDATE external_identities SET fresh_until=0,checked_at=0 WHERE provider_id=?',(identifier,))
                 for identity in store.all('SELECT * FROM external_identities WHERE provider_id=?',(identifier,)):
                     prefix='oidc:'+identity['id']+':'
-                    for table in ('memberships','role_assignments'):
+                    for table in ('memberships',):
                         store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE substr(source,1,?)=?',(len(prefix),prefix))
         else:
             store.db.execute('INSERT INTO oidc_providers(id,label,issuer,client_id,client_secret,discovery_url,enabled,admission,group_claim,required_group,scopes,endpoint_origins,freshness_seconds,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(identifier,*values,time.time()))
@@ -638,7 +634,7 @@ class OIDCService:
                 if not still_current():return
                 self.store.db.execute('UPDATE external_identities SET fresh_until=0 WHERE id=?',(identifier,))
                 prefix='oidc:'+identifier+':'
-                for table in ('memberships','role_assignments'):
+                for table in ('memberships',):
                     self.store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',
                                           (identity['user_id'],len(prefix),prefix))
                 self.runtime.publish('iam',{'user_id':identity['user_id']})
@@ -774,8 +770,7 @@ class OIDCService:
         @database_endpoint(store)
         def mapping_targets(request:Request):
             auth.instance(request)
-            return {'spaces':store.all("SELECT id,label FROM spaces WHERE active=1 AND kind='team'"),
-                    'roles':store.all("SELECT r.id,r.label,r.space_id FROM access_roles r JOIN spaces s ON s.id=r.space_id WHERE s.active=1 AND s.kind='team'")}
+            return {'spaces':store.all("SELECT id,label FROM spaces WHERE active=1 AND kind='workspace'")}
 
         @router.get('/api/iam/oidc/providers/{identifier}/mappings')
         @database_endpoint(store)
@@ -789,10 +784,13 @@ class OIDCService:
             p=auth.instance(request,True);self.provider(identifier,enabled=False)
             with store.lock,store.db:
                 store.db.execute('BEGIN IMMEDIATE');auth.instance(request,True)
-                if not store.one("SELECT id FROM spaces WHERE id=? AND active=1 AND kind='team'",(body.space_id,)):raise DevError('SPACE_NOT_FOUND','空间不存在',404)
-                if body.role_id and not store.one('SELECT id FROM access_roles WHERE id=? AND space_id=?',(body.role_id,body.space_id)):raise DevError('ROLE_NOT_FOUND','角色不属于指定空间',404)
+                if not store.one("SELECT id FROM spaces WHERE id=? AND active=1 AND kind='workspace'",(body.space_id,)):raise DevError('SPACE_NOT_FOUND','空间不存在',404)
+                scoped = auth.panel(request, True, space_id=body.space_id)
+                iam.require_space_capability(store, scoped, 'members')
+                from hub.iam_api import delegation_guard
+                delegation_guard(store, scoped, body.policy)
                 mid='map_'+uuid.uuid4().hex
-                store.db.execute('INSERT INTO group_mappings(id,provider_id,group_name,space_id,level,role_id,may_delegate) VALUES(?,?,?,?,?,?,?)',(mid,identifier,body.group_name,body.space_id,body.level,body.role_id,int(body.may_delegate)))
+                store.db.execute('INSERT INTO group_mappings(id,provider_id,group_name,space_id,policy) VALUES(?,?,?,?,?)',(mid,identifier,body.group_name,body.space_id,body.policy.model_dump_json()))
                 store.db.execute('UPDATE external_identities SET checked_at=0 WHERE provider_id=?',(identifier,))
                 iam.audit(store,p,'oidc.mapping_created',mid)
             return store.one('SELECT * FROM group_mappings WHERE id=?',(mid,))
@@ -806,7 +804,7 @@ class OIDCService:
                 if not row:raise DevError('MAPPING_NOT_FOUND','映射不存在',404)
                 for identity in store.all('SELECT id FROM external_identities WHERE provider_id=?',(row['provider_id'],)):
                     source='oidc:'+identity['id']+':'+identifier
-                    store.db.execute('UPDATE memberships SET active=0,version=version+1 WHERE source=?',(source,));store.db.execute('UPDATE role_assignments SET active=0,version=version+1 WHERE source=?',(source,))
+                    store.db.execute('UPDATE memberships SET active=0,version=version+1 WHERE source=?',(source,))
                 store.db.execute('DELETE FROM group_mappings WHERE id=?',(identifier,));iam.audit(store,p,'oidc.mapping_deleted',identifier)
             return {'ok':True}
 

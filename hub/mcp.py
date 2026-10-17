@@ -11,7 +11,7 @@ from shared.config import env_csv
 from hub.db_worker import database_endpoint
 from hub.principal import refresh_principal
 from hub.tool_router import ToolRouter
-from shared.role_contracts import ROLE_SCOPE
+from shared.workspace_contracts import WORKSPACE_SCOPE
 import json,os
 from fastapi import APIRouter,Request
 from fastapi.responses import JSONResponse,Response
@@ -74,7 +74,7 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         request_public_url=lambda:public_base
         authorization=request.query_params.get('authorization','fixed')
         if authorization not in {'fixed','role'}:return failure(None,-32602,'Unknown authorization mode',400)
-        auth_scope=ROLE_SCOPE if authorization=='role' else 'read'
+        auth_scope=WORKSPACE_SCOPE if authorization=='role' else 'read'
         mark('authenticate')
         try:principal=await runtime.store.run(auth.bearer, request)
         except DevError as exc:
@@ -213,9 +213,8 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                     if exc.details.get('call_id'):result['_meta']={'codepier/callId':exc.details['call_id']}
                     if trace:trace['status']='tool_error';trace['operation_id']=exc.details.get('operation_id')
                     if exc.code=='INSUFFICIENT_SCOPE':
-                        scopes=[ROLE_SCOPE] if principal.authorization_mode=='role' else sorted({'read',exc.details.get('required_scope', TOOLS[name].scope)}) if name in TOOLS else ['read']
+                        scopes=[WORKSPACE_SCOPE]
                         metadata_url=public_base+'/.well-known/oauth-protected-resource/mcp'
-                        if principal.authorization_mode=='role':metadata_url+='?authorization=role'
                         challenge='Bearer resource_metadata="'+metadata_url+'", error="insufficient_scope", scope="'+' '.join(scopes)+'"'
                         result['_meta']={'mcp/www_authenticate':[challenge]}
             elif method=='resources/list':
