@@ -1,169 +1,176 @@
-"""Password SSH uses real child processes and an isolated MCP stack, no live VPS."""
+"""Runner-owned OpenSSH regression contracts; no live host or password adapter.
+
+Replaces password/sshpass tests with saved-reference authorization. Preserve
+injection, secret-output, process receipt, failure and cancellation coverage under
+the new transport. Real workspace admission/revocation cases live in test_vps.
+"""
 from __future__ import annotations
 
-import asyncio
-import contextlib
+import copy
 import json
-import os
-import sqlite3
-import sys
+import shlex
+import subprocess
 import uuid
 
 import pytest
 from pydantic import ValidationError
 
-from agent.ssh import prepare_ssh, ssh_error
-from shared.contracts import SSHExec, tool_definitions
-from shared.contracts import ShellExec, _compact_input_schema
+from agent.execution import SSHBackend
+from agent.ssh import remote_script, ssh_argv, ssh_error, target_config, target_fingerprint, validate_ssh
+from shared.contracts import _compact_input_schema
+from shared.core_contracts import Exec
 from shared.secret_output import SecretOutput
-from shared.util import DevError, safe_summary
-from tests.test_shell import shell_agent  # noqa: F401
-from tests.support import wait_for
+from shared.util import DevError
+from tests.test_execution_workspace import setup
+from tests.workspace_stack import workspace_stack
+
+SECRET = "fixture-only-'$; with spaces"
+TARGET = 'vps:' + 'a'*32
 
 
-PASSWORD = "fixture-only-'$; with spaces"
+def saved_project():
+    return {'id': None, 'root': '', '_vps_context': {
+        'id': 'a'*32, 'resource_id': 'server', 'connection_ref': 'prod'},
+        '_ssh_target': {'vps_id': 'a'*32, 'resource_id': 'server', 'connection_ref': 'prod'}}
 
 
-def args(**overrides):
-    return {'project': 'fixture', 'host': 'vps.example.invalid', 'username': 'root',
-            'password': PASSWORD, 'command': 'printf remote-ok',
-            'idempotency_key': uuid.uuid4().hex, **overrides}
+@pytest.mark.parametrize('alias', ['-oProxyCommand=evil', 'a;id', 'user@host',
+    'https://host', 'host:22', 'a b', '*', 'x\nHost other', 'x\x00', ''])
+def test_host_alias_is_one_saved_literal_not_arguments(alias):
+    with pytest.raises(ValueError):
+        validate_ssh({'enabled': True, 'targets': {'prod': {'host_alias': alias}}})
 
 
-def fake_transport(directory):
-    directory.mkdir()
-    # Password is supplied ONLY via env; the transport checks argv and executes
-    # a local fixture command to exercise the process lifecycle deterministically.
-    (directory / 'sshpass').write_text(f'#!{sys.executable}\n'
-        'import os,sys\nassert sys.argv[1] == "-e"\nos.execv(sys.argv[2],sys.argv[2:])\n')
-    (directory / 'ssh').write_text(f'#!{sys.executable}\n'
-        'import os,sys,subprocess,time\n'
-        'a=sys.argv[1:]; p=os.environ["SSHPASS"]\n'
-        'assert p not in " ".join(a)\n'
-        'assert "BatchMode=no" in a and "PubkeyAuthentication=no" in a\n'
-        'assert "StrictHostKeyChecking=yes" in a or "StrictHostKeyChecking=accept-new" in a\n'
-        'if p == "wrong":\n'
-        ' print("Permission denied, please try again.",flush=True);sys.exit(5)\n'
-        'assert a[a.index("--")+1] == "vps.example.invalid"\n'
-        'print("transport-ready",flush=True)\n'
-        'sys.stdout.write(p[:8]);sys.stdout.flush();time.sleep(.3)\n'
-        'sys.stdout.write(p[8:]+"\\n");sys.stdout.flush()\n'
-        'sys.exit(subprocess.call(["/bin/sh","-c",a[-1]]))\n')
-    for file in directory.iterdir():
-        file.chmod(0o700)
-    return str(directory) + os.pathsep + os.defpath
-
-
-@pytest.mark.parametrize('overrides', [
-    {'host': '-oProxyCommand=evil'}, {'host': 'a;id'}, {'host': 'user@host'},
-    {'host': 'https://host'}, {'host': 'host:22'}, {'host': 'a b'},
-    {'username': '-root'}, {'username': 'root@host'}, {'port': 0}, {'port': True},
-    {'password': ''}, {'password': 'p\nnext'}, {'password': 'p\x00'},
-    {'command': '\x00'}, {'command': ' '}, {'host_key_policy': 'no'},
-])
-def test_bad_ssh_arguments(overrides):
+@pytest.mark.parametrize('field,value', [('password', SECRET), ('username', 'root'),
+    ('port', 22), ('host', 'elsewhere.invalid'), ('config_file', '/tmp/agent-selected')])
+def test_mcp_cannot_supply_credentials_or_transport_settings(field, value):
     with pytest.raises(ValidationError):
-        SSHExec(**args(**overrides))
+        Exec(target=TARGET, command='true', idempotency_key=uuid.uuid4().hex, **{field: value})
 
 
-@pytest.mark.parametrize('host', ['127.0.0.1', '::1', '2001:db8::1', 'vps.example.invalid', 'host-name'])
-def test_ssh_hosts_and_credential_repr(host):
-    value = SSHExec(**args(host=host))
-    assert PASSWORD not in repr(value)
-    assert PASSWORD not in json.dumps(safe_summary(value.model_dump()))
+@pytest.mark.parametrize('settings', [None, [], {'enabled': 1}, {'max_timeout_seconds': True},
+    {'max_timeout_seconds': 0}, {'max_timeout_seconds': 86401}, {'password': SECRET},
+    {'targets': {'-bad ref': {'host_alias': 'prod'}}},
+    {'targets': {'prod': {'host_alias': 'prod', 'password': SECRET}}},
+    {'targets': {'prod': {'host_alias': 'prod', 'host_key_policy': 'no'}}},
+    {'targets': {'prod': {'host_alias': 'prod', 'shell': 'sh;id'}}},
+    {'targets': {'prod': {'host_alias': 'prod', 'config_file': './config'}}}])
+def test_runner_configuration_rejects_unknown_or_unsafe_inputs(settings):
+    with pytest.raises(ValueError):
+        validate_ssh(settings)
 
 
-@pytest.mark.parametrize('secret', ['abcabc', 'x', PASSWORD, '中文🔑密码'])
+@pytest.mark.parametrize('denial,code', [('disabled', 'SSH_DISABLED'), ('builtin', 'SSH_DISABLED'),
+    ('missing_binding', 'VPS_TRANSPORT_MISSING'), ('wrong_vps', 'VPS_TRANSPORT_MISSING'),
+    ('wrong_resource', 'VPS_TRANSPORT_MISSING'), ('wrong_reference', 'VPS_TRANSPORT_MISSING'),
+    ('unlisted', 'SSH_TARGET_NOT_CONFIGURED')])
+def test_authority_checked_before_even_resolving_openssh(tmp_path, monkeypatch, denial, code):
+    agent, _ = setup(tmp_path)
+    project = saved_project()
+    if denial == 'disabled': agent.config['ssh']['enabled'] = False
+    elif denial == 'builtin': agent.config['builtin_root_policy'] = True
+    elif denial == 'missing_binding': project.pop('_vps_context')
+    elif denial == 'wrong_vps': project['_ssh_target']['vps_id'] = 'b'*32
+    elif denial == 'wrong_resource': project['_ssh_target']['resource_id'] = 'elsewhere'
+    elif denial == 'wrong_reference': project['_ssh_target']['connection_ref'] = 'other'
+    else: agent.config['ssh']['targets'].clear()
+    monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **kw: pytest.fail('Unauthorized target reached transport lookup'))
+    with pytest.raises(DevError) as failure:
+        ssh_argv(agent.config, project)
+    assert failure.value.code == code
+
+
+@pytest.mark.parametrize('tty,policy', [(False, 'strict'), (True, 'strict'), (False, 'accept-new')])
+def test_ssh_argv_preserves_config_file_as_a_single_argument(tmp_path, monkeypatch, tty, policy):
+    agent, _ = setup(tmp_path)
+    config = tmp_path / 'trusted config with spaces'
+    config.write_text('Host production\n  HostName fixture.invalid\n')
+    agent.config['ssh']['targets']['prod'].update(config_file=str(config), host_key_policy=policy)
+    monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **kw: '/usr/bin/ssh')
+    argv = ssh_argv(agent.config, saved_project(), tty=tty)
+    assert argv[0:2] == ['/usr/bin/ssh', '-tt' if tty else '-T']
+    assert argv[-2:] == ['--', 'production']
+    assert argv[argv.index('-F')+1] == str(config)
+    assert 'BatchMode=yes' in argv
+    assert 'StrictHostKeyChecking=' + ('yes' if policy == 'strict' else 'accept-new') in argv
+    assert not any('sshpass' in value or SECRET in value for value in argv)
+
+
+def test_dependency_config_and_command_timeout_fail_closed(tmp_path, monkeypatch):
+    agent, _ = setup(tmp_path)
+    project = saved_project()
+    monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **kw: None)
+    with pytest.raises(DevError) as missing:
+        ssh_argv(agent.config, project)
+    assert missing.value.code == 'SSH_DEPENDENCY_MISSING'
+    monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **kw: '/usr/bin/ssh')
+    agent.config['ssh']['targets']['prod']['config_file'] = str(tmp_path/'absent')
+    with pytest.raises(DevError) as missing_config:
+        ssh_argv(agent.config, project)
+    assert missing_config.value.code == 'SSH_CONFIG_UNAVAILABLE'
+    agent.config['ssh']['targets']['prod']['config_file'] = None
+    agent.config['ssh']['max_timeout_seconds'] = 5
+    with pytest.raises(DevError) as timeout:
+        SSHBackend(agent).plan(project, {'command': 'true', 'timeout_seconds': 6})
+    assert timeout.value.code == 'SSH_TIMEOUT_LIMIT'
+
+
+def test_saved_target_does_not_require_a_local_project_folder(tmp_path):
+    agent, _ = setup(tmp_path)
+    agent.config['shell']['enabled'] = False
+    assert target_config(agent.config, saved_project())['host_alias'] == 'production'
+
+
+def test_fingerprint_changes_with_connection_and_config_bytes(tmp_path):
+    agent, _ = setup(tmp_path)
+    config = tmp_path/'config'
+    config.write_text('Host production\n  HostName first.invalid\n')
+    agent.config['ssh']['targets']['prod']['config_file'] = str(config)
+    project = saved_project()
+    first = target_fingerprint(agent.config, project)
+    assert first == target_fingerprint(copy.deepcopy(agent.config), project)
+    config.write_text('Host production\n  HostName second.invalid\n')
+    second = target_fingerprint(agent.config, project)
+    assert second != first
+    agent.config['ssh']['targets']['prod']['host_alias'] = 'another'
+    assert target_fingerprint(agent.config, project) not in {first, second}
+
+
+def test_remote_cwd_and_environment_are_quoted_as_data(tmp_path):
+    cwd = tmp_path / "folder '$(touch SHOULD_NOT_EXIST)"
+    cwd.mkdir()
+    value = "x'; touch SHOULD_NOT_EXIST; echo '"
+    script = remote_script({'cwd': str(cwd), 'env': {'VALUE': value}}, 'printf "%s" "$VALUE"')
+    result = subprocess.run(['/bin/sh', '-c', script], cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert result.stdout == value
+    assert not (tmp_path/'SHOULD_NOT_EXIST').exists()
+    assert not (cwd/'SHOULD_NOT_EXIST').exists()
+
+
+@pytest.mark.parametrize('env', [{'X;touch BAD': 'x'}, {'1BAD': 'x'}, {'X': 'a\x00b'}])
+def test_invalid_remote_env_rejected(env):
+    with pytest.raises(DevError) as failure:
+        remote_script({'env': env}, 'true')
+    assert failure.value.code == 'INVALID_ENV'
+
+
+@pytest.mark.parametrize('secret', ['abcabc', 'x', SECRET, '中文🔑密码'])
 def test_stream_redaction_all_split_positions(secret):
     value = 'before:' + secret + ':between:' + secret + ':after'
-    for split in range(len(value) + 1):
+    for split in range(len(value)+1):
         redactor = SecretOutput(secret)
-        first = redactor.feed(value[:split])
-        second = redactor.feed(value[split:])
-        output = first + second + redactor.feed('', final=True)
+        output = redactor.feed(value[:split]) + redactor.feed(value[split:]) + redactor.feed('', final=True)
         assert output == value.replace(secret, '<redacted>')
 
 
-def request(root, **overrides):
-    return {'id': uuid.uuid4().hex, 'tool': 'ssh_exec',
-            'project': {'root': str(root), 'alias': 'fixture', 'mode': 'write', 'allow_tasks': True},
-            'args': args(**overrides)}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('denial', ['disabled', 'unlisted', 'local_tasks', 'project_tasks', 'local_readonly', 'project_readonly'])
-async def test_ssh_permission_denial_before_spawn(shell_agent, monkeypatch, denial):
-    agent, root = shell_agent
-    req = request(root)
-    if denial == 'disabled': agent.config['shell']['enabled'] = False
-    elif denial == 'unlisted': agent.config['shell']['projects'] = []
-    elif denial == 'local_tasks': agent.config['allowed_roots'][0]['allow_tasks'] = False
-    elif denial == 'project_tasks': req['project']['allow_tasks'] = False
-    elif denial == 'local_readonly': agent.config['allowed_roots'][0]['writable'] = False
-    else: req['project']['mode'] = 'read'
-    async def trap(*a, **kw):
-        pytest.fail('Unauthorized SSH reached process creation')
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', trap)
-    await agent.handle(req)
-    result = agent.journal.status(req['id'])['result']
-    assert not result['ok']
-    assert result['error']['code'] in {'SHELL_DISABLED', 'SHELL_NOT_ALLOWED', 'TASKS_DISABLED', 'READ_ONLY'}
-
-
-def test_ssh_dependencies_and_timeout(shell_agent, monkeypatch):
-    agent, root = shell_agent
-    req = request(root)
-    value = SSHExec(**req['args']).model_dump()
-    monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **k: None)
-    with pytest.raises(DevError, match='sshpass') as caught:
-        prepare_ssh(agent.config, req['project'], agent.config['allowed_roots'][0], value)
-    assert caught.value.code == 'SSH_DEPENDENCY_MISSING'
-    agent.config['shell']['max_timeout_seconds'] = 1
-    with pytest.raises(DevError) as caught:
-        prepare_ssh(agent.config, req['project'], agent.config['allowed_roots'][0], value)
-    assert caught.value.code == 'SHELL_TIMEOUT_LIMIT'
-
-
-@pytest.mark.asyncio
-async def test_ssh_process_credentials_redaction_and_idempotency(shell_agent, tmp_path):
-    agent, root = shell_agent
-    agent.config['shell']['env'] = {'PATH': fake_transport(tmp_path / 'bin')}
-    # The local Codex guard remains enabled and does not block ordinary SSH.
-    agent.config['mcp_policy']['block_local_codex'] = True
-    req = request(root, command='printf once >> count; printf remote-ok; exit 7')
-    await agent.handle(req)
-    await agent.handle(req)
-    state = agent.journal.status(req['id'])
-    data = state['result']['data']
-    assert data['exit_code'] == 7 and data['ssh_error'] == 'SSH_COMMAND_OR_CONNECTION_FAILED'
-    assert 'remote-ok' in data['output'] and '<redacted>' in data['output']
-    assert (root / 'count').read_text() == 'once'
-    assert PASSWORD not in json.dumps(state)
-    assert PASSWORD not in json.dumps(agent.pending_output)
-    assert PASSWORD not in str(agent.journal.db.execute('SELECT * FROM calls').fetchall())
-
-
-@pytest.mark.asyncio
-async def test_invalid_password_never_leaks_validation_input(shell_agent):
-    agent, root = shell_agent
-    req = request(root, password=PASSWORD + '\n')
-    await agent.handle(req)
-    result = agent.journal.status(req['id'])['result']
-    assert result['error']['code'] == 'INVALID_ARGUMENTS'
-    assert PASSWORD not in json.dumps(result)
-
-
-def test_ssh_catalog_and_error_classification():
-    for profile in ('full', 'coding'):
-        tool = next(t for t in tool_definitions(profile) if t['name'] == 'exec')
-        assert not tool['annotations']['readOnlyHint']
-        assert tool['annotations']['destructiveHint'] and tool['annotations']['openWorldHint']
-        assert set(tool['securitySchemes'][0]['scopes']) == {'read', 'execute'}
-    for output, code in [('Permission denied (password).', 'SSH_AUTH_FAILED'),
-                         ('Host key verification failed.', 'SSH_HOST_KEY_UNTRUSTED'),
-                         ('REMOTE HOST IDENTIFICATION HAS CHANGED!', 'SSH_HOST_KEY_CHANGED'),
-                         ('remote exit 5', 'SSH_COMMAND_OR_CONNECTION_FAILED')]:
-        assert ssh_error({'exit_code': 5, 'output': output}) == code
+@pytest.mark.parametrize('result,code', [({'exit_code': 0}, None),
+    ({'cancelled': True}, 'SSH_CANCELLED'), ({'timed_out': True}, 'SSH_TIMEOUT'),
+    ({'exit_code': 255, 'output': 'Permission denied (publickey).'}, 'SSH_AUTH_FAILED'),
+    ({'exit_code': 255, 'output': 'Host key verification failed.'}, 'SSH_HOST_KEY_UNTRUSTED'),
+    ({'exit_code': 255, 'output': 'REMOTE HOST IDENTIFICATION HAS CHANGED!'}, 'SSH_HOST_KEY_CHANGED'),
+    ({'exit_code': 7, 'output': 'remote exit'}, 'SSH_COMMAND_OR_CONNECTION_FAILED')])
+def test_ssh_error_classification(result, code):
+    assert ssh_error(result) == code
 
 
 def test_compact_schema_preserves_named_title_fields_and_validation():
@@ -174,71 +181,50 @@ def test_compact_schema_preserves_named_title_fields_and_validation():
     assert compact['required'] == ['title'] and schema['title'] == 'Display'
 
 
-@pytest.mark.asyncio
-async def test_existing_local_script_password_env_is_redacted(shell_agent):
-    agent, root = shell_agent
-    req = request(root)
-    req['tool'] = 'shell_exec'
-    req['args'] = ShellExec(project='fixture', command='printf "%s" "$SSHPASS"',
-                            env={'SSHPASS': PASSWORD}, idempotency_key=uuid.uuid4().hex).model_dump()
-    await agent.handle(req)
-    state = agent.journal.status(req['id'])
-    assert state['result']['data']['output'] == '<redacted>'
-    assert PASSWORD not in json.dumps(state)
+@pytest.mark.integration
+def test_mcp_saved_ssh_real_process_receipt_once_and_no_credential_fields(tmp_path):
+    with workspace_stack(tmp_path/'ssh') as server:
+        count = server.directory/'count'
+        arguments = {'target': TARGET, 'command': 'printf once >> ' + shlex.quote(str(count)) + '; printf remote-ok',
+                     'idempotency_key': uuid.uuid4().hex, 'yield_seconds': 0}
+        first = server.mcp('exec', arguments)
+        second = server.mcp('exec', arguments)
+        assert first['operation_id'] == second['operation_id']
+        result = server.finish(first)
+        assert result['output'] == 'remote-ok'
+        assert count.read_text() == 'once'
+        public = server.mcp('vps')['vps'][0]
+        assert not {'password', 'private_key', 'config_file', 'connection_ref'} & public.keys()
+        assert SECRET not in json.dumps(public)
 
 
-@pytest.fixture
-def ssh_vps_stack(stack):
-    # Import after module initialization: the VPS fixture reuses our fake SSH.
-    from tests.test_vps import vps_stack
-    yield from vps_stack.__wrapped__(stack)
+@pytest.mark.integration
+def test_hub_restart_recovers_original_ssh_operation_without_reexecution(tmp_path):
+    from tests.support import wait_for
+    with workspace_stack(tmp_path/'recovery') as server:
+        count = server.directory/'count'
+        values = {'target': TARGET, 'command': 'printf once >> '+shlex.quote(str(count))+
+            '; sleep 5; printf recovered-ssh-output', 'yield_seconds': 0,
+            'idempotency_key': uuid.uuid4().hex}
+        receipt = server.mcp('exec', values)
+        identity = server.mcp('get_access_context')['connection']['id']
+        wait_for(count.exists, timeout=15)
+        server.restart_hub()
+        assert server.mcp('get_access_context')['connection']['id'] == identity
+        assert server.mcp('exec', values)['operation_id'] == receipt['operation_id']
+        result = server.finish(receipt)
+        assert result['exit_code'] == 0 and result['output'] == 'recovered-ssh-output'
+        assert count.read_text() == 'once'
 
 
-def test_mcp_ssh_recovery_cancel_scope_and_secret_storage(ssh_vps_stack):
-    stack=ssh_vps_stack
-    from tests.test_vps import create_remote
-    remote = create_remote(stack)
-    invalid_remote = create_remote(stack, password='wrong')
-    def execution(command='printf remote-ok', wrong=False):
-        return {'project':'Imago','target':'vps:'+ (invalid_remote if wrong else remote)['id'],
-                'command':command,'yield_seconds':0,'idempotency_key':uuid.uuid4().hex}
-    call = execution(command='printf once >> ssh-count; sleep 2; printf remote-ok')
-    receipt = stack.mcp('exec', call)['structuredContent']
-    opid = receipt['operation_id']
-    assert receipt['pending']
-    wait_for(lambda: 'transport-ready' in stack.client.get('/api/operations/' + opid).json()['output'])
-    assert stack.mcp('exec', call)['structuredContent']['operation_id'] == opid
-    stack.hub.terminate(); stack.hub.wait(timeout=12); stack.start_hub(); stack.login()
-    # Hub readiness can precede the Agent's next 30–31 s reconnect attempt.
-    completed = stack.poll(opid, timeout=45)
-    assert completed['state'] == 'succeeded'
-    assert completed['result']['data']['command_ok']
-    assert PASSWORD not in json.dumps(completed)
-    assert (stack.imago / 'ssh-count').read_text() == 'once'
-    failed = stack.mcp('exec', execution(wrong=True))['structuredContent']['operation_id']
-    # A cold fixture transport can outlast the short synchronous MCP window.
-    result = stack.poll(failed, timeout=30)
-    assert result['state'] == 'failed' and result['result']['data']['ssh_error'] == 'SSH_AUTH_FAILED'
-    cancelled = stack.mcp('exec', execution(command='sleep 20; touch must-not-exist'))['structuredContent']['operation_id']
-    wait_for(lambda: 'transport-ready' in stack.client.get('/api/operations/' + cancelled).json()['output'])
-    stack.mcp('process', {'operation': 'cancel', 'operation_ids': [cancelled]})
-    assert stack.poll(cancelled)['state'] == 'cancelled'
-    assert not (stack.imago / 'must-not-exist').exists()
-    from tests.test_roles import role,profile,credential,must
-    readonly=role(stack.client,label='SSH readonly',project_rules=[{'actions':['read'],'projects':[stack.project['id']]}],vps_rules=[{'actions':['read'],'vps':[remote['id']]}])
-    grant=must(credential(stack.client,readonly,profile(stack.client,readonly,'SSH readonly identity')))
-    denied = stack.mcp('exec', execution(), token_value=grant['token'])
-    assert denied['isError'] and 'execute' in denied['content'][0]['text']
-    stack.stop_agent()
-    revoke=role(stack.client,label='SSH revoke',project_rules=[{'actions':['read','execute'],'projects':[stack.project['id']]}],vps_rules=[{'actions':['read','execute'],'vps':[remote['id']]}])
-    grant=must(credential(stack.client,revoke,profile(stack.client,revoke,'SSH revoke identity')))
-    queued = stack.mcp('exec', execution(command='touch revoked-ssh'), token_value=grant['token'])['structuredContent']['operation_id']
-    stack.must(stack.client.delete('/api/grants/' + grant['grant_id']))
-    stack.start_agent()
-    assert stack.poll(queued)['state'] == 'failed'
-    assert not (stack.imago / 'revoked-ssh').exists()
-    # Inspect actual persisted rows, not only the API's filtered projection.
-    for dbpath in (stack.directory / 'agent-state' / 'agent.sqlite3', stack.hubdir / 'hub.sqlite3'):
-        assert dbpath.exists()
-        with contextlib.closing(sqlite3.connect(dbpath)) as db:
-            assert PASSWORD not in '\n'.join(db.iterdump())
+@pytest.mark.integration
+def test_local_shell_secret_output_filter_survives_transport_refactor(tmp_path):
+    # Output filtering remains useful independently of the removed SSH password
+    # transport. Use only a synthetic environment value in the test Runner.
+    with workspace_stack(tmp_path/'redaction') as server:
+        receipt = server.mcp('exec', {'project': 'codepier', 'command': 'printf "%s" "$SSHPASS"',
+            'env': {'SSHPASS': SECRET}, 'yield_seconds': 0, 'idempotency_key': uuid.uuid4().hex})
+        result = server.finish(receipt)
+        assert result['output'] == '<redacted>'
+        row = server.must(server.client.get('/api/operations/'+receipt['operation_id']))
+        assert SECRET not in json.dumps(row)

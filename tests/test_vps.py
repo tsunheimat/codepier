@@ -1,400 +1,360 @@
-"""Saved VPS permissions, durable credential references and real MCP transport."""
+"""Whole-VPS workspace bindings, bounded consent and original-operation recovery.
+
+No Role helpers, project-owned SSH password or legacy database fixture is used.
+Display associations never authorize another target or impose a local root.
+"""
 from __future__ import annotations
 
+from contextlib import closing
+from dataclasses import replace
 import json
+import shlex
+import sqlite3
 import time
 import uuid
 
-import httpx
 import pytest
 from pydantic import ValidationError
+from starlette.requests import Request
 
-from hub.runtime import Principal, Runtime
-from hub.store import Store
-from hub.vps import ProjectVPSAssignments, VPSAssignments, VPSInput
-from shared.contracts import tool_definitions
-from shared.core_contracts import Exec
-from shared.util import DevError, atomic_json
-from tests.test_ssh import PASSWORD, fake_transport
+from hub.runtime import Runtime
+from hub.vps import VPSBindingSave, VPSInput
+from shared.util import DevError
+from tests.test_workspace_http import web  # noqa: F401
+from tests.workspace_fixtures import WorkspaceFixture
+from tests.workspace_stack import workspace_stack
+from tests.support import wait_for
+
+
+def input_body(**changes):
+    return {'name': '测试 VPS', 'host': 'fixture.invalid', 'idempotency_key': uuid.uuid4().hex, **changes}
+
+
+def binding_body(resource_id, **changes):
+    return {'resource_id': resource_id, 'name': 'Workspace VPS', 'runner_device_id': 'a',
+        'connection_ref': 'fixture', 'display_mode': 'top_level', 'projects': [],
+        'idempotency_key': uuid.uuid4().hex, **changes}
+
+
+def must(response):
+    assert response.is_success, response.text
+    return response.json()
+
+
+def issue(client, binding, actions=('read', 'execute'), *, live=False):
+    profile = must(client.post('/api/spaces/alice/profiles', json={
+        'label': 'VPS '+uuid.uuid4().hex, 'idempotency_key': uuid.uuid4().hex,
+        'policy': {'vps_rules': [{'vps': [binding['id']], 'actions': list(actions)}]}}))
+    connection = must(client.post('/api/spaces/alice/connections', json={
+        'name': 'Fixture', 'profile_id': profile['id'], 'profile_version': profile['version'],
+        'consent_mode': 'live' if live else 'fixed', 'confirm_live_profile': live,
+        'idempotency_key': uuid.uuid4().hex}))
+    return profile, connection
+
+
+def token_principal(app, connection):
+    request = Request({'type': 'http', 'method': 'POST', 'path': '/mcp', 'query_string': b'',
+        'headers': [(b'authorization', ('Bearer '+connection['token']).encode())]})
+    return app.state.auth.bearer(request)
 
 
 @pytest.fixture
 def inventory(tmp_path):
-    store = Store(tmp_path / 'data')
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store,'owner','fixture')
-    device = uuid.uuid4().hex
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,'legacy','owner')", (device, 'Fixture Agent', store.encrypt('fixture-device'), time.time()))
-    projects = []
-    for alias in ('Alpha', 'Beta', 'Gamma'):
-        identifier = uuid.uuid4().hex
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,'legacy','owner')", (identifier, alias, alias.lower(), device, str(tmp_path / alias), '', 'write', 1, time.time()))
-        projects.append(identifier)
-    runtime = Runtime(store)
-    owner = Principal('panel:fixture', 'owner', {'read', 'write', 'execute'}, [], admin=True, space_id='legacy')
-    yield runtime, owner, projects
-    store.close()
+    fixture = WorkspaceFixture(tmp_path/'data')
+    runtime, owner = Runtime(fixture.store), fixture.principal
+    resource = runtime.vps.save(VPSInput(**input_body()), replace(owner, space_id=None))
+    binding = runtime.vps.bind(VPSBindingSave(**binding_body(resource['id'])), owner)
+    try:
+        yield runtime, owner, resource, binding
+    finally:
+        fixture.close()
 
 
-def body(projects, **changes):
-    return VPSInput(name='广州 VPS', host='vps.example.invalid', password=PASSWORD, project_ids=projects, execution_project_id=projects[0] if projects else None, **changes)
-
-
-def edit_body(v, **changes):
-    keys = ('name', 'host', 'port', 'username', 'host_key_policy', 'provider', 'region', 'system', 'notes', 'enabled', 'project_ids', 'execution_project_id')
-    return VPSInput(**{**{k: v[k] for k in keys}, 'expected_version': v['version'], **changes})
-
-
-def execute_args(project, vps='0'*32, **changes):
-    return {'project': project, 'target': 'vps:'+vps, 'yield_seconds': 0, 'command': 'printf fixture-ok', 'idempotency_key': uuid.uuid4().hex, **changes}
-
-
-def explicit_caller(runtime, projects, vps, actions=('read',)):
-    from shared.role_contracts import ROLE_SCOPE
-    suffix=uuid.uuid4().hex
-    rid,pid,gid='rol_'+suffix,'prf_'+suffix,suffix
-    with runtime.store.transaction():
-        now=time.time()
-        policy=json.dumps({'project_rules':[{'projects':projects,'actions':list(actions)}],
-                           'vps_rules':[{'vps':vps,'actions':list(actions)}]})
-        runtime.store.db.execute('INSERT INTO access_roles(id,user_id,label,label_key,policy,enabled,version,created,updated,create_key,create_fingerprint,space_id,owner_user_id) VALUES(?,?,?,?,?,1,1,?,?,?,?,?,?)',
-            (rid,'owner','fixture',rid,policy,now,now,rid,rid,'legacy','owner'))
-        runtime.store.db.execute('INSERT INTO access_profiles(id,user_id,label,label_key,scopes,projects,enabled,version,created,updated,create_key,create_fingerprint,role_id,space_id,owner_user_id) VALUES(?,?,?,?,?,?,1,1,?,?,?,?,?,?,?)',
-            (pid,'owner','fixture',pid,'["read"]','[]',now,now,pid,pid,rid,'legacy','owner'))
-        runtime.store.db.execute('INSERT INTO grants(id,user_id,label,scopes,projects,created,profile_id,authorization_mode,role_id,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-            (gid,'owner','fixture',json.dumps([ROLE_SCOPE]),'[]',now,pid,'role',rid,'legacy','owner'))
-    return runtime.grant_principal(runtime.store.one('SELECT * FROM grants WHERE id=?',(gid,)))
-
-
-def test_saved_credential_encryption_many_to_many_and_visibility(inventory):
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:2]), owner)
-    other = r.vps.save(VPSInput(name='Only Gamma', host='other.invalid', password=PASSWORD, project_ids=projects[2:]), owner)
-    assert set(v['project_ids']) == set(projects[:2])
-    raw = r.store.one('SELECT * FROM vps_connections WHERE id=?', (v['id'],))
-    assert raw['secret'] != PASSWORD and r.store.decrypt(raw['secret']) == PASSWORD
-    from tests.legacy_iam_fixture import seed_grant
-    seed_grant(r.store,'one','owner',['read'],[projects[0]])
-    legacy = Principal('mcp:one','owner',{'read'},[projects[0]],grant_id='one')
-    assert r.vps.list({'project':'','query':'','offset':0,'limit':50},legacy)['vps']==[]
-    caller = explicit_caller(r,projects[:1],[v['id']])
-    result = r.vps.list({'project': '', 'query': '', 'offset': 0, 'limit': 50}, caller)
-    assert len(result['vps']) == 1 and result['vps'][0]['project_ids'] == [projects[0]]
-    assert projects[1] not in json.dumps(result) and other['id'] not in json.dumps(result)
-    assert PASSWORD not in json.dumps(result) and 'secret' not in result['vps'][0]
-    assert PASSWORD not in json.dumps(r.store.all('SELECT * FROM audit'))
-
-
-@pytest.mark.parametrize('changes', [
-    {'host': '-oProxyCommand=x'}, {'host': 'a;id'}, {'host': 'user@host'},
-    {'host': 'host:22'}, {'host': 'https://host'}, {'port': True}, {'port': 0},
-    {'username': '-root'}, {'password': ''}, {'password': 'hello\nthere'},
-    {'host_key_policy': 'no'}, {'name': '  '}, {'project_ids': ['same', 'same']},
-])
-def test_invalid_inventory_input(changes):
+@pytest.mark.parametrize('field', ['password', 'private_key', 'username', 'port', 'execution_project_id', 'project_ids'])
+def test_inventory_rejects_removed_credential_and_project_route_inputs(field):
     with pytest.raises(ValidationError):
-        VPSInput(**{'name': 'fixture', 'host': 'host.invalid', 'password': PASSWORD, **changes})
+        VPSInput(**input_body(**{field: 'not-a-credential'}))
 
 
-def test_update_keeps_password_and_cas_rejects_lost_updates(inventory):
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:1]), owner)
-    before = r.store.one('SELECT secret FROM vps_connections WHERE id=?', (v['id'],))['secret']
-    updated = r.vps.save(edit_body(v, notes='deploy directory /srv/app'), owner, v['id'])
-    assert updated['version'] == 2 and updated['connection_revision'] == 1
-    assert before == r.store.one('SELECT secret FROM vps_connections WHERE id=?', (v['id'],))['secret']
-    with pytest.raises(DevError, match='其他窗口'):
-        r.vps.save(edit_body(v, password='new-fixture'), owner, v['id'])
-    assert r.vps.get(v['id'],owner)['notes'] == 'deploy directory /srv/app'
-    rotated = r.vps.save(edit_body(updated, password='new-fixture'), owner, v['id'])
-    assert rotated['connection_revision'] == 2
-
-
-def test_invalid_assignment_rolls_back_entire_create_and_duplicate(inventory):
-    r, owner, projects = inventory
-    with pytest.raises(DevError):
-        r.vps.save(body([projects[0], 'missing']), owner)
-    assert not r.store.all('SELECT id FROM vps_connections')
-    v = r.vps.save(body(projects[:1]), owner)
-    with pytest.raises(DevError) as caught:
-        r.vps.save(VPSInput(name='Other', host=v['host'], port=v['port'], username=v['username'], password=PASSWORD), owner)
-    assert caught.value.code == 'VPS_EXISTS'
-    assert len(r.store.all('SELECT id FROM vps_connections')) == 1
-
-
-def test_ip_port_username_ambiguity_and_single_default(inventory):
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:1]), owner)
-    p = r.project(projects[0], owner)
-    assert r.vps.reference(execute_args(projects[0]), p, owner)['id'] == v['id']
-    v2 = r.vps.save(VPSInput(name='Same host 2222', host=v['host'], port=2222, password=PASSWORD, project_ids=projects[:1], execution_project_id=projects[0]), owner)
-    with pytest.raises(DevError) as caught:
-        r.vps.reference(execute_args(projects[0], v['host']), p, owner)
-    assert caught.value.code == 'VPS_AMBIGUOUS'
-    assert r.vps.reference(execute_args(projects[0], v['host'], port=2222), p, owner)['id'] == v2['id']
-    with pytest.raises(DevError):
-        r.vps.reference(execute_args(projects[0], v['host'], port=22, username='other'), p, owner)
-    with pytest.raises(DevError):
-        r.vps.reference(execute_args(projects[1], v['id']), r.project(projects[1], owner), owner)
-
-
-def test_ipv6_and_pagination(inventory):
-    r, owner, projects = inventory
-    v = r.vps.save(VPSInput(name='IPv6', host='2001:db8:0:0::1', password=PASSWORD, project_ids=projects[:1]), owner)
-    assert v['host'] == '2001:db8::1'
-    assert r.vps.list({'query': '2001:db8:0:0::1'}, owner)['total'] == 1
-    r.vps.save(body(projects[:1]), owner)
-    first = r.vps.list({'limit': 1}, owner)
-    second = r.vps.list({'limit': 1, 'offset': first['next_offset']}, owner)
-    assert first['total'] == 2 and second['next_offset'] is None
-    assert first['vps'][0]['id'] != second['vps'][0]['id']
-
-
-def test_project_side_assignment_preserves_other_projects(inventory):
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:2]), owner)
-    other = r.vps.save(VPSInput(name='Second', host='second.invalid', password=PASSWORD, project_ids=projects[1:2]), owner)
-    r.vps.project_assign(projects[0], ProjectVPSAssignments(vps_ids=[other['id']], expected_vps_ids=[v['id']]), owner)
-    assert r.vps.get(v['id'],owner)['project_ids'] == [projects[1]]
-    assert set(r.vps.get(other['id'],owner)['project_ids']) == set(projects[:2])
-    with pytest.raises(DevError):
-        r.vps.project_assign(projects[0], ProjectVPSAssignments(vps_ids=[], expected_vps_ids=[v['id']]), owner)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['route_remove', 'route_restore', 'disable', 'password', 'endpoint', 'delete'])
-async def test_queued_reference_revocation_blocks_before_connection(inventory, change):
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:1]), owner)
-    call = execute_args(projects[0], v['id'])
-    receipt = await r.invoke('exec', call, owner)
-    op = r.store.one('SELECT * FROM operations WHERE id=?', (receipt['operation_id'],))
-    request = json.loads(r.store.decrypt(op['payload']))
-    assert 'password' not in json.dumps(request) and PASSWORD not in json.dumps(request)
-    if change in {'route_remove', 'route_restore'}:
-        updated = r.vps.save(edit_body(v,execution_project_id=None),owner,v['id'])
-        if change == 'route_restore':
-            r.vps.save(edit_body(updated,execution_project_id=projects[0]),owner,v['id'])
-    elif change == 'disable': r.vps.save(edit_body(v, enabled=False), owner, v['id'])
-    elif change == 'password': r.vps.save(edit_body(v, password='rotated-fixture'), owner, v['id'])
-    elif change == 'endpoint': r.vps.save(edit_body(v, host='new.invalid'), owner, v['id'])
-    else: r.vps.delete(v['id'], v['version'], owner)
-    assert r.permission_error(op, request)
-    await r.deliver(op['id'])
-    result = r.store.one('SELECT * FROM operations WHERE id=?', (op['id'],))
-    assert result['state'] == 'failed' and result['attempts'] == 0 and result['payload'] is None
-
-
-@pytest.mark.asyncio
-async def test_idempotency_reference_survives_metadata_edits_and_cancellation(inventory):
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:1]), owner)
-    call = execute_args(projects[0], v['id'])
-    first = await r.invoke('exec', call, owner)
-    r.vps.save(edit_body(v, name='Renamed', notes='metadata change'), owner, v['id'])
-    replay = await r.invoke('exec', call, owner)
-    assert replay['operation_id'] == first['operation_id']
-    with pytest.raises(DevError) as caught:
-        await r.invoke('exec', {**call, 'command': 'another command'}, owner)
-    assert caught.value.code == 'IDEMPOTENCY_CONFLICT'
-    result = await r.cancel(first['operation_id'], owner)
-    assert result['state'] == 'cancelled'
-
-
-def test_transport_credential_not_in_saved_payload_and_delete_cascades(inventory):
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:2]), owner)
-    args = Exec(**execute_args(projects[0], v['id'])).model_dump()
-    request = {'tool': 'exec', 'args': args, 'project': {'root': '/fixture'}, 'vps_ref': r.vps.reference({**args, 'vps': v['id']}, r.project(projects[0], owner), owner)}
-    packet = r.vps.transport(request, projects[0])
-    assert packet['tool'] == 'exec' and packet['core_ssh']['password'] == PASSWORD
-    assert 'vps_ref' not in packet and PASSWORD not in json.dumps(request)
-    r.store.execute('DELETE FROM projects WHERE id=?', (projects[0],))
-    assert r.vps.get(v['id'],owner)['project_ids'] == [projects[1]]
-    r.vps.delete(v['id'], v['version'], owner)
-    assert not r.store.all('SELECT * FROM vps_projects')
-
-
-def test_missing_master_key_with_only_vps_credentials(inventory):
-    r, owner, projects = inventory
-    r.vps.save(body([]), owner)
-    r.store.execute('DELETE FROM projects')
-    r.store.execute('DELETE FROM devices')
-    directory = r.store.directory
-    (directory / 'master.key').unlink()
-    with pytest.raises(RuntimeError, match='master.key'):
-        Store(directory)
-
-
-@pytest.mark.parametrize('profile', ['full', 'coding'])
-def test_catalog_has_secret_free_inputs(profile):
-    tools = {t['name']: t for t in tool_definitions(profile)}
-    for name in ['vps', 'exec']:
-        assert name in tools and 'password' not in tools[name]['inputSchema']['properties']
-    assert tools['vps']['annotations']['readOnlyHint']
-    assert not tools['exec']['annotations']['readOnlyHint']
-    assert tools['exec']['annotations']['destructiveHint']
+@pytest.mark.parametrize('mode,projects', [('project_only', []), ('both', []), ('top_level', ['project']), ('arbitrary', [])])
+def test_visibility_has_exactly_three_unambiguous_modes(mode, projects):
     with pytest.raises(ValidationError):
-        Exec(**execute_args('p', password='not-accepted'))
+        VPSBindingSave(**binding_body('server', display_mode=mode, projects=projects))
 
 
-@pytest.fixture(scope='module')
-def vps_stack(stack):
-    stack.stop_agent()
-    stack.config['shell'] = {'enabled': True, 'projects': ['Imago','Nexus','Lumen'], 'command': ['/bin/sh','-c'], 'env': {'PATH': fake_transport(stack.directory / 'vps-bin')}}
-    atomic_json(stack.config_path, stack.config)
-    stack.start_agent()
-    from tests.test_roles import role,profile,credential,must
-    stack.vps_role=role(stack.client,label='VPS fixture role',project_rules=[{'actions':['read','write','execute'],'projects':[p['id'] for p in stack.projects]}])
-    identity=profile(stack.client,stack.vps_role,'VPS fixture identity')
-    grant=must(credential(stack.client,stack.vps_role,identity))
-    original=stack.mcp
-    stack.vps_token=grant['token']
-    stack.mcp=lambda name,args=None,token_value=None:original(name,args,token_value or stack.vps_token)
-    yield stack
-    stack.mcp=original
+def test_http_inventory_idempotency_versions_csrf_and_bound_delete(web):
+    client, app = web
+    body = input_body()
+    first = must(client.post('/api/vps', json=body))
+    assert must(client.post('/api/vps', json=body))['id'] == first['id']
+    update = input_body(name='Edited', expected_version=first['version'])
+    saved = must(client.put('/api/vps/'+first['id'], json=update))
+    assert saved['version'] == first['version']+1
+    stale = client.put('/api/vps/'+first['id'], json=input_body(name='Stale', expected_version=first['version']))
+    assert stale.status_code == 409
+    assert client.post('/api/vps', json=input_body(), headers={'X-RD-CSRF': 'wrong'}).status_code == 403
+    assert client.post('/api/vps', json=input_body(), headers={'Origin': 'https://evil.invalid'}).status_code == 403
+    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
+    assert client.delete('/api/vps/'+first['id'], params={'expected_version': saved['version']}).status_code == 409
+    removed = must(client.delete('/api/spaces/alice/vps/'+binding['id'], params={'expected_version': binding['version']}))
+    assert removed['remote_server_deleted'] is False and removed['remote_processes_stopped'] is False
+    assert app.state.store.one('SELECT id FROM vps_connections WHERE id=?', (first['id'],))
+    assert must(client.delete('/api/vps/'+first['id'], params={'expected_version': saved['version']}))['remote_server_deleted'] is False
 
 
-def create_remote(stack, **changes):
-    payload = {'name': 'Fixture-'+uuid.uuid4().hex[:8], 'host': 'vps.example.invalid', 'port': 10000+int(uuid.uuid4().hex[:3],16), 'password': PASSWORD, 'project_ids': [stack.project['id']], 'execution_project_id':stack.project['id'], **changes}
-    saved=stack.must(stack.client.post('/api/vps', json=payload))
-    from tests.test_roles import update_role,must
-    rules=stack.vps_role.get('vps_rules',[])+[{'actions':['read','execute'],'vps':[saved['id']]}]
-    stack.vps_role=must(update_role(stack.client,stack.vps_role,vps_rules=rules))
-    return saved
+def test_cross_workspace_device_project_and_resource_binding_rejected_atomically(web):
+    client, app = web
+    resource = must(client.post('/api/vps', json=input_body()))
+    store = app.state.store
+    store.execute("DELETE FROM space_devices WHERE space_id='alice' AND device_id='c'")
+    for changes, status, code in [
+        (dict(runner_device_id='c'), 409, 'SOURCE_DEVICE_UNAVAILABLE'),
+        (dict(display_mode='both', projects=['project', 'missing']), 404, 'PROJECT_NOT_FOUND'),
+    ]:
+        response = client.post('/api/spaces/alice/vps', json=binding_body(resource['id'], **changes))
+        assert response.status_code == status and response.json()['error']['code'] == code, response.text
+        assert store.all('SELECT id FROM space_vps') == []
+        assert store.all('SELECT vps_id FROM vps_projects') == []
+    assert client.post('/api/spaces/bob/vps', json=binding_body(resource['id'])).status_code == 403
+    first = must(client.post('/api/spaces/alice/vps', json=binding_body(resource['id'])))
+    duplicate = client.post('/api/spaces/alice/vps', json=binding_body(resource['id'], name='duplicate'))
+    assert duplicate.status_code == 409
+    assert [r['id'] for r in store.all('SELECT id FROM space_vps')] == [first['id']]
 
 
-def test_http_admin_csrf_validation_no_secret_echo(vps_stack):
-    s = vps_stack
-    assert httpx.get(s.url+'/api/vps',trust_env=False).status_code == 401
-    headers = dict(s.client.headers);s.client.headers.pop('X-RD-CSRF')
-    try:
-        denied = s.client.post('/api/vps',json={'name':'No CSRF','host':'host.invalid','password':PASSWORD})
-        assert denied.status_code == 403
-    finally:s.client.headers.update(headers)
-    invalid = s.client.post('/api/vps',json={'name':'Bad','host':'host.invalid','password':PASSWORD+'\n'})
-    assert invalid.status_code == 422 and PASSWORD not in invalid.text
-    v = create_remote(s)
-    response = s.client.get('/api/vps/'+v['id'])
-    assert response.headers['cache-control'] == 'no-store'
-    assert PASSWORD not in response.text and 'secret' not in response.json()
+def test_binding_identity_cannot_be_retargeted_to_another_inventory_vps(web):
+    client, _ = web
+    first = must(client.post('/api/vps', json=input_body()))
+    second = must(client.post('/api/vps', json=input_body(name='Another')))
+    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
+    response = client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(second['id'], expected_version=binding['version']))
+    assert response.status_code == 409 and response.json()['error']['code'] == 'VPS_IDENTITY_IMMUTABLE'
 
 
-def test_mcp_saved_ssh_real_process_redaction_and_once_only(vps_stack):
-    s = vps_stack
-    v = create_remote(s)
-    filename = 'vps-once-'+uuid.uuid4().hex
-    call = execute_args('Imago', v['id'], command=f'printf once >> {filename}; printf remote-ok')
-    result = s.mcp('exec',call)
-    assert not result.get('isError'),result
-    receipt = result['structuredContent']
-    opid = receipt['operation_id']
-    assert s.mcp('exec',call)['structuredContent']['operation_id'] == opid
-    op = s.poll(opid, timeout=20)
-    assert op['state'] == 'succeeded',op
-    assert op['tool'] == 'exec' and op['result']['data']['exit_code'] == 0
-    assert 'remote-ok' in op['output'] and '<redacted>' in op['output']
-    assert (s.imago / filename).read_text() == 'once'
-    assert PASSWORD not in json.dumps(op)
-    saved = Store(s.hubdir)
-    try:
-        assert saved.one('SELECT payload FROM operations WHERE id=?',(opid,))['payload'] is None
-        assert PASSWORD not in str(saved.all('SELECT * FROM operations'))
-        assert PASSWORD not in str(saved.all('SELECT * FROM audit'))
-    finally:saved.close()
+def test_saved_runner_must_advertise_the_selected_connection_reference(web):
+    client, app = web
+    resource = must(client.post('/api/vps', json=input_body()))
+    app.state.store.execute("UPDATE devices SET info=? WHERE id='a'", (json.dumps({'shell_enabled': True, 'ssh_targets': ['reviewed']}),))
+    denied = client.post('/api/spaces/alice/vps', json=binding_body(resource['id']))
+    assert denied.status_code == 409 and denied.json()['error']['code'] == 'SSH_REFERENCE_NOT_AVAILABLE'
+    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(resource['id'], connection_ref='reviewed')))
+    assert binding['connection_ref'] == 'reviewed'
 
 
-def test_mcp_scope_and_assignments(vps_stack):
-    s = vps_stack
-    v = create_remote(s, project_ids=[s.projects[0]['id'],s.projects[1]['id']])
-    grant = s.must(s.client.post('/api/grants',json={'label':'vps-read','scopes':['read'],'projects':[s.project['id']],'days':1}))
-    listed = s.mcp('vps', {'query':v['name']}, token_value=grant['token'])
-    assert not listed.get('isError'),listed
-    assert listed['structuredContent']['vps']==[]
-    from tests.test_roles import role,profile,credential,must
-    readrole=role(s.client,label='VPS metadata '+uuid.uuid4().hex[:8],project_rules=[{'actions':['read'],'projects':[s.project['id']]}],vps_rules=[{'actions':['read'],'vps':[v['id']]}])
-    identity=profile(s.client,readrole,'Metadata '+uuid.uuid4().hex[:8])
-    scoped=must(credential(s.client,readrole,identity))
-    listed=s.mcp('vps',{'query':v['name']},token_value=scoped['token'])
-    row=listed['structuredContent']['vps'][0]
-    assert row['project_ids']==[s.project['id']]
-    assert s.projects[1]['id'] not in json.dumps(listed)
-    denied = s.mcp('exec',execute_args('Imago',v['id']),token_value=grant['token'])
-    assert denied['isError'] and denied['structuredContent']['error']['code'] == 'INSUFFICIENT_SCOPE'
-    denied = s.mcp('exec',execute_args('Lumen',v['id']))
-    assert denied['isError'] and denied['structuredContent']['error']['code'] == 'VPS_ROUTE_REQUIRED'
+def test_read_only_profile_cannot_execute_or_discover_ungranted_vps(web):
+    client, app = web
+    first = must(client.post('/api/vps', json=input_body()))
+    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
+    second = must(client.post('/api/vps', json=input_body(name='Other inventory')))
+    other = must(client.post('/api/spaces/alice/vps', json=binding_body(second['id'], name='Private other')))
+    _, connection = issue(client, binding, actions=('read',))
+    principal = token_principal(app, connection)
+    result = app.state.runtime.vps.list({}, principal)
+    assert [v['id'] for v in result['vps']] == [binding['id']]
+    assert result['vps'][0]['can_execute'] is False
+    for identifier in (binding['id'], other['id']):
+        with pytest.raises(DevError) as failure:
+            app.state.runtime.vps.execution_project({'target': 'vps:'+identifier}, principal)
+        assert failure.value.code == 'VPS_NOT_FOUND'
 
 
-def test_saved_ssh_remote_failure_and_timeout(vps_stack):
-    s = vps_stack;v = create_remote(s)
-    for command,timeout in [('exit 7',10),('sleep 5',1)]:
-        result = s.mcp('exec',execute_args('Imago',v['id'],command=command,timeout_seconds=timeout))
-        assert not result.get('isError'),result
-        op = s.poll(result['structuredContent']['operation_id'],timeout=20)
-        assert op['state'] == 'failed' and not op['result']['data']['command_ok']
-        assert PASSWORD not in json.dumps(op)
+def test_whole_vps_execution_needs_no_project_or_source_mapping(inventory):
+    runtime, owner, _, binding = inventory
+    runtime.store.execute("UPDATE space_folders SET enabled=0")
+    target = runtime.vps.execution_project({'target': 'vps:'+binding['id']}, owner)
+    assert target['id'] is None and target['root'] == ''
+    assert target['device_id'] == 'a'
+    with pytest.raises(DevError):
+        runtime.vps.execution_project({'target': 'vps:'+binding['id'], 'execution_device_id': 'b'}, owner)
 
 
-def test_offline_queue_unassign_before_delivery(vps_stack):
-    s = vps_stack;v = create_remote(s)
-    s.stop_agent()
-    try:
-        call = execute_args('Imago',v['id'],command='printf should-not-run')
-        result = s.mcp('exec',call)
-        assert not result.get('isError'),result
-        opid = result['structuredContent']['operation_id']
-        s.must(s.client.put('/api/vps/'+v['id'],json={**{k:v[k] for k in ('name','host','port','username','project_ids')},'execution_project_id':None,'expected_version':v['version']}))
-        op = s.poll(opid,timeout=15)
-        assert op['state'] == 'failed' and op['attempts'] == 0
-    finally:s.start_agent()
+@pytest.mark.parametrize('mode', ['top_level', 'project_only', 'both'])
+def test_discovery_modes_use_the_same_binding_without_project_execution_permission(inventory, mode):
+    runtime, owner, resource, binding = inventory
+    body = binding_body(resource['id'], display_mode=mode, projects=['project'] if mode != 'top_level' else [],
+                        expected_version=binding['version'])
+    binding = runtime.vps.bind(VPSBindingSave(**body), owner, binding['id'])
+    top, project = runtime.vps.list({}, owner)['vps'], runtime.vps.list({'project': 'codepier'}, owner)['vps']
+    assert bool(top) == (mode in {'top_level', 'both'})
+    assert bool(project) == (mode in {'project_only', 'both'})
+    assert {r['id'] for r in top+project} == {binding['id']}
+    assert runtime.vps.execution_project({'target': 'vps:'+binding['id']}, owner)['id'] is None
 
 
-def test_coding_profile_actual_rpc_catalog_and_call(vps_stack):
-    s = vps_stack
-    headers={'Authorization':'Bearer '+s.pat,'MCP-Protocol-Version':'2025-11-25','Accept':'application/json, text/event-stream'}
-    payload={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'vps','arguments':{'project':'Imago'}}}
-    response=s.client.post('/mcp?profile=coding',headers=headers,json=payload)
-    s.must(response)
-    assert not response.json().get('error'),response.text
-    assert not response.json()['result'].get('isError'),response.text
+@pytest.mark.parametrize('change', ['disable_binding', 'disable_device', 'change_runner', 'change_reference', 'remove_binding'])
+def test_queued_transport_never_substitutes_another_resource(inventory, change):
+    runtime, owner, _, binding = inventory
+    selected = runtime.vps.execution_project({'target': 'vps:'+binding['id']}, owner)
+    request = {'project': selected, 'args': {'target': 'vps:'+binding['id']}}
+    statements = {
+        'disable_binding': ('UPDATE space_vps SET enabled=0 WHERE id=?', (binding['id'],)),
+        'disable_device': ("UPDATE space_devices SET enabled=0 WHERE device_id='a' AND space_id='alice'", ()),
+        'change_runner': ("UPDATE space_vps SET runner_device_id='b' WHERE id=?", (binding['id'],)),
+        'change_reference': ("UPDATE space_vps SET connection_ref='another' WHERE id=?", (binding['id'],)),
+        'remove_binding': ('DELETE FROM space_vps WHERE id=?', (binding['id'],)),
+    }
+    runtime.store.execute(*statements[change])
+    assert runtime.vps.permission_error(request, None, owner)
+    with pytest.raises(DevError):
+        runtime.vps.transport(request, None)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('accepted', [False, True])
-@pytest.mark.parametrize('change', ['disable', 'route_restore', 'delete'])
+@pytest.mark.parametrize('change', ['disable', 'reference', 'delete'])
 async def test_dispatched_revoked_request_only_probes_original_receipt(inventory, monkeypatch, accepted, change):
-    """A send or ACK is not proof of no remote execution; never reconnect/replay."""
-    r, owner, projects = inventory
-    v = r.vps.save(body(projects[:1]), owner)
-    receipt = await r.invoke('exec', execute_args(projects[0], v['id']), owner)
-    operation = receipt['operation_id']
-    r.store.execute('UPDATE operations SET attempts=1,accepted_at=? WHERE id=?',
-                    (time.time() if accepted else None, operation))
-    if change == 'disable':
-        r.vps.save(edit_body(v, enabled=False), owner, v['id'])
-    elif change == 'route_restore':
-        updated = r.vps.save(edit_body(v,execution_project_id=None),owner,v['id'])
-        r.vps.save(edit_body(updated,execution_project_id=projects[0]),owner,v['id'])
+    runtime, owner, resource, binding = inventory
+    receipt = await runtime.invoke('exec', {'target': 'vps:'+binding['id'], 'command': 'true',
+        'yield_seconds': 0, 'idempotency_key': uuid.uuid4().hex}, owner)
+    identifier = receipt['operation_id']
+    runtime.store.execute('UPDATE operations SET attempts=1,accepted_at=? WHERE id=?',
+                          (time.time() if accepted else None, identifier))
+    if change == 'delete': runtime.store.execute('DELETE FROM space_vps WHERE id=?', (binding['id'],))
     else:
-        r.vps.delete(v['id'], v['version'], owner)
+        changes = {'enabled': False} if change == 'disable' else {'connection_ref': 'changed'}
+        runtime.vps.bind(VPSBindingSave(**binding_body(resource['id'], expected_version=binding['version'], **changes)), owner, binding['id'])
     packets = []
-
     class Connection:
         journal_id = 'fixture-journal'
         unusable = False
-
-        async def send(self, packet):
-            packets.append(packet)
-
-    def no_credential_resolution(*args, **kwargs):
-        raise AssertionError('Dispatched requests must only recover the original receipt')
-
-    project = r.project(projects[0], owner)
-    r.connections[project['device_id']] = Connection()
-    monkeypatch.setattr(r, 'online', lambda device_id: True)
-    monkeypatch.setattr(r, 'connection_authorized', lambda device_id, connection: True)
-    monkeypatch.setattr(r.vps, 'transport', no_credential_resolution)
-    await r.deliver(operation)
-    assert packets == [{'type': 'probe', 'id': operation}]
-    row = r.store.one('SELECT state,result,attempts FROM operations WHERE id=?', (operation,))
+        async def send(self, packet): packets.append(packet)
+    runtime.connections['a'] = Connection()
+    monkeypatch.setattr(runtime, 'online', lambda _: True)
+    monkeypatch.setattr(runtime, 'connection_authorized', lambda *a: True)
+    def forbid(*a, **kw): pytest.fail('A dispatched request resolved a new SSH connection')
+    monkeypatch.setattr(runtime.vps, 'transport', forbid)
+    await runtime.deliver(identifier)
+    assert packets == [{'type': 'probe', 'id': identifier}]
+    row = runtime.store.one('SELECT state,result,attempts FROM operations WHERE id=?', (identifier,))
     assert row['state'] == 'queued' and row['result'] is None and row['attempts'] == 1
+
+
+def terminal(server, identifier):
+    def done():
+        row = must(server.client.get('/api/operations/'+identifier))
+        return row if row['state'] not in {'queued', 'running', 'reconnecting', 'cancelling'} else None
+    try:
+        return wait_for(done, timeout=25)
+    except AssertionError:
+        # Diagnostics are from this disposable fixture, never a live Hub.
+        print(server.client.get('/api/operations/'+identifier).text)
+        print((server.directory/'agent.log').read_text()[-4000:])
+        print((server.directory/'hub.log').read_text()[-2000:])
+        raise
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('command,timeout', [('exit 7', 10), ('sleep 5', 1)])
+def test_saved_ssh_remote_failure_and_timeout_are_not_success(tmp_path, command, timeout):
+    with workspace_stack(tmp_path/'failure') as server:
+        receipt = server.mcp('exec', {'target': 'vps:'+'a'*32, 'command': command, 'timeout_seconds': timeout,
+            'yield_seconds': 0, 'idempotency_key': uuid.uuid4().hex})
+        row = terminal(server, receipt['operation_id'])
+        assert row['state'] != 'succeeded'
+        assert row['result']['data']['command_ok'] is False
+
+
+@pytest.mark.integration
+def test_offline_queue_connection_revocation_prevents_execution(tmp_path):
+    with workspace_stack(tmp_path/'revocation') as server:
+        server.agent.terminate(); server.agent.wait(timeout=10)
+        wait_for(lambda: not next(x['online'] for x in server.client.get('/api/devices').json()['devices'] if x['id']=='a'))
+        marker = server.directory/'revoked-command'
+        receipt = server.mcp('exec', {'target': 'vps:'+'a'*32, 'command': 'touch '+shlex.quote(str(marker)),
+            'yield_seconds': 0, 'idempotency_key': uuid.uuid4().hex})
+        must(server.client.post('/api/spaces/alice/connections/'+server.grant_id+'/revoke', json={}))
+        server.start_agent()
+        # Revocation also removes disclosure authority. Inspect this disposable
+        # fixture's database, never restore a revoked token just to poll output.
+        denied = server.client.get('/api/operations/'+receipt['operation_id'])
+        assert denied.status_code == 403 and denied.json()['error']['code'] == 'ACCESS_DENIED'
+        def failed_without_dispatch():
+            with closing(sqlite3.connect(server.hubdir/'hub.sqlite3')) as db:
+                row = db.execute('SELECT state,attempts FROM operations WHERE id=?', (receipt['operation_id'],)).fetchone()
+            return row if row and row[0] == 'failed' else None
+        assert wait_for(failed_without_dispatch, timeout=25) == ('failed', 0)
+        assert not marker.exists()
+
+
+@pytest.mark.parametrize('live', [False, True])
+def test_display_metadata_does_not_change_consent_but_connection_changes_do(web, live):
+    client, app = web
+    resource = must(client.post('/api/vps', json=input_body()))
+    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(resource['id'])))
+    _, connection = issue(client, binding, live=live)
+    principal = token_principal(app, connection)
+    runtime = app.state.runtime
+    target = {'target': 'vps:'+binding['id']}
+    original = runtime.vps.execution_project(target, principal)
+    must(client.put('/api/vps/'+resource['id'], json=input_body(
+        name='New display', host='metadata-only.invalid', expected_version=resource['version'])))
+    changed = must(client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(resource['id'],
+        name='New binding label', display_mode='both', projects=['project'], expected_version=binding['version'])))
+    assert runtime.vps.execution_project(target, principal)['_vps_context'] == original['_vps_context']
+    must(client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(resource['id'],
+        connection_ref='another-approved-target', expected_version=changed['version'])))
+    if live:
+        assert runtime.vps.execution_project(target, principal)['_vps_context']['connection_ref'] == 'another-approved-target'
+    else:
+        with pytest.raises(DevError) as failure:
+            runtime.vps.execution_project(target, principal)
+        assert failure.value.code == 'CONNECTION_TARGET_CHANGED'
+    assert token_principal(app, connection).grant_id == principal.grant_id
+
+
+def test_same_connection_key_with_changed_input_is_not_a_second_creation(web):
+    client, _ = web
+    resource = must(client.post('/api/vps', json=input_body()))
+    body = binding_body(resource['id'])
+    first = must(client.post('/api/spaces/alice/vps', json=body))
+    conflict = client.post('/api/spaces/alice/vps', json={**body, 'connection_ref': 'different'})
+    assert conflict.status_code == 409 and conflict.json()['error']['code'] == 'IDEMPOTENCY_CONFLICT'
+    assert [r['id'] for r in must(client.get('/api/spaces/alice/vps'))['vps']] == [first['id']]
+
+
+@pytest.mark.integration
+def test_ssh_cancellation_stops_original_launcher_without_claiming_remote_certainty(tmp_path):
+    with workspace_stack(tmp_path/'cancel') as server:
+        started, completed = server.directory/'started', server.directory/'completed'
+        values = {'target': 'vps:'+'a'*32, 'command': 'touch '+shlex.quote(str(started))+
+            '; sleep 30; touch '+shlex.quote(str(completed)), 'timeout_seconds': 60,
+            'yield_seconds': 0, 'idempotency_key': uuid.uuid4().hex}
+        receipt = server.mcp('exec', values)
+        identifier = receipt['operation_id']
+        wait_for(started.exists, timeout=15)
+        server.mcp('process', {'operation': 'cancel', 'operation_ids': [identifier]})
+        row = terminal(server, identifier)
+        # Stopping the original launcher is confirmed, but the remote side is
+        # not; needs_review must take precedence over a local cancelled flag.
+        assert row['state'] == 'needs_review'
+        data = row['result']['data']
+        assert data['cancelled'] and data['command_ok'] is False
+        assert data['outcome_uncertain'] and data['remote_execution_uncertain']
+        assert data['ssh_error'] == 'SSH_CANCELLED'
+        assert server.mcp('exec', values, expect_error=True)['operation_id'] == identifier
+        assert not completed.exists()
+        repeated = server.mcp('process', {'operation': 'cancel', 'operation_ids': [identifier]}, expect_error=True)
+        assert repeated['operations'] == [{'operation_id': identifier, 'state': 'needs_review', 'cancel_requested': False}]
+        assert terminal(server, identifier)['state'] == 'needs_review'
+
+
+@pytest.mark.integration
+def test_profile_sharing_never_shares_original_vps_operation_receipts(tmp_path):
+    with workspace_stack(tmp_path/'privacy') as server:
+        profiles = must(server.client.get('/api/spaces/alice/profiles'))['profiles']
+        profile = profiles[0]
+        second = must(server.client.post('/api/spaces/alice/connections', json={
+            'name': 'Separate identity', 'profile_id': profile['id'], 'profile_version': profile['version'],
+            'consent_mode': 'fixed', 'idempotency_key': uuid.uuid4().hex}))
+        receipt = server.mcp('exec', {'target': 'vps:'+'a'*32, 'command': 'printf private-vps-result',
+            'yield_seconds': 0, 'idempotency_key': uuid.uuid4().hex})
+        assert server.finish(receipt)['output'] == 'private-vps-result'
+        for operation in ['get', 'cancel']:
+            response = must(server.client.post('/mcp', headers={'Authorization': 'Bearer '+second['token'],
+                'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-11-25'},
+                json={'jsonrpc': '2.0', 'id': uuid.uuid4().hex, 'method': 'tools/call',
+                    'params': {'name': 'process', 'arguments': {'operation': operation, 'operation_ids': [receipt['operation_id']]}}}))
+            assert response['result']['isError'] is True
+            assert 'private-vps-result' not in json.dumps(response)
+        original = server.mcp('process', {'operation': 'get', 'operation_ids': [receipt['operation_id']]})
+        assert 'private-vps-result' in json.dumps(original)

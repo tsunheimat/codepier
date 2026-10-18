@@ -118,7 +118,10 @@ async def test_real_conpty_read_write_resize_and_original_close(tmp_path, shell)
                 break
             await asyncio.sleep(.05)
         assert manager.handles[sid].process.returncode is None
-        text = 'echo cp' + '-terminal-output>pty-proof.txt\r'
+        # PowerShell only recognizes > at the start of an argument token;
+        # without the space it echoes "value>file" rather than writing a file.
+        # Keep the file-effect assertion: terminal input echo is not execution.
+        text = 'echo cp' + '-terminal-output > pty-proof.txt\r'
         receipt = await manager.execute('d'*32, project, args('write', session_id=sid, data=text))
         assert receipt['bytes_written'] == len(text.encode()) and not receipt.get('outcome_uncertain'), receipt
         output = ''
@@ -136,6 +139,7 @@ async def test_real_conpty_read_write_resize_and_original_close(tmp_path, shell)
             if (tmp_path/'pty-proof.txt').exists():
                 break
             await asyncio.sleep(.05)
+        assert (tmp_path/'pty-proof.txt').exists(), repr(output)
         raw = (tmp_path/'pty-proof.txt').read_bytes()
         encoding = 'utf-16' if raw.startswith(b'\xff\xfe') else 'utf-8-sig'
         assert raw.decode(encoding).strip() == 'cp-terminal-output'

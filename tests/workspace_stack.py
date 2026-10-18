@@ -99,7 +99,27 @@ class WorkspaceStack:
             print((self.directory/'agent.log').read_text())
             raise
 
-    def mcp(self, name, arguments=None, *, token=None):
+    def restart_hub(self):
+        """Restart only this disposable loopback Hub; preserve its DB and Runner.
+
+        This exercises durable in-flight receipt recovery without replaying the
+        submitted command or changing either the connection or source mapping.
+        """
+        self.hub.terminate()
+        self.hub.wait(timeout=15)
+        self.hub = subprocess.Popen([sys.executable, '-m', 'hub', '--data-dir', str(self.hubdir),
+            'run', '--host', '127.0.0.1', '--port', str(self.port)], cwd=BASE, env=self.env,
+            stdout=self.hub_log, stderr=subprocess.STDOUT)
+        wait_for_hub(self.hub, self.url)
+        self.client.close()
+        self.client = httpx.Client(base_url=self.url, timeout=35, trust_env=False)
+        login = self.must(self.client.post('/api/login', json={'username':'alice', 'password':'a-valid-test-password'},
+                                         headers={'Origin':self.url}))
+        self.client.headers.update({'X-RD-CSRF':login['csrf'], 'Origin':self.url})
+        wait_for_agent(self.agent, lambda: any(d['id']=='a' and d['online']
+                       for d in self.client.get('/api/devices').json().get('devices', [])))
+
+    def mcp(self, name, arguments=None, *, token=None, expect_error=False):
         response = self.client.post('/mcp', headers={'Authorization':'Bearer '+(token or self.pat),
             'Accept':'application/json, text/event-stream', 'MCP-Protocol-Version':'2025-11-25'},
             json={'jsonrpc':'2.0','id':uuid.uuid4().hex,'method':'tools/call',
@@ -107,8 +127,9 @@ class WorkspaceStack:
         body = self.must(response)
         assert 'error' not in body, body
         result = body['result']
-        if result.get('isError'):
-            raise AssertionError(result)
+        # Error receipts (for example a cancelled SSH command observed using
+        # its original key) must stay errors, not be rewritten as successes.
+        assert bool(result.get('isError')) is expect_error, result
         if 'structuredContent' in result:
             return result['structuredContent']
         return json.loads(result['content'][0]['text'])

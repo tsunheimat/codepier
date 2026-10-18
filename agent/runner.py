@@ -349,7 +349,7 @@ class Agent:
     def cancel_call(self, id):
         self.journal.cancel(id)
         self.cancelled.add(id)
-        session_task=self.sessions.cancel_operation(id)
+        session_task=self.execution_sessions.cancel_operation(id)
         if session_task is not None:
             self.kill_tasks.add(session_task)
             session_task.add_done_callback(self.kill_done)
