@@ -1,0 +1,94 @@
+name: Workspace refactor focused checks
+
+on:
+  push:
+    branches: [refactor/workspace-abstract]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workspace-contracts:
+    name: Fresh workspace, real POSIX sessions and HTTP contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Install pinned development dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
+      - name: Static and packaged-source checks
+        run: |
+          .venv/bin/python -m ruff check agent hub shared scripts tests
+          .venv/bin/python -m mypy
+          .venv/bin/python -m compileall -q agent hub shared
+          for file in web/*.js; do node --check "$file"; done
+          .venv/bin/python scripts/build_web_assets.py --check
+          .venv/bin/python scripts/check_release.py
+      - name: Focused fresh-model tests (not the full repository suite)
+        run: |
+          mkdir -p dist/workspace-checks
+          .venv/bin/python -m pytest -q \
+            tests/test_workspace_model.py tests/test_workspace_policy.py \
+            tests/test_workspace_http.py tests/test_workspace_acceptance.py \
+            tests/test_execution_workspace.py tests/test_workspace_integration.py \
+            tests/test_workspace_panel_contracts.py \
+            tests/test_routing_contracts.py tests/test_execution_policy_interpreters.py \
+            --junitxml=dist/workspace-checks/focused.xml
+      - name: Retain actual test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: workspace-focused-${{ github.sha }}
+          path: dist/workspace-checks/
+          if-no-files-found: warn
+          retention-days: 14
+
+  workspace-browser:
+    name: Explicit workspace and OAuth forms (Chromium / WebKit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install pinned dependencies and real browser runtimes
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
+          .venv/bin/python -m playwright install --with-deps chromium webkit
+      - name: Browser form and MCP discovery acceptance
+        run: |
+          mkdir -p dist/workspace-browser
+          .venv/bin/python -m pytest -q tests/test_workspace_browser.py \
+            --junitxml=dist/workspace-browser/browser.xml
+      - name: Retain browser test evidence only
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: workspace-browser-${{ github.sha }}
+          path: dist/workspace-browser/
+          if-no-files-found: warn
+          retention-days: 14

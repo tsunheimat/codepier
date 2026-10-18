@@ -180,19 +180,23 @@ class ProjectRouting:
     def source_blocker(self,op):
         if not op.get('route_context') or op.get('attempts') or op['tool']=='routed_job_control':
             return None
+        if op['tool']=='session' and json.loads(op.get('args_summary') or '{}').get('operation') in {'read','status','close','signal'}:
+            # Authenticated controls must reach their original process even while
+            # its command holds a source claim. They never select a new target.
+            return None
         context=json.loads(op['route_context'])
         if not context.get('source_key'):
             return None
         # Shared bytes can be bound by multiple workspaces. Coordinate by source
         # identity, not workspace ownership; never disclose the other private receipt.
-        rows=self.store.all('''SELECT id,tool,state,route_context FROM operations
+        rows=self.store.all('''SELECT id,tool,state,route_context,args_summary FROM operations
             WHERE id<>? AND source_lock_released=0 AND route_context IS NOT NULL
             AND (created<? OR (created=? AND id<?))
             AND state IN ('queued','running','reconnecting','cancelling','needs_review') ORDER BY created,id''',
             (op['id'],op['created'],op['created'],op['id']))
         from shared.contracts import MUTATING,PROCESS_TOOLS
         for row in rows:
-            if row['tool']=='routed_job_control':
+            if row['tool']=='routed_job_control' or (row['tool']=='session' and json.loads(row.get('args_summary') or '{}').get('operation') in {'read','status','close','signal'}):
                 continue
             other=json.loads(row['route_context'])
             if context['source_key']!=other.get('source_key'):

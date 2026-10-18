@@ -3,12 +3,7 @@
 window.CodePierIdentity = (() => {
   let me = null,
     providers = [],
-    members = [],
-    roles = [],
-    assignments = [],
-    invites = [],
     users = [];
-  const levels = { owner: '主理人', admin: '管理员', member: '成员', guest: '访客' };
   const check = (name, label, value = false) =>
     `<label class="check"><input type="checkbox" name="${name}" ${value ? 'checked' : ''}>${esc(label)}</label>`;
   const field = (name, label, value = '', extra = '') =>
@@ -29,20 +24,11 @@ window.CodePierIdentity = (() => {
     return status ? `<p class="form-note">${esc(status)}</p>` : '';
   }
   function current() {
-    return me?.spaces.find((x) => x.id === S.space_id);
+    const match = /^#spaces\/([A-Za-z0-9_-]+)(?:\/|$)/.exec(location.hash);
+    return match ? me?.spaces.find((x) => x.id === match[1]) : null;
   }
-  function admin() {
-    return ['owner', 'admin'].includes(current()?.level);
-  }
-  function reset() {
-    me = null;
-    providers = [];
-    members = [];
-    roles = [];
-    assignments = [];
-    invites = [];
-    users = [];
-  }
+  function admin() { return !!current()?.management?.includes('resources'); }
+  function reset() { me = null; providers = []; users = []; }
   async function loginButtons() {
     const host = $('#oidc-login-buttons');
     if (!host) return;
@@ -90,103 +76,17 @@ window.CodePierIdentity = (() => {
   }
   async function bootstrap() {
     const identity = await api('/api/iam/me');
-    // An expired IdP snapshot is not a deliberate Space switch. Keep private
-    // drafts quarantined until the same context can be verified again. The
-    // identity page stays reachable for diagnostics and reauthentication.
     if (identity.identity_access && S.page !== 'identity')
       throw Object.assign(new Error(identity.identity_access.message), identity.identity_access);
     me = identity;
     S.identity = me;
-    const saved = sessionValue('codepier-space:' + me.id);
-    const selected =
-      me.spaces.find((x) => x.id === S.space_id) ||
-      me.spaces.find((x) => x.id === saved) ||
-      me.spaces.find((x) => x.id === me.default_space_id);
-    S.space_id = selected?.id || null;
-    if (S.space_id) sessionValue('codepier-space:' + me.id, S.space_id);
-    // Keep this security-context generation for metadata-only refreshes.
-    // Login/logout and switchSpace still replace it to fence stale work.
     Object.assign(S.session, { instance_admin: me.instance_admin, spaces: me.spaces });
-    if (!selected) S.page = 'identity';
   }
-  function selector() {
-    return `<div class="field iam-space-switch"><label for="iam-active-space">当前空间</label><select id="iam-active-space" aria-label="当前空间">${(me?.spaces || []).map((s) => `<option value="${esc(s.id)}" ${s.id === S.space_id ? 'selected' : ''}>${esc(s.label)} · ${esc(levels[s.level] || s.level)}</option>`).join('')}</select></div>`;
-  }
-  function bindShell() {
-    const choice = $('#iam-active-space');
-    if (choice) choice.onchange = () => switchSpace(choice.value);
-    if (!admin()) $$('[data-nav="members"]').forEach((n) => (n.hidden = true));
-  }
-  async function switchSpace(id) {
-    window.CodePierGateway?.reset();
-    window.CodePierCallLog?.clear();
-    const prior = S.space_id;
-    if (id === prior) return;
-    if (
-      hasUnsavedChanges() &&
-      !confirm('切换空间将清除当前标签页的草稿、附件和待确认请求。其他标签页不受影响。继续？')
-    ) {
-      const choice = $('#iam-active-space');
-      if (choice) choice.value = prior;
-      return;
-    }
-    const newest = await api('/api/iam/me');
-    if (!newest.spaces.some((x) => x.id === id)) throw new Error('你已不属于该空间');
-    discardLocalWork();
-    closeModal();
-    stopEvents();
-    clearTimeout(S.poll);
-    if (typeof stopComputerApprovals === 'function') stopComputerApprovals();
-    window.CodePierPanelUpdate?.detach();
-    window.CodePierIntegrations?.detach();
-    me = newest;
-    S.identity = me;
-    S.space_id = id;
-    S.session = { ...S.session, spaces: me.spaces };
-    S.renderSeq++;
-    clearSpaceSnapshots();
-    S.suspendedUser = null;
-    sessionValue('codepier-integration-receipts', null);
-    sessionValue('codepier-space:' + me.id, id);
-    S.page = 'resources';
-    location.hash = 'resources/projects';
-    renderShell();
-    connectEvents();
-    if (typeof startComputerApprovals === 'function') startComputerApprovals();
-    await renderPage();
-  }
-  async function refresh() {
-    const identity = await api('/api/iam/me');
-    if (identity.identity_access && S.page !== 'identity') {
-      await recoverPanelAccess();
-      return;
-    }
-    me = identity;
-    S.identity = identity;
-    if (S.space_id && !me.spaces.some((x) => x.id === S.space_id)) {
-      discardLocalWork();
-      closeModal();
-      stopEvents();
-      window.CodePierCallLog?.clear();
-      window.CodePierGateway?.reset();
-      window.CodePierPanelUpdate?.detach();
-      window.CodePierIntegrations?.detach();
-      if (typeof stopComputerApprovals === 'function') stopComputerApprovals();
-      clearTimeout(S.poll);
-      S.poll = null;
-      clearSpaceSnapshots();
-      S.space_id = null;
-      S.session = { ...S.session, spaces: me.spaces };
-      S.renderSeq++;
-      S.page = 'identity';
-      renderShell();
-      await renderPage();
-      toast('当前空间权限已撤销。私有内容已清除，请选择仍可用的空间。', true);
-    } else bindShell();
-  }
+  function bindShell() {}
+  async function refresh() { await bootstrap(); }
   function form(title, body, save, options = {}) {
     const login = S.session,
-      space = S.space_id;
+      space = location.hash;
     const dialog = modal(
       title,
       `<form id="iam-form">${body}<p class="form-note" id="iam-save-status" role="status"></p></form>`,
@@ -202,7 +102,7 @@ window.CodePierIdentity = (() => {
         status.textContent = '正在保存…';
         try {
           const result = await save(form);
-          if (S.session !== login || S.space_id !== space || !dialog.isConnected) return;
+          if (S.session !== login || location.hash !== space || !dialog.isConnected) return;
           closeModal(dialog);
           if (options.done) await options.done(result);
           else {
@@ -227,9 +127,9 @@ window.CodePierIdentity = (() => {
   }
   async function html(page) {
     const login = S.session,
-      space = S.space_id,
+      space = location.hash,
       seq = S.renderSeq;
-    const currentView = () => login === S.session && space === S.space_id && seq === S.renderSeq;
+    const currentView = () => login === S.session && space === location.hash && seq === S.renderSeq;
     const identity = await api('/api/iam/me');
     if (!currentView()) return '';
     me = identity;
@@ -253,37 +153,11 @@ window.CodePierIdentity = (() => {
       providers = providerData.providers;
       return (
         accountHeader(
-          `<button class="btn primary" data-iam="new-space">新建团队空间</button><button class="btn" data-iam="accept-invite">接受邀请</button>`,
+          `<button class="btn primary" data-nav="spaces">管理工作空间</button><button class="btn" data-iam="accept-invite">接受邀请</button>`,
         ) +
-        `<section class="panel"><div class="panel-head"><h2>空间</h2></div><div class="panel-body"><p class="form-note">空间选择仅作用于当前标签页。MCP 连接固定绑定授权空间，不会跟随这里的切换。</p>${me.spaces.map((s) => `<div class="grant-row"><div><h3>${esc(s.label)}</h3><small>${esc(levels[s.level])} · ${s.kind === 'team' ? '团队空间' : '个人空间'}</small></div><button class="btn small" data-iam-space="${esc(s.id)}">${s.id === S.space_id ? '当前空间' : '进入空间'}</button></div>`).join('') || empty('目前没有可用空间。')}${(me.disabled_spaces || []).map((s) => `<div class="grant-row"><span>${esc(s.label)} · 已停用</span><button class="btn" data-iam-restore="${esc(s.id)}">恢复空间</button></div>`).join('')}</div></section>` +
+        `<section class="panel"><div class="panel-head"><h2>工作空间</h2></div><div class="panel-body"><p>分别打开工作空间管理资源，不改变任何已建立的 MCP 连接。</p>${me.spaces.map((x) => `<div class="grant-row"><strong>${esc(x.label)}</strong><a class="btn" href="#spaces/${encodeURIComponent(x.id)}">打开工作空间</a></div>`).join('') || empty('没有可用工作空间。')}${(me.disabled_spaces || []).map((x) => `<div class="grant-row"><span>${esc(x.label)} · 已停用</span><button class="btn" data-iam-restore="${esc(x.id)}">恢复</button></div>`).join('')}</div></section>` +
         `<section class="panel"><div class="panel-head"><h2>登录身份</h2></div><div class="panel-body"><p>${me.local_login ? '本地密码登录已启用。' : '本账号仅使用外部身份登录。'}</p>${me.identities.map((i) => `<div class="grant-row"><div><strong>${esc(i.label)}</strong><p>${i.enabled ? '已关联' : '已停用 / 已解除关联'} · 权限有效至 ${esc(timeText(i.fresh_until))}</p>${renewalNote(i)}</div><button class="btn danger small" data-iam-unlink="${esc(i.id)}">解除关联</button></div>`).join('')}<div class="actions">${providers.map((p) => `<button class="btn" data-iam-link="${esc(p.id)}">关联 ${esc(p.label)}</button><a class="btn ghost" href="/auth/oidc/${encodeURIComponent(p.id)}/start?return_to=%2F%23identity">重新认证</a>`).join('')}</div><p class="form-note">关联 / 解除关联要求近期登录。不会按邮箱自动合并账号；解除关联会撤销该身份的会话和 MCP 凭据。</p></div></section>` +
         `<section class="panel"><div class="panel-head"><h2>登录会话</h2></div><div class="panel-body">${sessionData.sessions.map((s) => `<div class="grant-row"><div><strong>${s.id === sessionData.current ? '当前浏览器' : '其他浏览器'}</strong><p>${s.expires >= 253402300799 ? '有效至主动撤销（浏览器可能清除登录 Cookie）' : '到期 ' + esc(timeText(s.expires))}</p></div><button class="btn danger small" data-iam-session="${esc(s.id)}">退出此会话</button></div>`).join('')}</div></section>`
-      );
-    }
-    if (page === 'members') {
-      if (!admin()) return uiPermissionState('空间成员', '只有空间管理员可以管理成员与角色分配。');
-      const sid = encodeURIComponent(S.space_id),
-        out = await Promise.all([
-          api(`/api/iam/spaces/${sid}/members`),
-          api('/api/access-roles'),
-          api(`/api/iam/spaces/${sid}/assignments`),
-          api(`/api/iam/spaces/${sid}/invites`),
-        ]);
-      if (!currentView()) return '';
-      members = out[0].members;
-      roles = out[1].roles;
-      assignments = out[2].assignments;
-      invites = out[3].invitations;
-      return (
-        heading(
-          '空间成员',
-          'SPACE / MEMBERS',
-          current()?.label,
-          `<button class="btn" data-iam="edit-space">空间设置</button><button class="btn" data-iam="assign-role">分配角色</button><button class="btn primary" data-iam="invite">创建邀请</button>`,
-        ) +
-        `<section class="panel"><div class="panel-head"><h2>成员资格</h2></div><div class="panel-body"><p class="form-note">角色的使用、委派与编辑是独立权限。群组来源不可在这里改写；暂停成员可以覆盖所有来源。</p>${members.map((m) => `<div class="grant-row"><div><h3>${esc(m.display_name || m.username)}</h3><p>${esc(levels[m.level])} · ${esc(m.source)} · ${m.active && !m.blocked ? '有效' : '已暂停'}</p><small class="mono">${esc(m.user_id)}</small></div><div class="actions"><button class="btn small" data-iam-member="${esc(m.user_id)}">人工资格</button><button class="btn danger small" data-iam-block="${esc(m.user_id)}" data-blocked="${m.blocked ? '1' : '0'}">${m.blocked ? '恢复' : '暂停'}</button></div></div>`).join('')}</div></section>` +
-        `<section class="panel"><div class="panel-head"><h2>角色分配</h2></div><div class="panel-body">${assignments.map((a) => `<div class="grant-row"><div><strong>${esc(members.find((m) => m.user_id === a.user_id)?.username || a.user_id)} → ${esc(roles.find((r) => r.id === a.role_id)?.label || a.role_id)}</strong><p>${a.active ? '有效' : '已停用'} · ${a.may_delegate ? '可通过 Profile 委派给 MCP' : '只允许面板使用'} · ${esc(a.source)}</p></div>${a.source === 'manual' ? `<button class="btn small" data-iam-assignment="${esc(a.role_id)}" data-user="${esc(a.user_id)}">编辑</button>` : ''}</div>`).join('') || empty('尚无角色分配。')}</div></section>` +
-        `<section class="panel"><div class="panel-head"><h2>邀请</h2></div><div class="panel-body">${invites.map((i) => `<div class="grant-row"><span>${esc(levels[i.level])} · ${i.used_by ? '已使用' : '未使用'} · ${esc(timeText(i.expires))}</span><button class="btn danger small" data-iam-invite="${esc(i.id)}">撤销</button></div>`).join('') || empty('没有邀请。')}</div></section>`
       );
     }
     if (!me.instance_admin)
@@ -304,63 +178,11 @@ window.CodePierIdentity = (() => {
       accountHeader(
         `<button class="btn" data-iam="sync">校验群组权限</button><button class="btn primary" data-iam="new-provider">添加 OIDC 提供者</button>`,
       ) +
-      '<p class="form-note">OIDC 负责认证；CodePier 管理角色和资源授权。这里的设置作用于整个实例。</p>' +
+      '<p class="form-note">OIDC 负责认证；CodePier 管理工作空间成员和资源授权。这里的设置作用于整个实例。</p>' +
       `<section class="panel"><div class="panel-head"><h2>身份提供者</h2></div><div class="panel-body">${providers.map((p) => `<div class="grant-row"><div><h3>${esc(p.label)} · ${p.enabled ? '已启用' : '已停用'}</h3><p class="iam-wrap">${esc(p.issuer)}</p><small>加入策略：${esc(p.admission)} · 权限校验窗口 ${p.freshness_seconds} 秒</small></div><div class="actions"><button class="btn small" data-iam-provider="${esc(p.id)}">编辑</button><button class="btn small" data-iam-check="${esc(p.id)}">测试发现</button><button class="btn small" data-iam-mappings="${esc(p.id)}">群组映射</button></div></div>`).join('') || empty('没有 OIDC 提供者。本地恢复登录继续有效。')}</div></section>`
     );
   }
 
-  function memberEdit(userId) {
-    const old = members.find((m) => m.user_id === userId && m.source === 'manual');
-    form(
-      '人工成员资格',
-      select('level', '级别', Object.entries(levels), old?.level || 'member') +
-        check('active', '启用人工成员资格', old ? !!old.active : true) +
-        notice('降级或移除最后一位主理人会被拒绝。群组来源的资格独立保留。'),
-      (f) =>
-        api(`/api/iam/spaces/${S.space_id}/members/${encodeURIComponent(userId)}`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            level: f.elements.level.value,
-            active: f.elements.active.checked,
-            expected_version: old?.version || 0,
-          }),
-        }),
-    );
-  }
-  function assignEdit(roleId = '', userId = '') {
-    const old = assignments.find(
-      (a) => a.role_id === roleId && a.user_id === userId && a.source === 'manual',
-    );
-    const people = [...new Map(members.map((m) => [m.user_id, m.username])).entries()];
-    form(
-      '分配动态角色',
-      select('user_id', '成员', people, userId) +
-        select(
-          'role_id',
-          '角色',
-          roles.map((r) => [r.id, r.label]),
-          roleId,
-        ) +
-        check('active', '允许使用角色', old ? !!old.active : true) +
-        check('may_delegate', '允许通过 Profile 委派给 ChatGPT / MCP', !!old?.may_delegate) +
-        notice('角色后续增加项目和能力会应用到已授权的角色连接。'),
-      (f) => {
-        const uid = f.elements.user_id.value,
-          rid = f.elements.role_id.value,
-          currentAssignment = assignments.find(
-            (a) => a.role_id === rid && a.user_id === uid && a.source === 'manual',
-          );
-        return api(`/api/iam/spaces/${S.space_id}/assignments/${rid}/${uid}`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            active: f.elements.active.checked,
-            may_delegate: f.elements.may_delegate.checked,
-            expected_version: currentAssignment?.version || 0,
-          }),
-        });
-      },
-    );
-  }
   function providerEdit(id) {
     const p = providers.find((p) => p.id === id);
     const body =
@@ -437,97 +259,19 @@ window.CodePierIdentity = (() => {
     if (p) $('#iam-issuer', dialog).readOnly = true;
   }
   async function mappingEditor(id) {
-    const login = S.session,
-      space = S.space_id,
-      page = S.page,
-      tab = S.identityTab,
-      intent = (S.modalIntent = (S.modalIntent || 0) + 1);
     const [mapping, targets] = await Promise.all([
-      api('/api/iam/oidc/providers/' + id + '/mappings'),
-      api('/api/iam/oidc/targets'),
-    ]);
-    if (
-      login !== S.session ||
-      space !== S.space_id ||
-      page !== S.page ||
-      tab !== S.identityTab ||
-      intent !== S.modalIntent
-    )
-      return;
-    const existing = mapping.mappings
-      .map(
-        (m) =>
-          `<div class="grant-row"><span>${esc(m.group_name)} → ${esc(targets.spaces.find((s) => s.id === m.space_id)?.label || m.space_id)} / ${esc(m.level)}</span><button type="button" class="btn danger small" data-delete-map="${esc(m.id)}">移除</button></div>`,
-      )
-      .join('');
-    const dialog = form(
-      'OIDC 群组映射',
-      '<section class="form-section"><h3>已有映射</h3>' +
-        (existing || '<p class="muted">尚未配置群组映射。</p>') +
-        '</section><section class="form-section"><h3>添加映射</h3>' +
-        notice(
-          '群组映射仅支持 UserInfo claim；仅在 ID Token 返回群组的提供者（包括 Microsoft Entra）不兼容。',
-          true,
-        ) +
-        '<div class="form-grid">' +
-        field('group_name', '精确群组名称', '', 'required') +
-        select(
-          'space_id',
-          '团队空间',
-          targets.spaces.map((s) => [s.id, s.label]),
-          space,
-        ) +
-        select(
-          'level',
-          '成员级别',
-          [
-            ['member', '成员'],
-            ['guest', '访客'],
-            ['admin', '空间管理员'],
-          ],
-          'member',
-        ) +
-        select(
-          'role_id',
-          '角色（可空）',
-          [
-            ['', '仅成员资格'],
-            ...targets.roles.filter((r) => r.space_id === space).map((r) => [r.id, r.label]),
-          ],
-          '',
-        ) +
-        '</div>' +
-        check('may_delegate', '允许委派选定角色') +
-        notice('只移除本映射产生的资格；人工权限独立保留。群组不能授予实例管理员权限。') +
-        '</section>',
-      (f) =>
-        post('/api/iam/oidc/providers/' + id + '/mappings', {
-          group_name: f.elements.group_name.value,
-          space_id: f.elements.space_id.value,
-          level: f.elements.level.value,
-          role_id: f.elements.role_id.value || null,
-          may_delegate: f.elements.may_delegate.checked,
-        }),
-      { large: true },
-    );
-    $('#iam-space_id', dialog).onchange = (e) => {
-      $('#iam-role_id', dialog).innerHTML =
-        '<option value="">仅成员资格</option>' +
-        targets.roles
-          .filter((r) => r.space_id === e.target.value)
-          .map((r) => `<option value="${esc(r.id)}">${esc(r.label)}</option>`)
-          .join('');
-    };
-    $$('[data-delete-map]', dialog).forEach(
-      (button) =>
-        (button.onclick = () =>
-          busy(button, async () => {
-            await api('/api/iam/oidc/mappings/' + button.dataset.deleteMap, { method: 'DELETE' });
-            if (login !== S.session || space !== S.space_id || !dialog.isConnected) return;
-            closeModal(dialog);
-            await mappingEditor(id);
-          })),
-    );
+      api('/api/iam/oidc/providers/' + id + '/mappings'), api('/api/iam/oidc/targets')]);
+    const d = form('OIDC 群组直接权限映射',
+      mapping.mappings.map((m) => `<div class="grant-row"><span>${esc(m.group_name)} → ${esc(targets.spaces.find((x) => x.id === m.space_id)?.label || m.space_id)}</span><button class="btn danger" type="button" data-delete-map="${esc(m.id)}">移除</button></div>`).join('') +
+      field('group_name','精确群组名称','','required') +
+      select('space_id','工作空间', targets.spaces.map((x) => [x.id,x.label]), '') +
+      '<div class="field"><label for="iam-policy">直接成员权限（JSON）</label><textarea id="iam-policy" name="policy" rows="10" required>{"manage":[],"project_rules":[]}</textarea></div>' +
+      notice('仅同步 UserInfo 群组 claim；人工成员权限独立保留。不会授予实例管理员权限。'),
+      (f) => post('/api/iam/oidc/providers/'+id+'/mappings', {group_name:f.elements.group_name.value, space_id:f.elements.space_id.value, policy:JSON.parse(f.elements.policy.value)}), {large:true});
+    $$('[data-delete-map]',d).forEach((b) => b.onclick = () => busy(b,async () => {
+      await api('/api/iam/oidc/mappings/'+b.dataset.deleteMap,{method:'DELETE'});
+      closeModal(d); await mappingEditor(id);
+    }));
   }
   function bind() {
     $$('[data-identity-tab]').forEach((button) => {
@@ -540,9 +284,6 @@ window.CodePierIdentity = (() => {
         );
       };
     });
-    $$('[data-iam-space]').forEach(
-      (x) => (x.onclick = () => busy(x, () => switchSpace(x.dataset.iamSpace))),
-    );
     $$('[data-iam-link]').forEach((x) => (x.onclick = () => freshLink(x.dataset.iamLink)));
     $$('[data-iam-unlink]').forEach(
       (x) =>
@@ -566,32 +307,6 @@ window.CodePierIdentity = (() => {
             else await renderPage(false);
           })),
     );
-    $$('[data-iam-member]').forEach((x) => (x.onclick = () => memberEdit(x.dataset.iamMember)));
-    $$('[data-iam-block]').forEach(
-      (x) =>
-        (x.onclick = () =>
-          busy(x, async () => {
-            if (!confirm('更新此成员所有来源的暂停状态？')) return;
-            await api(`/api/iam/spaces/${S.space_id}/members/${x.dataset.iamBlock}/suspension`, {
-              method: 'PUT',
-              body: JSON.stringify({ blocked: x.dataset.blocked !== '1' }),
-            });
-            await renderPage(false);
-          })),
-    );
-    $$('[data-iam-assignment]').forEach(
-      (x) => (x.onclick = () => assignEdit(x.dataset.iamAssignment, x.dataset.user)),
-    );
-    $$('[data-iam-invite]').forEach(
-      (x) =>
-        (x.onclick = () =>
-          busy(x, async () => {
-            await api(`/api/iam/spaces/${S.space_id}/invites/${x.dataset.iamInvite}`, {
-              method: 'DELETE',
-            });
-            await renderPage(false);
-          })),
-    );
     $$('[data-iam-provider]').forEach(
       (x) => (x.onclick = () => providerEdit(x.dataset.iamProvider)),
     );
@@ -603,14 +318,14 @@ window.CodePierIdentity = (() => {
         (x.onclick = () =>
           busy(x, async () => {
             const login = S.session,
-              space = S.space_id,
+              space = location.hash,
               page = S.page,
               tab = S.identityTab;
             const intent = (S.modalIntent = (S.modalIntent || 0) + 1);
             const out = await post('/api/iam/oidc/providers/' + x.dataset.iamCheck + '/check');
             if (
               login !== S.session ||
-              space !== S.space_id ||
+              space !== location.hash ||
               page !== S.page ||
               tab !== S.identityTab ||
               intent !== S.modalIntent
@@ -627,10 +342,11 @@ window.CodePierIdentity = (() => {
         (x.onclick = () =>
           busy(x, async () => {
             const s = me.disabled_spaces.find((s) => s.id === x.dataset.iamRestore);
-            await post('/api/iam/spaces/' + s.id + '/restore', {
+            await post('/api/spaces/' + s.id + '/restore', {
               label: s.label,
               active: true,
               expected_version: s.version,
+              idempotency_key: 'restore-'+uid(),
             });
             await refresh();
             await renderPage(false);
@@ -662,72 +378,14 @@ window.CodePierIdentity = (() => {
         (x.onclick = () =>
           busy(x, async () => {
             switch (x.dataset.iam) {
-              case 'new-space': {
-                const key = uid();
-                form('新建团队空间', field('label', '名称', '', 'required maxlength="100"'), (f) =>
-                  post('/api/iam/spaces', { label: f.elements.label.value, idempotency_key: key }),
-                );
-                break;
-              }
               case 'accept-invite':
                 form(
                   '接受团队邀请',
                   field('invitation', '邀请凭据', '', 'required autocomplete="off"'),
                   (f) =>
-                    post('/api/iam/invites/accept', { invitation: f.elements.invitation.value }),
+                    post('/api/invitations/accept', { invitation: f.elements.invitation.value }),
                 );
                 break;
-              case 'invite':
-                form(
-                  '创建一次性邀请',
-                  select(
-                    'level',
-                    '成员级别',
-                    [
-                      ['member', '成员'],
-                      ['guest', '访客'],
-                      ['admin', '空间管理员'],
-                    ],
-                    'member',
-                  ) + field('days', '有效天数', 7, 'type="number" min="1" max="30" required'),
-                  (f) =>
-                    post(`/api/iam/spaces/${S.space_id}/invites`, {
-                      level: f.elements.level.value,
-                      days: Number(f.elements.days.value),
-                    }),
-                  {
-                    done: (result) => {
-                      modal(
-                        '保存一次性邀请',
-                        notice(
-                          '仅显示一次。请通过可信渠道交给对方；对方必须登录自己的账号后接受。',
-                        ) + `<div class="code-box secret iam-wrap">${esc(result.invitation)}</div>`,
-                      );
-                    },
-                  },
-                );
-                break;
-              case 'assign-role':
-                assignEdit();
-                break;
-              case 'edit-space': {
-                const s = current();
-                form(
-                  '空间设置',
-                  field('label', '名称', s.label, 'required maxlength="100"') +
-                    check('active', '启用空间', !!s.active),
-                  (f) =>
-                    api(`/api/iam/spaces/${s.id}`, {
-                      method: 'PUT',
-                      body: JSON.stringify({
-                        label: f.elements.label.value,
-                        active: f.elements.active.checked,
-                        expected_version: s.version,
-                      }),
-                    }),
-                );
-                break;
-              }
               case 'new-provider':
                 providerEdit();
                 break;
@@ -742,8 +400,7 @@ window.CodePierIdentity = (() => {
   }
   function applyCapabilities() {
     if (!admin()) {
-      $('#role-create')?.setAttribute('hidden', '');
-      $$('[data-role-edit],[data-action="edit-project"]').forEach((x) => (x.disabled = true));
+
     }
     $$(
       '[data-action="agent-update"],[data-action="agent-restart"],[data-action="agent-uninstall"],[data-action="agent-commands"],[data-action="agent-repair"]',
@@ -754,16 +411,12 @@ window.CodePierIdentity = (() => {
   }
   return {
     loginButtons,
-    canNavigate: (page) =>
-      page === 'members' ? admin() : page === 'identity-admin' ? !!me?.instance_admin : true,
-    levelLabel: (level) => levels[level] || '用户',
+    canNavigate: () => true,
     bootstrap,
-    selector,
     bindShell,
     html,
     bind,
     refresh,
-    switchSpace,
     admin,
     current,
     reset,

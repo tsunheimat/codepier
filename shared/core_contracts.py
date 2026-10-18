@@ -1,4 +1,4 @@
-"""Compact, composable MCP surface; legacy APIs retain their own contracts."""
+"""Compact, composable MCP surface over connection-bound workspace resources."""
 from __future__ import annotations
 
 from typing import Any, Literal

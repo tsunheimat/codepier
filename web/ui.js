@@ -40,7 +40,7 @@ function uiTrapTab(e, root) {
   }
 }
 const uiMobileMedia = matchMedia('(max-width:900px)');
-const uiDockPages = new Set(['access', 'resources', 'native', 'audit']);
+const uiDockPages = new Set(['spaces', 'resources', 'native', 'audit']);
 function uiSyncNavigation() {
   const current = ['integrations', 'artifacts'].includes(S.page) ? 'resources' : S.page;
   $$('.sidebar [data-nav-subtabs]').forEach((group) => {
@@ -61,9 +61,7 @@ function uiSyncNavigation() {
   const selectedTab =
     S.page === 'resources'
       ? S.resourceTab || 'projects'
-      : S.page === 'access'
-        ? S.accessTab || 'roles'
-        : S.page === 'identity'
+      : S.page === 'identity'
           ? S.identityTab || 'account'
           : S.page === 'audit'
             ? S.auditMode || 'operations'
@@ -524,8 +522,8 @@ if (window.visualViewport) {
 // Shared management composition. Only presentation state is retained in memory.
 function uiPermissionState(title, reason) {
   return (
-    heading(title, '', '当前空间的访问权限') +
-    `<section class="permission-state"><span class="permission-symbol">${icon('lock')}</span><h2>此页面需要相应的管理权限</h2><p>${esc(reason)}</p><p class="muted">当前空间：${esc(CodePierIdentity.current()?.label || '未选择')}</p><button class="btn" data-nav="identity">返回我的账号</button></section>`
+    heading(title, '', '工作空间资源权限') +
+    `<section class="permission-state"><span class="permission-symbol">${icon('lock')}</span><h2>此页面需要相应的管理权限</h2><p>${esc(reason)}</p><button class="btn" data-nav="identity">返回我的账号</button></section>`
   );
 }
 function uiSectionTabs(host, groups) {
@@ -584,16 +582,9 @@ function uiSectionTabs(host, groups) {
   choose(groups.some((g) => g.id === tabs[key]) ? tabs[key] : groups[0].id);
 }
 function uiManagementLayout(page) {
-  const area =
-    S.page === 'access'
-      ? S.accessTab === 'advanced'
-        ? 'profiles'
-        : S.accessTab || 'roles'
-      : S.page === 'resources' && S.resourceTab === 'mcp'
-        ? 'mcp-gateway'
-        : S.page;
-  if (!['identity', 'members', 'profiles', 'roles', 'mcp-gateway'].includes(area)) return;
-  const host = $('#profiles-page,#roles-page,#gateway-page,#access-content', page) || page;
+  const area = S.page==='spaces' && CodePierSpaces.route().tab==='mcp'?'mcp-gateway':S.page;
+  if(!['identity','mcp-gateway'].includes(area))return;
+  const host=$('#gateway-page',page)||page;
   host.classList.add('management-page');
   const panels = $$(':scope > .panel', host);
   if (panels.length > 1 && area === 'mcp-gateway') {
@@ -654,134 +645,3 @@ function uiManagementLayout(page) {
     update();
   });
 }
-
-// One rule at a time, without removing any control from the submitting form.
-function uiPolicyEditor(dialog, preferLast = false) {
-  const form = $('#role-form', dialog);
-  if (!form) return;
-  let layout = $('.policy-layout', form);
-  if (!layout) {
-    layout = document.createElement('div');
-    layout.className = 'policy-layout';
-    const navigation = document.createElement('aside');
-    navigation.className = 'policy-navigation';
-    navigation.innerHTML =
-      '<h3>权限规则</h3><p class="form-note">每条规则独立限定资源；选择一条进行编辑。</p><div class="policy-rule-list"></div><div class="policy-add-actions"></div>';
-    const body = document.createElement('div');
-    body.className = 'policy-content';
-    const projectRules = $('#role-project-rules', form),
-      devices = $('#role-device-rules', form);
-    projectRules.before(layout);
-    body.append(
-      projectRules,
-      ...['role-vps-rules', 'role-mcp-rules'].map((id) => $('#' + id, form)).filter(Boolean),
-      devices,
-    );
-    $('.policy-add-actions', navigation).append(
-      $('#role-add-project-rule', form),
-      $('#role-add-device-rule', form),
-      ...['role-add-vps-rule', 'role-add-mcp-rule'].map((id) => $('#' + id, form)).filter(Boolean),
-    );
-    layout.append(navigation, body);
-  }
-  const list = $('.policy-rule-list', layout),
-    rules = $$('fieldset.role-rule', form);
-  let selected = Number(dialog.dataset.policyIndex || 0);
-  if (preferLast instanceof Element) {
-    selected = rules.indexOf(preferLast);
-    dialog.dataset.editorDirty = 'true';
-  } else if (preferLast) selected = rules.length - 1;
-  selected = Math.max(0, Math.min(selected, rules.length - 1));
-  const existing = new Map([...list.children].map((button) => [button.dataset.ruleKey, button]));
-  const buttons = [];
-  const choose = (index, focus = false) => {
-    dialog.dataset.policyIndex = String(index);
-    rules.forEach((rule, i) => {
-      rule.hidden = i !== index;
-    });
-    [...list.children].forEach((button, i) => {
-      button.setAttribute('aria-pressed', String(i === index));
-      if (focus && i === index) button.focus();
-    });
-  };
-  rules.forEach((rule, index) => {
-    rule.dataset.policyKey ||= uid();
-    const button = existing.get(rule.dataset.policyKey) || document.createElement('button');
-    button.type = 'button';
-    button.dataset.ruleKey = rule.dataset.policyKey;
-    let title = button.querySelector('span'),
-      description = button.querySelector('small');
-    if (!title) {
-      title = document.createElement('span');
-      description = document.createElement('small');
-      button.append(title, description);
-    }
-    title.textContent = `${index + 1} · ${$('legend', rule)?.textContent || '资源规则'}`;
-    const update = () => {
-      const label = rule._policyButton?.querySelector('small');
-      if (!label) return;
-      const all = $('[name="all_projects"]', rule)?.checked;
-      const resources = $$(
-        '[name="project"]:checked,[name="device"]:checked,[name="vps"]:checked,[name="mcp_tool"]:checked',
-        rule,
-      ).length;
-      label.textContent = all
-        ? '全部当前与未来项目'
-        : resources
-          ? `已选择 ${resources} 项资源`
-          : '尚未选择资源';
-    };
-    rule._policyButton = button;
-    button.onclick = () => choose(index, true);
-    if (!rule.dataset.policyBound) {
-      rule.addEventListener('change', update);
-      rule.dataset.policyBound = 'true';
-    }
-    update();
-    buttons.push(button);
-  });
-  let cursor = list.firstElementChild;
-  for (const button of buttons) {
-    if (button === cursor) cursor = cursor.nextElementSibling;
-    else list.insertBefore(button, cursor);
-  }
-  for (const button of [...list.children]) if (!buttons.includes(button)) button.remove();
-  let empty = $('.policy-empty', layout);
-  if (!empty) {
-    empty = document.createElement('p');
-    empty.className = 'policy-empty';
-    empty.textContent = '先添加项目规则或设备委派，再选择允许的能力与资源。';
-    $('.policy-content', layout).append(empty);
-  }
-  empty.hidden = rules.length > 0;
-  choose(selected);
-  uiLabelFields(form);
-}
-
-// Menu movement follows the visible items; native select controls remain native.
-document.addEventListener('keydown', (event) => {
-  if (event.defaultPrevented || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key))
-    return;
-  const menu = event.target.closest?.('.tool-menu,.chat-overflow');
-  if (!menu) return;
-  const origin = menu.querySelector('summary');
-  if (!menu.open && event.target !== origin) return;
-  event.preventDefault();
-  menu.open = true;
-  const items = [...menu.querySelectorAll('button:not(:disabled),a[href]')].filter(
-    (item) => item.getClientRects().length,
-  );
-  if (!items.length) return;
-  const index = items.indexOf(document.activeElement);
-  const next =
-    event.key === 'Home'
-      ? 0
-      : event.key === 'End'
-        ? items.length - 1
-        : index < 0
-          ? event.key === 'ArrowUp'
-            ? items.length - 1
-            : 0
-          : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
-  items[next].focus();
-});

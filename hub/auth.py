@@ -128,6 +128,20 @@ class Auth:
                               space_id=space_id, identity_id=session['identity_id'],
                               user_epoch=session['user_epoch'], session_hash=session['id_hash'])
         principal = iam.live_principal(self.store, principal)
+        from hub.resource_context import in_resource, project_context
+        path = request.url.path
+        if principal.space_id is None:
+            resource = None
+            if path.startswith('/api/operations/'):
+                resource = ('operations', request.path_params.get('id') or request.path_params.get('operation_id'))
+            elif path.startswith('/api/artifacts/'):
+                resource = ('artifacts', request.path_params.get('identifier'))
+            elif path.startswith('/api/native/sessions/'):
+                resource = ('native_ownership', request.path_params.get('sid'))
+            if resource and resource[1]:
+                principal = in_resource(self.store, principal, *resource)
+            elif request.query_params.get('project'):
+                principal = project_context(self.store, principal, request.query_params['project'])
         iam.audit_context.set((self.store, principal.actor, principal.space_id, principal.user_id))
         return principal
 

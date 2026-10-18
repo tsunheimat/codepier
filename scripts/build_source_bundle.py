@@ -61,7 +61,7 @@ PANEL_UPDATE_EXCLUDES = frozenset({
 
 EXTENSIONS = {'.py','.js','.mjs','.cjs','.ts','.tsx','.html','.css','.json','.toml','.yaml','.yml',
               '.md','.txt','.sh','.ps1','.cmd','.bat','.svg','.png','.jpg','.jpeg','.webp','.ico',
-              '.xml','.service','.plist','.example'}
+              '.xml','.sql','.service','.plist','.example'}
 EXCLUDED_NAMES = {'.rekey','.codepier-updater','__pycache__','node_modules','.git','.pytest_cache','.venv','.venv-compat',
                   'data','private','agent-state','hub-data','uploads','backups','checkpoints','.DS_Store',
                   '.work','dist','.ruff_cache','.mypy_cache','.idea','.vscode'}
@@ -78,7 +78,7 @@ EVIDENCE_FILES = {'full-regression-final.xml','focused-verified.xml','worker-rea
 
 REQUIRED_FILES = {
     'hub/principal.py', 'hub/tool_router.py', 'hub/gateway/service.py', 'hub/iam.py', 'hub/oidc.py',
-    'hub/access_profiles.py','shared/access_profile_contracts.py','web/access-profiles.js',
+    'hub/access_profiles.py','shared/access_profile_contracts.py','web/spaces.js','web/spaces.css','hub/schema.sql','shared/workspace_contracts.py','hub/workspace_api.py','agent/execution_sessions.py','agent/execution.py',
     'web/access-profiles.css','docs/ACCESS_PROFILES.md','web/identity.js','web/mcp-gateway.js',
     '.prettierrc.json',
     'agent/background_browser.py',
@@ -179,7 +179,7 @@ PUBLIC_DOCS = {
     'docs/EXTERNAL_PLUGINS.md',
     'docs/RESOURCE_MODEL.md', 'docs/CONVERSATIONS.md',
     'docs/PERSONAL_SPACES.md',
-    'docs/MCP_GATEWAY.md', 'docs/MULTIUSER_OIDC.md', 'docs/DYNAMIC_ROLES.md', 'docs/ACCESS_PROFILES.md', 'docs/UPSTREAM_INTEGRATION.md',
+    'docs/MCP_GATEWAY.md', 'docs/MULTIUSER_OIDC.md', 'docs/WORKSPACES.md', 'docs/ACCESS_PROFILES.md', 'docs/UPSTREAM_INTEGRATION.md',
     'docs/FILE_IMPORT.md',
     'docs/CORE_TOOLS.md',
     'docs/AGENT_INSTALL.md',

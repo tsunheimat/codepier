@@ -159,15 +159,9 @@ class SessionActivity:
         gateway metadata remain owner-private even for Space administrators.
         No encrypted execution payload or result is loaded by a list query.
         """
-        clause, values = iam.private_sql(principal, 'o.')
-        if not principal.admin and '*' not in principal.projects:
-            clause += ' AND (o.project_id IS NULL OR o.project_id IN (%s))' % (','.join('?' for _ in principal.projects) or 'NULL')
-            values.extend(principal.projects)
-        private = 'space_id=? AND owner_user_id=?'
-        scope = [principal.space_id, principal.user_id]
-        if principal.grant_id:
-            private += ' AND grant_id=?'
-            scope.append(principal.grant_id)
+        from hub.api.activity import operation_filter
+        clause, values = operation_filter(self.store, principal)
+        private, scope = iam.owner_scope_sql(self.store, principal)
         gateway = private.replace('owner_user_id', 'user_id')
         sql = f'''WITH visible_sessions AS (SELECT * FROM conversations WHERE {private}),
             calls AS (SELECT * FROM audit_activity WHERE {private}),
@@ -235,9 +229,10 @@ class SessionActivity:
             result['correlation'] = self.store.one('SELECT correlation FROM audit_activity WHERE id=?', (identifier,))['correlation']
         else:
             # Older or panel operations have no host metadata. Never invent it.
+            private, scope = iam.owner_scope_sql(self.store, principal, 'a.')
             activity = self.store.one('''SELECT a.correlation FROM audit_activity a JOIN audit_activity_receipts r ON r.activity_id=a.id
-                WHERE r.operation_type=? AND r.operation_id=? AND a.space_id=? AND a.owner_user_id=? ORDER BY a.created DESC LIMIT 1''',
-                (kind, identifier, principal.space_id, principal.user_id))
+                WHERE r.operation_type=? AND r.operation_id=? AND ''' + private + ' ORDER BY a.created DESC LIMIT 1',
+                (kind, identifier, *scope))
             result['correlation'] = activity['correlation'] if activity and activity['correlation'] != 'correlated' else 'unassociated'
         if not result.get('alias'):
             result['alias'] = ' / '.join(r['name'] for r in result['resources'])
@@ -335,6 +330,8 @@ class SessionActivity:
             self.runtime.gateway.require_enabled()
             self.runtime.conversations.operation('mcp', identifier, principal)
             original = self.store.one('SELECT * FROM gateway_calls WHERE id=?', (identifier,))
+            from hub.resource_context import in_resource
+            principal = in_resource(self.store, principal, 'gateway_calls', identifier)
             from hub.gateway.catalog import fingerprint
             from hub.gateway.policy import binding_rows
             binding, account, connector = binding_rows(self.store, original['binding_id'], principal.space_id)
@@ -362,10 +359,7 @@ class SessionActivity:
         return result
 
     def observations(self, kind, identifier, principal):
-        clause = 'a.space_id=? AND a.owner_user_id=?'
-        args = [principal.space_id, principal.user_id]
-        if principal.grant_id:
-            clause += ' AND a.grant_id=?'; args.append(principal.grant_id)
+        clause, args = iam.owner_scope_sql(self.store, principal, 'a.')
         return self.store.all('''SELECT a.id,a.method,a.tool,a.action,a.request_id,a.conversation_id AS session_id,
             a.correlation,a.state,a.error_code,a.created,a.updated,r.relation
             FROM audit_activity a JOIN audit_activity_receipts r ON r.activity_id=a.id

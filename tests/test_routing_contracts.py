@@ -89,12 +89,14 @@ def test_rch_leases_require_unique_strict_remote_identity(tmp_path):
 
 
 def test_shared_source_holds_overlap_not_sibling_projects():
-    row = {'id': 'prior', 'tool': 'routed_exec', 'state': 'needs_review',
-        'route_context': json.dumps({'source_root_id': 'same-nfs', 'subpath': 'app'})}
+    # One pool can be bound into multiple workspaces. Lock identity comes from
+    # shared bytes, not the removed per-space source_root_id/route model.
+    row = {'id': 'prior', 'tool': 'routed_exec', 'state': 'needs_review', 'space_id': 'first',
+        'route_context': json.dumps({'source_key': 'pool:same-nfs', 'subpath': 'app'})}
     routing = ProjectRouting(SimpleNamespace(store=SimpleNamespace(all=lambda *args: [row])))
-    def op(path, tool='write', source='same-nfs'):
-        return {'id': 'next', 'tool': tool, 'created': 2, 'space_id': 's', 'attempts': 0,
-            'route_context': json.dumps({'source_root_id': source, 'subpath': path})}
+    def op(path, tool='write', source='pool:same-nfs'):
+        return {'id': 'next', 'tool': tool, 'created': 2, 'space_id': 'second', 'attempts': 0,
+            'route_context': json.dumps({'source_key': source, 'subpath': path})}
     assert routing.source_blocker(op('app/subdir')) == 'prior'
     assert routing.source_blocker(op('.')) == 'prior'
     assert routing.source_blocker(op('sibling')) is None

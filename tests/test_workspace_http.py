@@ -19,6 +19,7 @@ def web(tmp_path,monkeypatch):
     monkeypatch.setenv('HUB_PUBLIC_URL','https://workspace.test')
     monkeypatch.delenv('MCP_PUBLIC_URL',raising=False)
     monkeypatch.setenv('CODEPIER_MCP_GATEWAY','1')
+    monkeypatch.setenv('OAUTH_REDIRECT_HOSTS','client.example')
     root=tmp_path/'hub'
     seed=WorkspaceFixture(root)
     seed.close()

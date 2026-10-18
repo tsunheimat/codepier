@@ -135,7 +135,7 @@ class Gateway:
                 if (fresh.user_id, fresh.space_id) != (principal.user_id, principal.space_id):
                     raise DevError('GATEWAY_IDENTITY_CHANGED', '身份已变化，请重新开始', 409)
                 account = managed_account(self.store, fresh, account_id)
-                connector = self.store.one('SELECT * FROM gateway_connectors WHERE id=? AND space_id=?', (account['connector_id'], fresh.space_id))
+                connector = self.store.one('SELECT * FROM gateway_connectors WHERE id=?', (account['connector_id'],))
                 if not connector or not connector['enabled'] or not account['enabled']:
                     raise DevError('GATEWAY_DISABLED', '帐户或连接已暂停', 409)
                 return account, connector, self.store.decrypt(account['secret'])

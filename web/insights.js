@@ -234,13 +234,13 @@ async function currentSymbols() {
 }
 async function readSourceDocument(project, path, start = 1, workspace_id = '') {
   const session = S.session,
-    space = S.space_id,
+    space = location.hash,
     loading = modal(path, '<p class="muted">读取当前源码…</p>');
   try {
     const r = await settled(
       tool('fs_read', { project, workspace_id, path, start_line: start, max_lines: 400 }),
     );
-    if (session !== S.session || space !== S.space_id || !loading.isConnected) return;
+    if (session !== S.session || space !== location.hash || !loading.isConnected) return;
     modal(
       path,
       `<p class="muted tiny">第 ${r.start_line}–${r.end_line} 行 / 共 ${r.total_lines} 行 · SHA ${esc(r.sha256.slice(0, 16))}</p><div class="code-box"><pre>${esc(r.content)}</pre></div>`,
@@ -250,7 +250,7 @@ async function readSourceDocument(project, path, start = 1, workspace_id = '') {
       true,
     );
   } catch (error) {
-    if (session === S.session && space === S.space_id && loading.isConnected)
+    if (session === S.session && space === location.hash && loading.isConnected)
       $('.modal-body', loading).innerHTML = notice(esc(error.message));
     throw error;
   }

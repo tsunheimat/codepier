@@ -76,7 +76,7 @@ class ArtifactService:
 
     def public(self,row):
         return {k:row[k] for k in ('name','bytes','sha256','created','expires','project_id','source_operation_id')}|{
-            'artifact_id':row['id'],'space_id':row['space_id'],'download_path':'/api/artifacts/'+row['id']+'/download?space_id='+quote(row['space_id'],safe=''),
+            'artifact_id':row['id'],'download_path':'/api/artifacts/'+row['id']+'/download',
             'expired':row['expires']<=time.time(),'device_online':self.runtime.online(row['device_id']),
             'authentication':'Panel session or current read-scoped Bearer token; no anonymous URL',
             'immutable':True,'range_supported':True}
@@ -86,20 +86,30 @@ class ArtifactService:
 
     def list(self,args,principal):
         principal=iam.live_principal(self.runtime.store,principal)
-        clause,values=iam.private_sql(principal,'a.');clauses=[clause]
-        if '*' not in principal.projects:
-            clauses.append('a.project_id IN (%s)'%(','.join('?' for _ in principal.projects) or 'NULL'))
-            values.extend(principal.projects)
+        scopes, values = [], []
+        for view in iam.panel_workspaces(self.runtime.store, principal):
+            clause, args_ = iam.private_sql(view, 'a.')
+            projects = [pid for pid, actions in iam.project_permissions(self.runtime.store, view).items() if 'read' in actions]
+            scopes.append('('+clause+' AND a.project_id IN ('+(','.join('?' for _ in projects) or 'NULL')+'))')
+            values.extend([*args_, *projects])
+        clauses = ['('+(' OR '.join(scopes) or '0')+')']
         if args['project']:
             project=self.runtime.project(args['project'],principal)
             clauses.append('a.project_id=?');values.append(project['id'])
         if args['cursor']:
             created,identifier=decode_cursor(args['cursor'])
             clauses.append('(a.created<? OR (a.created=? AND a.id<?))');values.extend((created,created,identifier))
-        rows=self.runtime.store.all('SELECT a.* FROM artifacts a JOIN projects p ON p.id=a.project_id AND p.root=a.root AND p.device_id=a.device_id'+
+        rows=self.runtime.store.all('SELECT a.* FROM artifacts a JOIN projects p ON p.id=a.project_id AND p.space_id=a.space_id'+
             (' WHERE '+' AND '.join(clauses) if clauses else '')+' ORDER BY a.created DESC,a.id DESC LIMIT ?',(*values,args['limit']+1))
         more=len(rows)>args['limit'];rows=rows[:args['limit']]
-        return {'artifacts':[self.public(row) for row in rows],
+        visible=[]
+        for row in rows:
+            try:
+                self.row(row['id'],principal)
+            except DevError:
+                continue
+            visible.append(self.public(row))
+        return {'artifacts':visible,
                 'next_cursor':encode_cursor(rows[-1]['created'],rows[-1]['id']) if more and rows else None}
 
     async def chunk(self,row,project,offset):

@@ -13,11 +13,13 @@ class Session(WorkspaceModel):
     execution_device_id: str | None=Field(default=None,pattern=r'^[A-Za-z0-9_-]{1,100}$',
         description='Only for user-requested device selection on open. Omit for the configured default.')
     mode: Literal['persistent_shell','pty']='persistent_shell'
-    shell: Literal['sh','bash','zsh','cmd','powershell']='sh'
+    shell: Literal['sh','bash','zsh','cmd','powershell'] | None = Field(default=None,
+        description='Omit to use the saved SSH target shell or the local Runner default. An explicit SSH shell must match its saved target.')
     cwd: str=Field(default='.',min_length=1,max_length=4096)
     env: dict[str,str]=Field(default_factory=dict,max_length=128)
     command: str=Field(default='',max_length=65536)
     data: str=Field(default='',max_length=65536)
+    data_base64: str=Field(default='',max_length=87384)
     cursor: int=Field(default=0,ge=0)
     limit: int=Field(default=32768,ge=1,le=65536)
     rows: int=Field(default=24,ge=1,le=1000)
@@ -32,7 +34,7 @@ class Session(WorkspaceModel):
         public={'operation','session_id','yield_seconds','idempotency_key'}
         allowed={
             'open':{'project','workspace_id','target','execution_device_id','mode','shell','cwd','env','rows','cols'},
-            'exec':{'command','timeout_seconds'},'read':{'cursor','limit'},'write':{'data'},
+            'exec':{'command','timeout_seconds'},'read':{'cursor','limit'},'write':{'data','data_base64'},
             'resize':{'rows','cols'},'signal':{'signal'},'status':set(),'close':set(),
         }
         unexpected={name for name in self.model_fields_set - public - allowed[self.operation]
@@ -50,8 +52,14 @@ class Session(WorkspaceModel):
             raise ValueError('Mutations require an idempotency key; repeating input is not recovery')
         if self.operation=='exec' and not self.command:
             raise ValueError('A persistent-shell command cannot be empty')
-        if self.operation=='write' and not self.data:
-            raise ValueError('PTY input cannot be empty')
+        if self.operation=='write':
+            if bool(self.data) == bool(self.data_base64):
+                raise ValueError('PTY input needs exactly one of data or data_base64')
+            if self.data_base64:
+                import base64
+                decoded = base64.b64decode(self.data_base64, validate=True)
+                if not 1 <= len(decoded) <= 65536:
+                    raise ValueError('PTY input must contain 1–65536 bytes')
         if any('\x00' in value for value in (self.command,self.cwd,*self.env.keys(),*self.env.values())):
             raise ValueError('Command, cwd and environment cannot contain NUL')
         import re
@@ -66,6 +74,7 @@ def register(Tool,tools,schemas):
         'Sessions keep their original target. Persistent exec commands share cwd/env and are serialized. '
         'PTY read/write exchanges terminal bytes (UTF-8 text may contain escapes); it is not per-command exit status. '
         'Use original session/operation IDs and idempotency keys to observe uncertain input; never open a replacement pretending to restore state. '
+        'Ordinary opens omit shell to use the saved target/Runner default. '
         'Ordinary local opens omit execution_device_id; choose another only when the user explicitly requests it.',True,False)
     schemas['session']={'type':'object','properties':{'session_id':{'type':'string'},'operation_id':{'type':'string'},
         'mode':{'type':'string'},'state':{'type':'string'},'pending':{'type':'boolean'},'result':{'type':'object'},

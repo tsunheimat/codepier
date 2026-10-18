@@ -13,31 +13,64 @@ from fastapi.responses import Response, StreamingResponse
 from shared.util import DevError
 from hub import iam
 
-def operation_rows(store, principal,limit=40, offset=0, status="", project="", source=""):
-    clause,args=iam.private_sql(principal,'o.')
-    where=[clause]
-    if not principal.admin:
-        where.append('(o.project_id IS NULL OR o.project_id IN (%s))' % (','.join('?' for _ in principal.projects) or 'NULL'))
-        args.extend(principal.projects)
-    if status:
-        where.append("o.state=?")
-        args.append(status)
-    if project:
-        where.append("o.project_id=?")
-        args.append(project)
-    if source in {"mcp", "panel"}:
-        where.append("o.actor LIKE ?")
-        args.append(source + ":%")
-    sql = "SELECT o.id,o.device_id,o.project_id,o.actor,o.tool,o.state,o.created,o.updated,o.error,o.attempts,o.accepted_at,o.deadline,o.cancel_requested,o.transport_error,p.alias,d.name AS device_name FROM operations o LEFT JOIN projects p ON p.id=o.project_id LEFT JOIN devices d ON d.id=o.device_id"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    return store.all(sql + " ORDER BY o.created DESC LIMIT ? OFFSET ?", (*args, limit, offset))
+def operation_filter(store, principal, alias='o.'):
+    """Bound aggregate panel queries to each live workspace and resource policy."""
+    from hub.permissions import principal_policy, vps_actions
+    groups, values = [], []
+    for scoped in iam.panel_workspaces(store, principal):
+        privacy, args = iam.private_sql(scoped, alias)
+        if principal.space_id is None and not principal.grant_id:
+            privacy += ' AND ('+alias+'owner_user_id=? OR '+alias+"visibility='space')"
+            args.append(principal.user_id)
+        projects = [p for p, actions in iam.project_permissions(store, scoped).items() if 'read' in actions]
+        policy = principal_policy(store, scoped)
+        vps = [row['id'] for row in store.all('SELECT id FROM space_vps WHERE space_id=? AND enabled=1', (scoped.space_id,))
+               if 'read' in vps_actions(policy, row['id'])]
+        resource = alias+'project_id IN ('+(','.join('?' for _ in projects) or 'NULL')+')'
+        args.extend(projects)
+        resource += " OR ("+alias+"project_id IS NULL AND json_extract("+alias+"route_context,'$.vps_id') IN ("+(','.join('?' for _ in vps) or 'NULL')+'))'
+        args.extend(vps)
+        # Configuration validation operations have no project yet; only their
+        # owning human resource manager can inspect them.
+        if not scoped.grant_id and ('workspace' in policy.manage or 'resources' in policy.manage):
+            resource += " OR ("+alias+"project_id IS NULL AND json_extract("+alias+"route_context,'$.vps_id') IS NULL AND "+alias+"owner_user_id=?)"
+            args.append(scoped.user_id)
+        groups.append('('+privacy+' AND ('+resource+'))')
+        values.extend(args)
+    return (' OR '.join(groups) or '0'), values
 
+
+def operation_rows(store, principal,limit=40, offset=0, status="", project="", source="", *, runtime=None):
+    clause,args=operation_filter(store,principal)
+    where=['('+clause+')']
+    for column,value in [('o.state',status),('o.project_id',project)]:
+        if value:
+            where.append(column+'=?');args.append(value)
+    if source in {"mcp", "panel"}:
+        where.append("o.actor LIKE ?");args.append(source+":%")
+    sql = "SELECT o.id,o.space_id,o.device_id,o.project_id,o.actor,o.tool,o.state,o.created,o.updated,o.error,o.attempts,o.accepted_at,o.deadline,o.cancel_requested,o.transport_error,p.alias,d.name AS device_name FROM operations o LEFT JOIN projects p ON p.id=o.project_id LEFT JOIN devices d ON d.id=o.device_id"
+    rows=store.all(sql+' WHERE '+' AND '.join(where)+' ORDER BY o.created DESC,o.id LIMIT ? OFFSET ?',(*args,limit,offset))
+    if runtime is not None:
+        from hub.resource_context import in_resource
+        visible=[]
+        for row in rows:
+            try:
+                scoped=in_resource(store,principal,'operations',row['id'])
+                runtime.operation_row(row['id'],scoped)
+            except DevError:
+                continue
+            visible.append(row)
+        return visible
+    return rows
 
 
 def audit_rows(store, principal,limit=40, offset=0, query="", status="", source=""):
-    where,args=['space_id=?'],[principal.space_id]
-    if not principal.admin:
+    views=iam.panel_workspaces(store,principal)
+    spaces=[p.space_id for p in views]
+    where,args=['space_id IN ('+(','.join('?' for _ in spaces) or 'NULL')+')'],list(spaces)
+    # The global view does not turn workspace ownership into other users'
+    # private activity. Explicit workspace audit managers use that page.
+    if principal.space_id is None or not principal.admin:
         where.append('owner_user_id=?');args.append(principal.user_id)
     if query:
         where.append("(actor LIKE ? OR action LIKE ? OR target LIKE ?)")
@@ -68,7 +101,7 @@ def make_activity_router(context: HubContext):
     def operations(request: Request, limit: int = 40, offset: int = Query(default=0, le=2**63 - 1), status: str = "", project: str = "", source: str = ""):
         principal = auth.panel(request)
         limit, offset = max(1, min(limit, 100)), max(0, offset)
-        rows = operation_rows(store, principal, limit + 1, offset, status, project, source)
+        rows = operation_rows(store, principal, limit + 1, offset, status, project, source, runtime=runtime)
         return {"operations": rows[:limit], "next_offset": offset + limit if len(rows) > limit else None}
 
     @router.get("/api/operations/{id}")
@@ -102,13 +135,8 @@ def make_activity_router(context: HubContext):
 
     @router.get("/api/events")
     async def events(request: Request):
-        # Old pages only understand access_revoked. Negotiate differentiated
-        # events so a rolling upgrade never leaves their private snapshots live.
-        scoped_events = 'query_string' in request.scope and request.query_params.get('access_events') == '2'
-
         def invalidation(event):
-            name = event if scoped_events else 'access_revoked'
-            return f"event: {name}\ndata: {{}}\n\n"
+            return f"event: {event}\ndata: {{}}\n\n"
 
         def snapshot(item=None):
             # One current authority decision for each frame/idle heartbeat.
@@ -116,10 +144,7 @@ def make_activity_router(context: HubContext):
             # lost-membership/session boundary.
             with iam.read_scope(store):
                 principal = auth.panel(request)
-                permissions = iam.project_permissions(store, principal)
-                access = frozenset((project, action) for project, actions in permissions.items() for action in actions)
-                access |= frozenset(('@', flag) for flag, allowed in [
-                    ('space_admin', principal.admin), ('instance_admin', principal.instance_admin)] if allowed)
+                access = iam.panel_access_snapshot(store, principal)
                 visible = item is not None and iam.event_visible(runtime, principal, item)
                 return access, visible
         access, _ = await store.run(snapshot)

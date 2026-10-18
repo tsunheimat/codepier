@@ -11,7 +11,7 @@ import time
 from shared.util import DevError
 
 REF = re.compile(r'^[a-f0-9]{32}$')
-RESULT_TOOLS = {'show_changes', 'validation_run', 'artifacts_register', 'shell_exec', 'ssh_exec', 'tasks_run', 'exec', 'routed_exec', 'routed_job_control'}
+RESULT_TOOLS = {'show_changes', 'validation_run', 'artifacts_register', 'shell_exec', 'tasks_run', 'exec', 'routed_exec', 'routed_job_control'}
 RECENT_TOOLS = RESULT_TOOLS | {'apply_patch', 'fs_write', 'fs_edit', 'download_artifact', 'worktrees_create'}
 PRIVATE_MEDIA = {'computer_apps', 'computer_session_open', 'computer_observe', 'computer_action',
                  'computer_session_close', 'browser_open', 'browser_snapshot', 'browser_action', 'browser_close'}
@@ -28,12 +28,12 @@ def operation_summary(runtime, identifier, principal, project, workspace_id):
         return None
     if op['project_id'] != project['id']:
         return None
-    if project.get('routing_managed') and op.get('route_context'):
+    if op.get('route_context'):
         import json
-        route = json.loads(op['route_context'])
-        if (route.get('source_root_id'), route.get('subpath')) != (project['source_root_id'], project['subpath']):
+        route=json.loads(op['route_context'])
+        if route.get('folder_id')!=project['folder_id']:
             return None
-    elif op['device_id'] != project['device_id']:
+    elif op['device_id']!=project['device_id']:
         return None
     if (op.get('args_summary') or {}).get('workspace_id', '') != workspace_id:
         return None
@@ -88,9 +88,8 @@ def workspace_status(runtime, args, principal):
         if len(recent_items) >= limit:
             break
     return {'project': project['alias'], 'project_id': project['id'],
-            'workspace_id': workspace_id, 'root': project['root'] if not workspace_id else None,
+            'workspace_id': workspace_id, 'root': project.get('logical_root','') if not workspace_id else None,
             'observed_at': time.time(), 'device_online': runtime.online(project['device_id']),
-            'execution_routes': project.get('execution_routes', []),
             'recent_operations': recent_items,
             'recent_window_limited': recent['next_before_created'] is not None or len(recent_items) >= limit,
             'execution_started': False,

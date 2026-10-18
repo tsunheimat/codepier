@@ -271,13 +271,14 @@ def make_workspace_router(auth, runtime):
         principal=iam.require_space_capability(store,auth.panel(request),'resources')
         project=iam.project_in_space(store,principal,project_id)
         row=store.one('SELECT * FROM project_shell_settings WHERE project_id=?',(project_id,))
-        result={'settings':json.loads(row['settings']) if row else ShellSettings().model_dump(),'version':row['version'] if row else 0}
+        result={'settings':json.loads(row['settings']) if row else ShellSettings().model_dump(),'version':row['version'] if row else 0,'devices':[]}
         from hub.workspace_sources import resolve_shell
         try:
+            parent=resolve_shell(store,project,project_override=ShellSettings())
+            source=source_views(store,project)
+            result['devices']=[{'id':v['device_id'],'name':v['device_name']} for v in source['views'].values() if v['device_id'] in parent['allowed_device_ids']]
             resolved=resolve_shell(store,project)
             result['resolved']={**resolved,'allowed_device_ids':sorted(resolved['allowed_device_ids'])}
-            source=source_views(store,project)
-            result['devices']=[{'id':v['device_id'],'name':v['device_name']} for v in source['views'].values() if v['device_id'] in resolved['allowed_device_ids']]
         except DevError as exc:
             result['resolved_error']={'code':exc.code,'message':exc.message}
         return result

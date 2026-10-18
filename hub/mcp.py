@@ -72,14 +72,13 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         origin=request.headers.get('origin')
         public_base=await runtime.store.run(public_url)
         request_public_url=lambda:public_base
-        authorization=request.query_params.get('authorization','fixed')
-        if authorization not in {'fixed','role'}:return failure(None,-32602,'Unknown authorization mode',400)
-        auth_scope=WORKSPACE_SCOPE if authorization=='role' else 'read'
+        if any(key in request.query_params for key in ('authorization','role','space','profile')):
+            return failure(None,-32602,'MCP identity is bound by the connection, not URL selectors',400)
+        auth_scope=WORKSPACE_SCOPE
         mark('authenticate')
         try:principal=await runtime.store.run(auth.bearer, request)
         except DevError as exc:
             metadata=public_base+'/.well-known/oauth-protected-resource/mcp'
-            if authorization=='role':metadata+='?authorization=role'
             headers={'WWW-Authenticate':f'Bearer resource_metadata="{metadata}", scope="{auth_scope}"'}
             if exc.code in {'ENTITLEMENTS_STALE','ENTITLEMENTS_UNAVAILABLE'}:
                 # The CodePier bearer is valid. Re-consenting to this issuer

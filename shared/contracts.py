@@ -124,34 +124,6 @@ class ShellExec(Project):
             raise ValueError("env exceeds 65536 characters")
         return self
 
-class SSHExec(Project):
-    host: str = Field(min_length=1, max_length=253, description="VPS hostname or IP address, without user, port or URL scheme.")
-    port: int = Field(default=22, ge=1, le=65535)
-    username: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$")
-    password: str = Field(min_length=1, max_length=4096, repr=False, description="User-authorized SSH password. Passed through a child environment, never command arguments. Do not repeat it in command or output. Requires local sshpass.")
-    command: str = Field(min_length=1, max_length=65536, description="Command/script to run ON THE VPS, not a local SSH invocation. Non-interactive; no sudo/password prompts after login.")
-    host_key_policy: Literal['strict', 'accept-new'] = Field(default='strict', description="strict requires an existing trusted known_hosts entry. Explicit accept-new trusts a first-seen host and saves its key; changed keys are always rejected.")
-    known_hosts_file: str = Field(default='', max_length=4096, description="Optional absolute Agent-local known_hosts path. Empty uses the user's OpenSSH configuration.")
-    timeout_seconds: int = Field(default=300, ge=1, le=86400)
-    idempotency_key: str = Field(min_length=8, max_length=128, description="Reuse only for identical retries; poll the returned operation ID instead of repeating an uncertain remote command.")
-
-    @model_validator(mode='after')
-    def ssh_values(self):
-        try:
-            ipaddress.ip_address(self.host)
-        except ValueError:
-            labels = self.host.rstrip('.').split('.')
-            if any(not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?', label) for label in labels):
-                raise ValueError('host must be a hostname or IP, without options, user or port') from None
-        if any(c in self.password for c in ('\x00', '\n', '\r')):
-            raise ValueError('SSH password cannot contain NUL or line breaks')
-        if not self.command.strip() or '\x00' in self.command:
-            raise ValueError('SSH command must be nonempty text without NUL')
-        if '\x00' in self.known_hosts_file or '\n' in self.known_hosts_file or '\r' in self.known_hosts_file:
-            raise ValueError('known_hosts_file cannot contain NUL or line breaks')
-        return self
-
-
 class VPSList(Args):
     project: str = Field(default='', max_length=100, description='Optional authorized project alias/ID; empty searches all projects visible to this caller.')
     query: str = Field(default='', max_length=253, description='Filter by VPS name, IP/hostname, provider or region. Never returns credentials.')
@@ -312,14 +284,13 @@ TOOLS: dict[str, Tool] = {
     "tasks_run": Tool(Task, "execute", "Run one locally allowlisted task and return an operation ID immediately. Follow next_call until completion; project tasks run as the Agent OS user.", True),
     "execution_info": Tool(RemoteProject, "read", "Inspect execution permissions, shell availability and tool availability without running commands. MCP returns capability booleans and omits account identity and host installation paths. Use this before tests, builds or releases; node execution is not an OS sandbox."),
     "shell_exec": Tool(ShellExec, "execute", "Execute an arbitrary shell command on the Agent with its OS user's full filesystem/network permissions. Use for tests, dependencies, Git commits/pushes, SSH, Docker and release scripts. Requires local full-access opt-in and project execute permission. Non-interactive; returns an operation ID immediately. Poll operations_wait/get for logs and exit_code; operations_cancel stops it. For direct VPS password login prefer ssh_exec; for local deployment scripts pass the password via env.SSHPASS. No automatic file backup or rollback.", True),
-    "ssh_exec": Tool(SSHExec, "execute", "Run a command on a VPS using an explicitly supplied SSH password. Use when the user provides a host, username and password to operate their server. Handles non-interactive password authentication automatically; no local shell quoting or SSHPASS setup needed. Requires the SAME local full-access opt-in and execute scope as shell_exec, plus ssh and sshpass on the Agent. Host keys are verified. Returns an operation ID: poll operations_wait/get, never replay an uncertain command. Cancellation stops the local transport, not guaranteed remote rollback.", True),
     "operations_get": Tool(OperationView, "read", "Read the state, captured output and result of an operation accessible to this token. Inspect interrupted or unknown outcomes before issuing a new mutation.", local=True),
     "operations_list": Tool(OperationList, "read", "Find your recent operations after a lost response, including queued/running work. Filter by project, tool or the exact idempotency key. Never create a new mutation key just because the connection failed.", local=True),
     "operations_wait": Tool(WaitView, "read", "Wait up to 10 seconds for an existing operation. Follow next_call on the same ID until terminal and read the final result; never reruns the task.", local=True),
     "operations_cancel": Tool(Cancel, "execute", "Cancel an unsent queued operation, or persist a cancellation request for a local task, including while offline. Already delivered file modifications cannot be undone by cancellation.", True, True),
 }
 
-PROCESS_TOOLS = {"tasks_run", "shell_exec", "ssh_exec"}
+PROCESS_TOOLS = {"tasks_run", "shell_exec"}
 
 
 def _object(properties: dict, required: tuple[str, ...] = ()) -> dict:
@@ -383,7 +354,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     "tasks_run": _object({**_RECEIPT, **_PROCESS, "command": {"type": "array", "items": _STR}, "cwd": _STR}, ("operation_id", "exit_code", "output")),
     "execution_info": _object({**_RECEIPT, "platform": _STR, "user": _STR, "uid": _NULLABLE_INT, "project_root": _STR, "shell": {"type": "object", "additionalProperties": True}, "tools": {"type": "object", "additionalProperties": {"anyOf": [_STR, {"type": "null"}]}}, "tool_lookup": _STR, "credential_environment_present": {"type": "object", "additionalProperties": _BOOL}, "note": _STR}, ("operation_id", "platform", "user", "shell", "tools")),
     "shell_exec": _object({**_RECEIPT, **_PROCESS, "cwd": _STR, "shell": {"type": "array", "items": _STR}}, ("operation_id", "exit_code", "output", "cwd")),
-    "ssh_exec": _object({**_RECEIPT, **_PROCESS, "host": _STR, "port": _INT, "username": _STR, "ssh_error": _NULLABLE_STR}, ("operation_id", "exit_code", "output", "host")),
     "operations_get": _object({"operation_id": _OPERATION, "id": _STR, "project_id": _NULLABLE_STR, "tool": _STR, "state": _STR, "pending": _BOOL, "result": {"type": ["object", "null"]}, "output": _STR, "error": _NULLABLE_STR, "next": _NULLABLE_STR, "retry_after_seconds": _NULLABLE_INT}, ("operation_id", "state", "pending")),
     "operations_list": _object({"operations": {"type": "array", "items": {"type": "object", "additionalProperties": True}}, "next_before_created": _NULLABLE_NUM}, ("operations",)),
     "operations_wait": _object({"operation_id": _OPERATION, "id": _STR, "project_id": _NULLABLE_STR, "tool": _STR, "state": _STR, "pending": _BOOL, "result": {"type": ["object", "null"]}, "output": _STR, "error": _NULLABLE_STR, "next": _NULLABLE_STR, "retry_after_seconds": _NULLABLE_INT}, ("operation_id", "state", "pending")),

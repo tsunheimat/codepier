@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import replace
 
 from fastapi import APIRouter, Request, Query
 
@@ -24,15 +23,7 @@ def make_projects_router(context: HubContext):
     @database_endpoint(store)
     def projects(request: Request):
         principal=auth.panel(request)
-        if principal.space_id:
-            return {'projects':runtime.list_projects(principal)}
-        from hub.iam_api import spaces_for
-        result=[]
-        for space in spaces_for(store,principal.user_id):
-            scoped=iam.live_principal(store,replace(principal,space_id=space['id']))
-            result.extend({**project,'workspace':{'id':space['id'],'label':space['label']}}
-                          for project in runtime.list_projects(scoped))
-        return {'projects':result}
+        return {'projects':runtime.list_projects(principal)}
 
     @router.get('/api/projects/{project_id}')
     @database_endpoint(store)

@@ -104,6 +104,12 @@ def validate_config(value: object, config_path: Path) -> dict:
                 raise ValueError(f"任务 {name}: env 必须是文字键值对象")
     c["tasks"] = tasks
     c["shell"] = validate_shell(c.get("shell", {}))
+    from agent.ssh import validate_ssh
+    from agent.execution_sessions import validate_sessions
+    c["ssh"] = validate_ssh(c.get("ssh", {}))
+    c["sessions"] = validate_sessions(c.get("sessions", {}))
+    if "builtin_root_policy" in c and (c["ssh"]["enabled"] or c["sessions"]["enabled"]):
+        raise ValueError("Built-in file roots do not grant SSH or stateful Session execution")
     from agent.routed_execution import validate_rch_config
     c["rch"] = validate_rch_config(c.get("rch", {}))
     if "builtin_root_policy" in c and c["rch"]["enabled"]:

@@ -101,8 +101,8 @@ def claims_for(engine, tool, project, args, root):
         # This is local task policy, never caller-declared resource policy.
         # Public exec(task=...) must preserve legacy tasks_run's exclusion.
         return [Claim('agent', 'path', canonical_path(root), not task.get('allow_read_concurrency', False))]
-    remote = project.get('_core_ssh')
-    namespace = f"ssh:{remote['host']}:{remote['port']}" if remote else 'agent'
+    remote = project.get('_ssh_target')
+    namespace = f"ssh:{remote['resource_id']}" if remote else 'agent'
     cwd = Path(args['cwd']).expanduser()
     if not cwd.is_absolute():
         cwd = root / cwd

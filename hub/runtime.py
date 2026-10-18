@@ -192,7 +192,7 @@ class Runtime:
         return bool(connection and not connection.unusable and time.time() - connection.last_seen < 45 and self.connection_authorized(device_id, connection))
 
     def connection_authorized(self, device_id, connection):
-        device = self.store.one("SELECT id,enabled,secret,space_id,owner_user_id FROM devices WHERE id=?", (device_id,))
+        device = self.store.one("SELECT id,enabled,secret,owner_user_id FROM devices WHERE id=?", (device_id,))
         if not (iam.device_identity_active(self.store, device) and
                 (getattr(connection, "device_secret", None) is None or connection.device_secret == device["secret"])):
             return False
@@ -258,8 +258,9 @@ class Runtime:
 
     @iam.read_decision
     def project(self,value:str,principal:Principal):
-        row=self.store.one('SELECT * FROM projects WHERE space_id=? AND (id=? OR alias_key=?)',
-                           (principal.space_id,value,alias_key(value)))
+        row=self.store.one('SELECT * FROM projects WHERE space_id=? AND id=?',(principal.space_id,value))
+        if not row:
+            row=self.store.one('SELECT * FROM projects WHERE space_id=? AND alias_key=?',(principal.space_id,alias_key(value)))
         if not row:
             raise DevError('PROJECT_NOT_FOUND','Project is not provided by this authenticated connection',404)
         self.authorize(principal,'read',project_id=row['id'])
@@ -283,6 +284,12 @@ class Runtime:
     @iam.read_decision
     def list_projects(self,principal:Principal):
         principal=refresh_principal(self.store,principal)
+        if principal.space_id is None and not principal.grant_id:
+            result=[]
+            for scoped in iam.panel_workspaces(self.store,principal):
+                space=self.store.one('SELECT id,label FROM spaces WHERE id=?',(scoped.space_id,))
+                result.extend({**project,'workspace':space} for project in self.list_projects(scoped))
+            return result
         result=[]
         for row in self.store.all('SELECT * FROM projects WHERE space_id=? ORDER BY alias_key,id',(principal.space_id,)):
             if 'read' not in project_scopes(self.store,principal,row['id']):
@@ -431,6 +438,8 @@ class Runtime:
         return {"operations": visible, "next_before_created": rows[args["limit"]-1]["created"] if len(rows) > args["limit"] else None}
 
     async def invoke(self, name: str, raw: dict, principal: Principal):
+        from hub.resource_context import tool_context
+        principal = await self.store.run(tool_context, self.store, principal, name, raw)
         context = iam.audit_context.set((self.store, principal.actor, principal.space_id, principal.user_id))
         try:
             return await self._invoke_async(name, raw, principal)
@@ -852,8 +861,7 @@ class Runtime:
 
     def operation_principal(self, op, request=None):
         if op.get('grant_id'):
-            grant = self.store.one('SELECT * FROM grants WHERE id=?', (op['grant_id'],))
-            return self.grant_principal(grant)
+            return self.grant_principal(op['grant_id'])
         context = (request or {}).get('principal_context') or {}
         owner = op.get('owner_user_id')
         if not owner:
@@ -862,9 +870,7 @@ class Runtime:
                               user_epoch=context.get('user_epoch'), identity_id=context.get('identity_id'))
         return iam.live_principal(self.store, principal)
 
-    def permission_error(self,op,principal=None,*,status_only=False):
-        if op['tool'] in {'integration_control'}:
-            return None
+    def permission_error(self,op,principal=None,*,status_only=False,defer_identity=False):
         if not op.get('payload') and not status_only:
             return 'The durable request is unavailable; its outcome must be inspected without replay'
         try:
@@ -928,6 +934,8 @@ class Runtime:
                     return self.vps.permission_error(request,op['project_id'],caller)
             return None
         except DevError as exc:
+            if defer_identity and exc.code in {'ENTITLEMENTS_STALE','ENTITLEMENTS_UNAVAILABLE'}:
+                raise
             return exc.message
         except (ValueError,KeyError,TypeError):
             return 'The stored authorization context is invalid; no authority or replacement target was inferred'
@@ -1012,7 +1020,7 @@ class Runtime:
                 return
             identity_pending = False
             try:
-                denied = self.permission_error(op, request, defer_identity=True)
+                denied = self.permission_error(op, defer_identity=True)
             except DevError as exc:
                 # A missing fresh snapshot is not a revocation. Preserve the
                 # original operation and payload, but never dispatch without a
@@ -1025,7 +1033,7 @@ class Runtime:
             if not denied and not op["cancel_requested"]:
                 blocker = self.routing.source_blocker(op)
                 if blocker:
-                    self.store.execute("UPDATE operations SET transport_error=?,next_attempt=? WHERE id=?", ("Waiting for shared source operation " + blocker, now + 1, id))
+                    self.store.execute("UPDATE operations SET transport_error=?,next_attempt=? WHERE id=?", ("Waiting for another operation on this shared source", now + 1, id))
                     return
             # Never trust a client-supplied origin, UA or project field. Durable
             # actor/grant columns originate from Auth, not tool arguments.
@@ -1045,7 +1053,7 @@ class Runtime:
             if not op['accepted_at'] and op['project_id'] and op['tool'] in TOOLS:
                 current_project = self.store.one('SELECT * FROM projects WHERE id=?', (op['project_id'],))
                 if current_project:
-                    try:self.integrations.guard(op['tool'], request['args'], current_project, delivery_principal)
+                    try:self.integrations.guard(op['tool'], request['args'], {**current_project, **request['project'], 'device_id': op['device_id']}, delivery_principal)
                     except DevError as exc:denied = denied or exc.message
             request["execution_policy"] = {"version": POLICY_VERSION,
                 "origin": "panel" if panel else "mcp",
@@ -1346,6 +1354,10 @@ class Runtime:
             if isinstance(actions, list) and len(actions) <= 16 and all(isinstance(x, str) and len(x) <= 100 for x in actions):
                 info["device_actions"] = sorted(set(actions) & DEVICE_ACTIONS)
             info["management"] = public_management(hello.get("management"))
+            info["shell_enabled"] = hello.get("shell_enabled") is True
+            info["ssh_enabled"] = hello.get("ssh_enabled") is True
+            info["workspace_protocol"] = connection.workspace_protocol
+            info["execution_sessions"] = hello.get("execution_sessions", {})
             info["cancel_pending_protocol"] = connection.cancel_pending_protocol
             connection.native_security_protocol = 1 if hello.get("native_security_protocol") == 1 else 0
             info["native_security_protocol"] = connection.native_security_protocol

@@ -107,4 +107,6 @@ class ExecutionSessions:
                 state='lost'
             else:
                 return
+        if row['state'] in {'failed','lost','closed','expired'}:
+            return  # A delayed active/status response cannot resurrect a closed Session.
         self.store.execute('UPDATE execution_sessions SET state=?,updated=? WHERE id=?',(state,time.time(),identifier))

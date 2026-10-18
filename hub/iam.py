@@ -115,9 +115,46 @@ def _live_principal(store, principal):
 
 
 @read_decision
+def panel_workspaces(store, principal):
+    """Enumerate independently authorized views; never change a login's identity.
+
+    MCP connections remain one workspace. Instance administration is not implicit
+    membership. Expired external entitlements stop disclosure rather than fall
+    back to a wider account view.
+    """
+    principal = live_principal(store, principal)
+    if principal.space_id is not None or principal.grant_id:
+        return [principal]
+    check_identity(store, principal.identity_id, require_fresh=True)
+    from hub.iam_api import spaces_for
+    return [live_principal(store, replace(principal, space_id=space['id']))
+            for space in spaces_for(store, principal.user_id)]
+
+
+@read_decision
+def panel_access_snapshot(store, principal):
+    """A complete workspace permission revision, without an ambient selection."""
+    from hub.permissions import principal_policy
+    result = set()
+    for scoped in panel_workspaces(store, principal):
+        policy = principal_policy(store, scoped)
+        result.add((scoped.space_id, 'policy', policy.model_dump_json()))
+        for project, actions in project_permissions(store, scoped).items():
+            result.update((scoped.space_id, project, action) for action in actions)
+        # Resource revisions invalidate stale mappings/editors even if the
+        # account's action names have not changed.
+        for table in ('space_folders', 'space_storage', 'space_vps', 'access_profiles', 'projects'):
+            for row in store.all('SELECT id,version FROM '+table+' WHERE space_id=?', (scoped.space_id,)):
+                result.add((scoped.space_id, table+':'+row['id'], str(row['version'])))
+    result.add(('@', 'instance_admin', str(bool(principal.instance_admin))))
+    return frozenset(result)
+
+
+@read_decision
 def project_permissions(store, principal, *, elevated=None):
     if not principal.space_id:
-        return {}
+        return {identifier: actions for scoped in panel_workspaces(store, principal)
+                for identifier, actions in project_permissions(store, scoped).items()}
     from hub.permissions import principal_policy, project_actions
     policy = principal_policy(store, principal)
     return {row['id']: project_actions(policy, row['id'])
@@ -187,6 +224,8 @@ def record_visible(store, principal, row):
 
 @read_decision
 def require_record(store, principal, row, *, kind='OPERATION'):
+    if row and principal.space_id is None and not principal.grant_id and row.get('space_id'):
+        principal = replace(principal, space_id=row['space_id'])
     principal = live_principal(store, principal)
     if not record_visible(store, principal, row):
         raise DevError(kind+'_NOT_FOUND', 'Record is not visible to this connection', 404)
@@ -197,6 +236,25 @@ def require_record(store, principal, row, *, kind='OPERATION'):
 
 def scope_sql(principal, alias=''):
     return (f'{alias}space_id=?', [principal.space_id]) if principal.space_id is not None else (f'{alias}space_id IS NULL', [])
+
+
+
+def owner_scope_sql(store, principal, alias='', *, owner_column='owner_user_id'):
+    """Owner-private metadata across explicitly enumerated live workspaces.
+
+    Sharing a Profile, resource, or workspace never shares connection history.
+    This is for metadata lists, not permission to execute a referenced resource.
+    """
+    if owner_column not in {'owner_user_id', 'user_id'}:
+        raise ValueError('Unknown owner column')
+    spaces = [view.space_id for view in panel_workspaces(store, principal)]
+    clause = alias+'space_id IN ('+(','.join('?' for _ in spaces) or 'NULL')+')'
+    clause += ' AND '+alias+owner_column+'=?'
+    args = [*spaces, principal.user_id]
+    if principal.grant_id:
+        clause += ' AND '+alias+'grant_id=?'
+        args.append(principal.grant_id)
+    return clause, args
 
 
 def private_sql(principal, alias=''):
@@ -248,6 +306,35 @@ def check_identity(store, identity_id, *, require_fresh=True):
 def event_visible(runtime, principal, item):
     """Event contents are not emitted until current authorization is checked."""
     kind, data = item.get('type'), item.get('data') or {}
+    if principal.space_id is None and not principal.grant_id:
+        if kind == 'iam':
+            return data.get('user_id') == principal.user_id or any(
+                p.space_id == data.get('space_id') for p in panel_workspaces(runtime.store, principal))
+        if kind == 'device':
+            try:
+                require_device(runtime.store, principal, data.get('id'))
+                return True
+            except DevError:
+                return False
+        from hub.resource_context import in_resource
+        ref = None
+        if kind == 'project':
+            ref = ('projects', data.get('id'))
+        elif kind in {'operation', 'operation_event', 'output', 'trace'}:
+            ref = ('operations', data.get('id') or data.get('operation_id'))
+        elif kind == 'vps':
+            ref = ('space_vps', data.get('id')) if data.get('id') else ('projects', data.get('project_id'))
+        elif kind == 'computer_approval':
+            audience = item.get('_audience') or {}
+            return audience.get('user_id') == principal.user_id and any(
+                p.space_id == audience.get('space_id') for p in panel_workspaces(runtime.store, principal))
+        if not ref or not ref[1]:
+            return False
+        try:
+            scoped = in_resource(runtime.store, principal, *ref)
+            return event_visible(runtime, scoped, item)
+        except DevError:
+            return False
     if kind == 'iam':
         return data.get('user_id') == principal.user_id or data.get('space_id') == principal.space_id
     if kind == 'device':
