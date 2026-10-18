@@ -303,10 +303,10 @@ def test_manager_claude_start_resume_and_argv_protection(chat):
 
 
 @pytest.mark.asyncio
-async def test_old_agent_explicitly_rejects_claude_but_retains_other_chat(service):
+async def test_old_agent_rejects_current_chat_instead_of_using_a_legacy_backend(service):
     obj, project, _ = service
-    obj.runtime.connections['device'] = SimpleNamespace(native_protocol=1, native_chat_protocol=2)
+    obj.runtime.connections['device'] = SimpleNamespace(native_protocol=1,native_security_protocol=1,native_chat_protocol=2,workspace_protocol=1,project_routing_protocol=1)
     for action in ('start', 'chat_catalog'):
-        with pytest.raises(DevError, match='尚不支持 Claude') as error:
+        with pytest.raises(DevError) as error:
             await obj.request(action, project, {'mode': 'chat', 'cli': 'claude'})
         assert error.value.code == 'CLI_CHAT_AGENT_UPDATE_REQUIRED'

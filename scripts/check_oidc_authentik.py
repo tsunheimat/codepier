@@ -264,6 +264,26 @@ def acceptance(output):
                         expect(password_stage).to_be_visible()
                         password_stage.locator('input[name="password"]').fill(password)
                         password_stage.locator('button[type="submit"]').click()
+                        # The real provider may render a consent stage even
+                        # for its implicit-consent flow (for example when a
+                        # newly requested scope requires review). Complete the
+                        # user's explicit submit; never forge a callback/token.
+                        page.wait_for_function('''hub => {
+                            if (location.origin === hub) return true;
+                            const find = root => {
+                                for (const node of root.querySelectorAll('*')) {
+                                    if (node.tagName === 'AK-STAGE-CONSENT') return true;
+                                    if (node.shadowRoot && find(node.shadowRoot)) return true;
+                                }
+                                return false;
+                            };
+                            return find(document);
+                        }''', arg=hub_url, timeout=60000)
+                        if urlsplit(page.url).netloc != urlsplit(hub_url).netloc:
+                            assert urlsplit(page.url).netloc == urlsplit(issuer_base).netloc
+                            consent_stage = page.locator('ak-stage-consent')
+                            expect(consent_stage).to_be_visible()
+                            consent_stage.locator('button[name="continue"][type="submit"]').click()
                         page.wait_for_url(hub_url+'/**', timeout=60000)
                     except Exception:
                         u = urlsplit(page.url)

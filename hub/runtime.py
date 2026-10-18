@@ -324,7 +324,7 @@ class Runtime:
         elif op['owner_user_id']!=principal.user_id:
             if not principal.instance_admin:
                 raise DevError('NOT_FOUND','Operation belongs to another owner',404)
-        denied=self.permission_error(op,principal,status_only=True)
+        denied=self.permission_error(op,principal=principal,status_only=True)
         if denied:
             raise DevError('ACCESS_DENIED',denied,403,operation_id=identifier)
         self.integrations.disclosure_guard(op,principal)
@@ -882,7 +882,7 @@ class Runtime:
                               user_epoch=context.get('user_epoch'), identity_id=context.get('identity_id'))
         return iam.live_principal(self.store, principal)
 
-    def permission_error(self,op,principal=None,*,status_only=False,defer_identity=False):
+    def permission_error(self,op,*,principal=None,status_only=False,defer_identity=False):
         if not op.get('payload') and not status_only:
             return 'The durable request is unavailable; its outcome must be inspected without replay'
         try:

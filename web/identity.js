@@ -27,8 +27,14 @@ window.CodePierIdentity = (() => {
     const match = /^#spaces\/([A-Za-z0-9_-]+)(?:\/|$)/.exec(location.hash);
     return match ? me?.spaces.find((x) => x.id === match[1]) : null;
   }
-  function admin() { return !!current()?.management?.includes('resources'); }
-  function reset() { me = null; providers = []; users = []; }
+  function admin() {
+    return !!current()?.management?.includes('resources');
+  }
+  function reset() {
+    me = null;
+    providers = [];
+    users = [];
+  }
   async function loginButtons() {
     const host = $('#oidc-login-buttons');
     if (!host) return;
@@ -83,7 +89,9 @@ window.CodePierIdentity = (() => {
     Object.assign(S.session, { instance_admin: me.instance_admin, spaces: me.spaces });
   }
   function bindShell() {}
-  async function refresh() { await bootstrap(); }
+  async function refresh() {
+    await bootstrap();
+  }
   function form(title, body, save, options = {}) {
     const login = S.session,
       space = location.hash;
@@ -260,18 +268,43 @@ window.CodePierIdentity = (() => {
   }
   async function mappingEditor(id) {
     const [mapping, targets] = await Promise.all([
-      api('/api/iam/oidc/providers/' + id + '/mappings'), api('/api/iam/oidc/targets')]);
-    const d = form('OIDC 群组直接权限映射',
-      mapping.mappings.map((m) => `<div class="grant-row"><span>${esc(m.group_name)} → ${esc(targets.spaces.find((x) => x.id === m.space_id)?.label || m.space_id)}</span><button class="btn danger" type="button" data-delete-map="${esc(m.id)}">移除</button></div>`).join('') +
-      field('group_name','精确群组名称','','required') +
-      select('space_id','工作空间', targets.spaces.map((x) => [x.id,x.label]), '') +
-      '<div class="field"><label for="iam-policy">直接成员权限（JSON）</label><textarea id="iam-policy" name="policy" rows="10" required>{"manage":[],"project_rules":[]}</textarea></div>' +
-      notice('仅同步 UserInfo 群组 claim；人工成员权限独立保留。不会授予实例管理员权限。'),
-      (f) => post('/api/iam/oidc/providers/'+id+'/mappings', {group_name:f.elements.group_name.value, space_id:f.elements.space_id.value, policy:JSON.parse(f.elements.policy.value)}), {large:true});
-    $$('[data-delete-map]',d).forEach((b) => b.onclick = () => busy(b,async () => {
-      await api('/api/iam/oidc/mappings/'+b.dataset.deleteMap,{method:'DELETE'});
-      closeModal(d); await mappingEditor(id);
-    }));
+      api('/api/iam/oidc/providers/' + id + '/mappings'),
+      api('/api/iam/oidc/targets'),
+    ]);
+    const d = form(
+      'OIDC 群组直接权限映射',
+      mapping.mappings
+        .map(
+          (m) =>
+            `<div class="grant-row"><span>${esc(m.group_name)} → ${esc(targets.spaces.find((x) => x.id === m.space_id)?.label || m.space_id)}</span><button class="btn danger" type="button" data-delete-map="${esc(m.id)}">移除</button></div>`,
+        )
+        .join('') +
+        field('group_name', '精确群组名称', '', 'required') +
+        select(
+          'space_id',
+          '工作空间',
+          targets.spaces.map((x) => [x.id, x.label]),
+          '',
+        ) +
+        '<div class="field"><label for="iam-policy">直接成员权限（JSON）</label><textarea id="iam-policy" name="policy" rows="10" required>{"manage":[],"project_rules":[]}</textarea></div>' +
+        notice('仅同步 UserInfo 群组 claim；人工成员权限独立保留。不会授予实例管理员权限。'),
+      (f) =>
+        post('/api/iam/oidc/providers/' + id + '/mappings', {
+          group_name: f.elements.group_name.value,
+          space_id: f.elements.space_id.value,
+          policy: JSON.parse(f.elements.policy.value),
+        }),
+      { large: true },
+    );
+    $$('[data-delete-map]', d).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            await api('/api/iam/oidc/mappings/' + b.dataset.deleteMap, { method: 'DELETE' });
+            closeModal(d);
+            await mappingEditor(id);
+          })),
+    );
   }
   function bind() {
     $$('[data-identity-tab]').forEach((button) => {
@@ -346,7 +379,7 @@ window.CodePierIdentity = (() => {
               label: s.label,
               active: true,
               expected_version: s.version,
-              idempotency_key: 'restore-'+uid(),
+              idempotency_key: 'restore-' + uid(),
             });
             await refresh();
             await renderPage(false);
@@ -400,7 +433,6 @@ window.CodePierIdentity = (() => {
   }
   function applyCapabilities() {
     if (!admin()) {
-
     }
     $$(
       '[data-action="agent-update"],[data-action="agent-restart"],[data-action="agent-uninstall"],[data-action="agent-commands"],[data-action="agent-repair"]',

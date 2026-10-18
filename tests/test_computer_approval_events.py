@@ -22,7 +22,8 @@ def inbox(tmp_path):
     source=tmp_path/'source';source.mkdir()
     folder=model.folder('approval-folder',space='approval-space',device='d',path=source)
     model.project('p',space='approval-space',folder=folder,owner='u',alias='Test')
-    request={'project':runtime.project('p',model.panel('u','approval-space'))}
+    request={'project':runtime.project('p',model.panel('u','approval-space')),
+        'args':{},'principal_context':{'user_id':'u','space_id':'approval-space','user_epoch':1}}
     store.execute('INSERT INTO operations(id,device_id,project_id,actor,tool,args_summary,fingerprint,state,created,updated,payload,owner_user_id,space_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                   ('op', 'd', 'p', 'panel:admin', 'computer_observe', '{}', 'f', 'running', time.time(), time.time(), store.encrypt(json.dumps(request)),'u','approval-space'))
     sent = []

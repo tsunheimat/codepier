@@ -161,10 +161,9 @@ def test_profile_shrink_rechecks_queue_without_replacing_original_work(team):
         'idempotency_key':'queued-before-profile-shrink'}
     receipt=data(call(b['alice'],created['token'],'exec',values))
     row=app.state.store.one('SELECT * FROM operations WHERE id=?',(receipt['operation_id'],))
-    request=json.loads(app.state.store.decrypt(row['payload']))
-    assert app.state.runtime.permission_error(row,request) is None
+    assert app.state.runtime.permission_error(row) is None
     update_profile(b['owner'],profile,project_policy('read'))
-    assert app.state.runtime.permission_error(row,request)
+    assert app.state.runtime.permission_error(row)
     assert app.state.store.one('SELECT state,attempts FROM operations WHERE id=?',(row['id'],))=={'state':'queued','attempts':0}
     assert call(b['alice'],created['token'],'exec',values).json()['result']['isError']
     assert len(app.state.store.all('SELECT id FROM operations'))==1

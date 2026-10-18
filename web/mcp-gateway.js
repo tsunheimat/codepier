@@ -2,7 +2,8 @@
 // State contains redacted configuration only. Never retain backend tokens in storage.
 window.CodePierGateway = (() => {
   let state = null;
-  let root = '', workspaceId = '';
+  let root = '',
+    workspaceId = '';
   const inventoryRoot = '/api/mcp-gateway';
   const field = (name, label, extra = '') =>
     `<label class="field">${esc(label)}<input name="${name}" ${extra}></label>`;
@@ -20,7 +21,8 @@ window.CodePierGateway = (() => {
 
   async function html(spaceId) {
     if (!spaceId) throw new Error('MCP 服务需要明确的工作空间页面。');
-    workspaceId=spaceId;root='/api/spaces/'+encodeURIComponent(spaceId)+'/mcp-gateway';
+    workspaceId = spaceId;
+    root = '/api/spaces/' + encodeURIComponent(spaceId) + '/mcp-gateway';
     const session = S.session,
       space = location.hash,
       sequence = S.renderSeq;
@@ -107,7 +109,11 @@ window.CodePierGateway = (() => {
     return dialog;
   }
   const post = (path, body) =>
-    api((path === '/connectors' ? inventoryRoot : root) + path, { method: 'POST', body: JSON.stringify(body), requestTimeout: 50000 });
+    api((path === '/connectors' ? inventoryRoot : root) + path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      requestTimeout: 50000,
+    });
 
   function newConnector() {
     form(
@@ -232,23 +238,57 @@ window.CodePierGateway = (() => {
   }
 
   async function configureProfile(id) {
-    const session=S.session, page=location.hash, space=workspaceId,
-      intent=(S.modalIntent=(S.modalIntent||0)+1);
-    const base='/api/spaces/'+encodeURIComponent(space)+'/profiles';
-    const binding=state.bindings.find(x=>x.id===id),profiles=(await api(base)).profiles;
+    const session = S.session,
+      page = location.hash,
+      space = workspaceId,
+      intent = (S.modalIntent = (S.modalIntent || 0) + 1);
+    const base = '/api/spaces/' + encodeURIComponent(space) + '/profiles';
+    const binding = state.bindings.find((x) => x.id === id),
+      profiles = (await api(base)).profiles;
     // The shared HTTP guard rejects another workspace/login. A newer editor
     // on the same page is a separate boundary: never replace its draft with
     // this earlier lookup, even when both requests were authorized.
-    if(session!==S.session || page!==location.hash || space!==workspaceId || intent!==S.modalIntent) return;
-    if(!profiles.length)throw new Error('先在这个工作空间建立 Profile。');
-    const key='profile-mcp-'+uid();
-    const d=form('配置 Profile 的外部 MCP 权限',
-      `<label class="field">Profile<select name="profile_id">${options(profiles)}</select></label>${binding.tools.map(t=>`<label class="check"><input name="tool" type="checkbox" value="${esc(t)}">${esc(t)}</label>`).join('')}<p>其他资源规则保留；这不代替连接持有者的外部 MCP 明确同意。</p>`,
-      f=>{const p=profiles.find(x=>x.id===f.elements.profile_id.value),tools=$$('[name="tool"]:checked',f).map(x=>x.value);
-        const rules=(p.policy.connector_rules||[]).filter(r=>r.binding_id!==id);if(tools.length)rules.push({binding_id:id,tools});
-        return api(base+'/'+p.id,{method:'PUT',body:JSON.stringify({label:p.label,enabled:p.enabled,policy:{...p.policy,connector_rules:rules},expected_version:p.version,idempotency_key:key})});});
-    const f=$('#gw-form',d),update=()=>{const p=profiles.find(x=>x.id===f.elements.profile_id.value);const tools=new Set((p.policy.connector_rules||[]).filter(x=>x.binding_id===id).flatMap(x=>x.tools));$$('[name="tool"]',f).forEach(n=>n.checked=tools.has(n.value));};
-    f.elements.profile_id.onchange=update;update();
+    if (
+      session !== S.session ||
+      page !== location.hash ||
+      space !== workspaceId ||
+      intent !== S.modalIntent
+    )
+      return;
+    if (!profiles.length) throw new Error('先在这个工作空间建立 Profile。');
+    const key = 'profile-mcp-' + uid();
+    const d = form(
+      '配置 Profile 的外部 MCP 权限',
+      `<label class="field">Profile<select name="profile_id">${options(profiles)}</select></label>${binding.tools.map((t) => `<label class="check"><input name="tool" type="checkbox" value="${esc(t)}">${esc(t)}</label>`).join('')}<p>其他资源规则保留；这不代替连接持有者的外部 MCP 明确同意。</p>`,
+      (f) => {
+        const p = profiles.find((x) => x.id === f.elements.profile_id.value),
+          tools = $$('[name="tool"]:checked', f).map((x) => x.value);
+        const rules = (p.policy.connector_rules || []).filter((r) => r.binding_id !== id);
+        if (tools.length) rules.push({ binding_id: id, tools });
+        return api(base + '/' + p.id, {
+          method: 'PUT',
+          body: JSON.stringify({
+            label: p.label,
+            enabled: p.enabled,
+            policy: { ...p.policy, connector_rules: rules },
+            expected_version: p.version,
+            idempotency_key: key,
+          }),
+        });
+      },
+    );
+    const f = $('#gw-form', d),
+      update = () => {
+        const p = profiles.find((x) => x.id === f.elements.profile_id.value);
+        const tools = new Set(
+          (p.policy.connector_rules || [])
+            .filter((x) => x.binding_id === id)
+            .flatMap((x) => x.tools),
+        );
+        $$('[name="tool"]', f).forEach((n) => (n.checked = tools.has(n.value)));
+      };
+    f.elements.profile_id.onchange = update;
+    update();
   }
 
   async function consent(id) {
@@ -263,7 +303,12 @@ window.CodePierGateway = (() => {
       space = location.hash,
       page = S.page,
       intent = (S.modalIntent = (S.modalIntent || 0) + 1);
-    const profile = await api('/api/spaces/'+encodeURIComponent(workspaceId)+'/profiles/'+encodeURIComponent(grant.profile_id));
+    const profile = await api(
+      '/api/spaces/' +
+        encodeURIComponent(workspaceId) +
+        '/profiles/' +
+        encodeURIComponent(grant.profile_id),
+    );
     if (
       session !== S.session ||
       space !== location.hash ||
@@ -273,7 +318,7 @@ window.CodePierGateway = (() => {
       return;
     form(
       '明确同意外部 MCP 委派',
-      `<p>此连接将按 ${esc(profile.label)} 的连接同意范围内、经批准的 connector_rules 使用外部帐户。后端工具可能产生写入和执行副作用；不是本机项目权限的简单延伸。</p><pre class="gw-wrap">${esc(JSON.stringify(grant.consent_mode==='fixed'?grant.fixed_tools:profile.policy.connector_rules || [], null, 2))}</pre><label class="check"><input name="confirmed" type="checkbox" required>我理解并同意上述外部 MCP 委派</label>`,
+      `<p>此连接将按 ${esc(profile.label)} 的连接同意范围内、经批准的 connector_rules 使用外部帐户。后端工具可能产生写入和执行副作用；不是本机项目权限的简单延伸。</p><pre class="gw-wrap">${esc(JSON.stringify(grant.consent_mode === 'fixed' ? grant.fixed_tools : profile.policy.connector_rules || [], null, 2))}</pre><label class="check"><input name="confirmed" type="checkbox" required>我理解并同意上述外部 MCP 委派</label>`,
       (node) =>
         post('/grants/' + encodeURIComponent(id) + '/consent', {
           confirmed: node.elements.confirmed.checked,
@@ -305,7 +350,11 @@ window.CodePierGateway = (() => {
           '<p>此变更影响所有使用该配置的连接；不会自动重发、取消或回滚外部操作。</p>',
           () =>
             api(
-              (button.dataset.gwToggle==='connectors'?inventoryRoot:root) + '/' + button.dataset.gwToggle + '/' + encodeURIComponent(button.dataset.id),
+              (button.dataset.gwToggle === 'connectors' ? inventoryRoot : root) +
+                '/' +
+                button.dataset.gwToggle +
+                '/' +
+                encodeURIComponent(button.dataset.id),
               {
                 method: 'PATCH',
                 body: JSON.stringify({
@@ -318,10 +367,21 @@ window.CodePierGateway = (() => {
     });
   }
   async function inventoryHTML() {
-    root='';workspaceId='';
-    const out=await api(inventoryRoot+'/connectors');
-    state={connectors:out.connectors,accounts:[],bindings:[],grants:[],calls:[],instance_admin:!!S.identity?.instance_admin};
-    return section('MCP 服务资源库',`${state.instance_admin?'<button class="btn primary" data-gw="connector">添加 MCP 服务</button>':''}${out.connectors.map(x=>`<div class="grant-row"><div><strong>${esc(x.label)}</strong><p class="gw-wrap">${esc(x.endpoint)}</p></div></div>`).join('')||empty('尚无服务。')}<p>进入具体工作空间建立后端账号、发布工具，并配置 Profile 权限。</p>`);
+    root = '';
+    workspaceId = '';
+    const out = await api(inventoryRoot + '/connectors');
+    state = {
+      connectors: out.connectors,
+      accounts: [],
+      bindings: [],
+      grants: [],
+      calls: [],
+      instance_admin: !!S.identity?.instance_admin,
+    };
+    return section(
+      'MCP 服务资源库',
+      `${state.instance_admin ? '<button class="btn primary" data-gw="connector">添加 MCP 服务</button>' : ''}${out.connectors.map((x) => `<div class="grant-row"><div><strong>${esc(x.label)}</strong><p class="gw-wrap">${esc(x.endpoint)}</p></div></div>`).join('') || empty('尚无服务。')}<p>进入具体工作空间建立后端账号、发布工具，并配置 Profile 权限。</p>`,
+    );
   }
   return { html, inventoryHTML, bind, reset };
 })();

@@ -1,6 +1,8 @@
 """Agent local one-shot session, startup cleanup, and CLI admission regressions."""
 from __future__ import annotations
 
+from shared.tool_protocol import advertisement, catalog_digest
+
 import asyncio
 import json
 from pathlib import Path
@@ -42,7 +44,7 @@ class Socket:
         self.receives += 1
         if self.receives == 1:
             return json.dumps({"type": "challenge", "challenge": self.challenge})
-        return self.channel.pack({"type": "wrong" if self.reject else "ready"})
+        return self.channel.pack({"type": "wrong" if self.reject else "ready", **advertisement(catalog_digest())})
 
     async def send(self, packet):
         data = self.channel.unpack(packet)
@@ -160,7 +162,7 @@ async def test_real_cli_eof_releases_state_lock_without_ws_fallback(tmp_path):
         await transport.send_json({"type": "challenge", "challenge": challenge})
         hello = channel.unpack(await asyncio.wait_for(transport.recv(), 10))
         assert hello["type"] == "hello"
-        await transport.send(channel.pack({"type": "ready"}))
+        await transport.send(channel.pack({"type": "ready", **advertisement(catalog_digest())}))
         packet = channel.unpack(await asyncio.wait_for(transport.recv(), 5))
         assert packet["type"] in {"heartbeat", "native_sessions"}
         await transport.close()

@@ -92,12 +92,8 @@ class NativeService:
             raise DevError('CLI_AGENT_UPDATE_REQUIRED','多用户原生会话要求升级 Agent 以校验会话/附件归属',409)
         if getattr(con,'native_protocol',0)!=1:
             raise DevError('CLI_AGENT_UPDATE_REQUIRED','此节点 Agent 尚不支持原生会话，请先在节点管理更新 Agent',409)
-        if (action.startswith('chat_') or action=='start' and args.get('mode')=='chat') and getattr(con,'native_chat_protocol',0) not in (1,2,3):
+        if (action.startswith('chat_') or action=='start' and args.get('mode')=='chat') and getattr(con,'native_chat_protocol',0)!=3:
             raise DevError('CLI_CHAT_AGENT_UPDATE_REQUIRED','此节点 Agent 尚不支持结构化对话；请更新该节点 Agent 后重试',409)
-        if action in {'start', 'chat_catalog'} and args.get('cli') == 'claude' and getattr(con, 'native_chat_protocol', 0) < 3:
-            raise DevError('CLI_CHAT_AGENT_UPDATE_REQUIRED', '此节点的 Agent 尚不支持 Claude，请先更新 Agent', 409)
-        if (action in {'chat_catalog','chat_command','chat_queue','chat_cancel','chat_steer'} or action=='start' and args.get('mode')=='chat' and (args.get('model') or args.get('effort'))) and getattr(con,'native_chat_protocol',0)<2:
-            raise DevError('CLI_CHAT_AGENT_UPDATE_REQUIRED','此节点仍是基础聊天版 Agent；模型目录和完整控制需要更新 Agent，旧会话仍保留',409)
         return con
 
     async def request(self, action, project, args, *, reauthenticate=None):
@@ -148,6 +144,9 @@ class NativeService:
             for row in rows:
                 try:
                     sid=identifier(row['id'])
+                    # Validate the current sync shape before persisting ownership.
+                    # Missing mode is not an old terminal record to adopt.
+                    if row.get('mode') not in {'chat','terminal'}:continue
                     p=self.runtime.store.one('SELECT * FROM projects WHERE id=?',(row['project_id'],))
                     if not p:
                         continue
@@ -190,8 +189,7 @@ class NativeService:
                         store.execute('INSERT INTO native_ownership(id,space_id,owner_user_id,project_id,device_id,created) VALUES(?,?,?,?,?,?)',
                             (sid,p['space_id'],owner[5:],p['id'],device,time.time()))
                     normalized=public(row)
-                    if normalized.get('mode','terminal') not in {'chat','terminal'}: continue
-                    if prior and prior['mode']!=normalized.get('mode','terminal'): continue
+                    if prior and prior['mode']!=normalized['mode']: continue
                     keys=list(normalized)
                     if not prior or any(prior[k]!=normalized[k] for k in keys):
                         changed=True

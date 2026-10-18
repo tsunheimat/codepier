@@ -2,8 +2,9 @@
 // Declarative forms only. Manifests never supply HTML, JavaScript or credentials.
 window.CodePierExternalPlugins = (() => {
   let ticket = 0;
-  let base='', workspaceId='';
-  const workspaceRoot=()=>'/api/spaces/'+encodeURIComponent(workspaceId);
+  let base = '',
+    workspaceId = '';
+  const workspaceRoot = () => '/api/spaces/' + encodeURIComponent(workspaceId);
   const button = (action, id, label) =>
     `<button class="btn small" data-ext-action="${action}" data-ext-id="${esc(id)}">${esc(label)}</button>`;
   const option = (value, label, selected = false) =>
@@ -28,15 +29,16 @@ window.CodePierExternalPlugins = (() => {
   async function inventory() {
     const [catalog, gateway] = await Promise.all([
       api('/api/external-plugins'),
-      api(workspaceRoot()+'/mcp-gateway'),
+      api(workspaceRoot() + '/mcp-gateway'),
     ]);
     const integrations =
       gateway.space_admin && gateway.enabled ? (await api(base)).integrations : [];
     return { catalog: catalog.plugins, gateway, integrations };
   }
   async function html(spaceId) {
-    if(!spaceId)throw new Error('从明确的工作空间打开外部插件。');
-    workspaceId=spaceId;base=workspaceRoot()+'/external-integrations';
+    if (!spaceId) throw new Error('从明确的工作空间打开外部插件。');
+    workspaceId = spaceId;
+    base = workspaceRoot() + '/external-integrations';
     const data = await inventory();
     if (!data.gateway.enabled) return '';
     const body = data.gateway.space_admin
@@ -251,7 +253,15 @@ window.CodePierExternalPlugins = (() => {
     if (!manifest) throw new Error('插件尚未安装');
     const f = form(
       '插件项目绑定',
-      `<p>${esc(row.alias)} · 只配置外部资源 ID，不移动文件，也不授予权限。</p>${select('project', 'CodePier 项目', (S.projects || []).filter(p=>p.workspace?.id===workspaceId).map((p) => option(p.id, p.alias, p.id === selectedProject)).join(''), 'required')}${select('mode', '操作', option('attach', '保存 / 重新绑定') + option('detach', '解除绑定（保留资源）'))}<div id="ext-project-config"></div>`,
+      `<p>${esc(row.alias)} · 只配置外部资源 ID，不移动文件，也不授予权限。</p>${select(
+        'project',
+        'CodePier 项目',
+        (S.projects || [])
+          .filter((p) => p.workspace?.id === workspaceId)
+          .map((p) => option(p.id, p.alias, p.id === selectedProject))
+          .join(''),
+        'required',
+      )}${select('mode', '操作', option('attach', '保存 / 重新绑定') + option('detach', '解除绑定（保留资源）'))}<div id="ext-project-config"></div>`,
       async (node) => {
         const project = node.elements.project.value,
           old = attachments.find((a) => a.project_id === project);
@@ -283,7 +293,7 @@ window.CodePierExternalPlugins = (() => {
   async function profile(id) {
     const valid = intent(),
       data = await inventory(),
-      profiles = (await api(workspaceRoot()+'/profiles')).profiles;
+      profiles = (await api(workspaceRoot() + '/profiles')).profiles;
     if (!valid()) return;
     const row = data.integrations.find((r) => r.id === id),
       manifest = data.catalog.find((i) => i.manifest.id === row?.plugin_id)?.manifest;
@@ -293,7 +303,15 @@ window.CodePierExternalPlugins = (() => {
       : '';
     const f = form(
       '插件 Profile 动作',
-      `${select('profile', 'Profile', profiles.map((r) => option(r.id, r.label)).join(''), 'required')}${select('target', '动作作用范围', (S.projects || []).filter(p=>p.workspace?.id===workspaceId).map((p) => option(p.id, p.alias)).join('') + scopeOption, 'required')}<div id="ext-profile-actions"></div><p class="form-note">只修改当前集成与所选范围的动作。其他规则保持不变；项目动作仍需已有项目读取权，不会获得原始 MCP 工具权限。客户端须另行同意。</p>`,
+      `${select('profile', 'Profile', profiles.map((r) => option(r.id, r.label)).join(''), 'required')}${select(
+        'target',
+        '动作作用范围',
+        (S.projects || [])
+          .filter((p) => p.workspace?.id === workspaceId)
+          .map((p) => option(p.id, p.alias))
+          .join('') + scopeOption,
+        'required',
+      )}<div id="ext-profile-actions"></div><p class="form-note">只修改当前集成与所选范围的动作。其他规则保持不变；项目动作仍需已有项目读取权，不会获得原始 MCP 工具权限。客户端须另行同意。</p>`,
       async (node) => {
         const current = profiles.find((r) => r.id === node.elements.profile.value),
           target = node.elements.target.value,
@@ -312,13 +330,13 @@ window.CodePierExternalPlugins = (() => {
             projects: scope === 'space' ? [] : [target],
             actions,
           });
-        await api(workspaceRoot()+'/profiles/' + current.id, {
+        await api(workspaceRoot() + '/profiles/' + current.id, {
           method: 'PUT',
           body: JSON.stringify({
             label: current.label,
             enabled: current.enabled,
-            policy: {...current.policy,plugin_rules:rules},
-            idempotency_key:'plugin-profile-'+uid(),
+            policy: { ...current.policy, plugin_rules: rules },
+            idempotency_key: 'plugin-profile-' + uid(),
             expected_version: current.version,
           }),
         });

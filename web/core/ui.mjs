@@ -303,7 +303,9 @@ export function createModal({
         pendingBack = true;
         // Consumers which navigate after a successful save must await the
         // actual traversal, not race a queued history.back() with pushState.
-        backCompletion = new Promise((resolve) => { completeBack = resolve; });
+        backCompletion = new Promise((resolve) => {
+          completeBack = resolve;
+        });
         history.back();
       }
     }

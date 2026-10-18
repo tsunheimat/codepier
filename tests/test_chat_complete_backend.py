@@ -14,8 +14,9 @@ from agent.chat_catalog import CatalogCache, Probe, commands, probe, public_mode
 from agent.chat_worker import Protocol
 from tests.test_chat_admission import chat
 from tests.test_native_cli import native
-from tests.test_chat_sse import service, TestAuth, request, sync
+from tests.test_chat_sse import service, native_auth, request, sync
 from hub.native_cli import make_native_router
+from shared.util import DevError
 
 
 def protocol(cli='pi', saved=None):
@@ -190,15 +191,16 @@ async def test_full_export_click_boundary_sanitized_and_mapping_auth(service,fmt
     frames=[{'type':'user','text':f'line-{i}','details':{'headers':'secret'}} for i in range(350)]
     raw=b''.join((json.dumps(x)+'\n').encode() for x in frames)
     await sync(obj,sid,raw)
-    auth=TestAuth();endpoint=next(r.endpoint for r in make_native_router(auth,obj.runtime).routes if r.path.endswith('/export'))
+    auth=native_auth(obj);endpoint=next(r.endpoint for r in make_native_router(auth,obj.runtime).routes if r.path.endswith('/export'))
     response=await endpoint(sid,request(),fmt)
     await sync(obj,sid,b'{"type":"user","text":"too-late"}\n',len(raw))
     data=''.join([x async for x in response.body_iterator])
     assert 'line-349' in data and 'too-late' not in data and 'secret' not in data
     assert 'attachment;' in response.headers['content-disposition']
     if fmt=='json':assert len(json.loads(data))==350
-    project['allow_tasks']=False
-    with pytest.raises(Exception,match='revoked'):await endpoint(sid,request(),fmt)
+    obj.runtime.store.execute("UPDATE space_folders SET allow_tasks=0 WHERE id='native-folder'")
+    with pytest.raises(DevError) as denied:await endpoint(sid,request(),fmt)
+    assert denied.value.code=='DEFAULT_DEVICE_UNAVAILABLE'
 
 
 def test_catalog_cache_coalesces_and_refresh_bypasses():
@@ -269,10 +271,10 @@ def test_permissions_only_grant_observed_subset():
 @pytest.mark.asyncio
 async def test_catalog_hub_rechecks_mapping_after_await(service):
     obj,project,sid=service
-    auth=TestAuth()
+    auth=native_auth(obj)
     endpoint=next(r.endpoint for r in make_native_router(auth,obj.runtime).routes if r.path=='/api/native/{action}')
     async def native_request(action,p,args,*,reauthenticate=None):
-        project['root']='/changed'
+        obj.runtime.store.execute("UPDATE space_folders SET device_path=device_path||'/changed',version=version+1 WHERE id='native-folder'")
         return {'models':[]}
     obj.request=native_request
     req=request([(b'x-rd-csrf',b'valid')],json.dumps({'project':'project','args':{'cli':'pi'}}).encode())

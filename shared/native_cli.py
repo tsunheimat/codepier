@@ -18,62 +18,68 @@ def identifier(value):
     return value
 
 
+NATIVE_SCHEMA = 5
+NATIVE_DDL = """
+CREATE TABLE sessions (
+ id TEXT PRIMARY KEY, project_id TEXT NOT NULL, device_id TEXT NOT NULL,
+ root TEXT NOT NULL, cwd TEXT NOT NULL, provider TEXT NOT NULL, title TEXT NOT NULL,
+ status TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL,
+ size INTEGER NOT NULL DEFAULT 0, exit_code INTEGER, error TEXT NOT NULL DEFAULT '',
+ heartbeat REAL NOT NULL DEFAULT 0, lease TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0,
+ argv TEXT NOT NULL DEFAULT '[]', worker_pid INTEGER NOT NULL DEFAULT 0,
+ child_pid INTEGER NOT NULL DEFAULT 0, launch_signature TEXT NOT NULL DEFAULT '',
+ mode TEXT NOT NULL DEFAULT 'terminal' CHECK(mode IN ('chat','terminal')),
+ native_thread TEXT NOT NULL DEFAULT '', chat_settings TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE output (session TEXT NOT NULL, offset INTEGER NOT NULL, data BLOB NOT NULL,
+ PRIMARY KEY(session,offset));
+CREATE TABLE commands (id TEXT PRIMARY KEY, session TEXT NOT NULL, kind TEXT NOT NULL,
+ payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued', created REAL NOT NULL);
+CREATE TABLE attachments (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root TEXT NOT NULL,
+ name TEXT NOT NULL, size INTEGER NOT NULL, sha TEXT NOT NULL, received INTEGER NOT NULL DEFAULT 0,
+ ready INTEGER NOT NULL DEFAULT 0, path TEXT NOT NULL);
+CREATE TABLE session_files (session TEXT, file TEXT, PRIMARY KEY(session,file));
+CREATE INDEX native_commands_pending ON commands(session,state);
+CREATE INDEX native_attachments_project ON attachments(project_id);
+CREATE TABLE native_security (kind TEXT NOT NULL CHECK(kind IN ('session','file')),
+ id TEXT NOT NULL, owner TEXT NOT NULL, space TEXT NOT NULL, PRIMARY KEY(kind,id));
+"""
+
+
 def database(directory):
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if directory.is_symlink():
-        raise ValueError('Native spool cannot be a symlink')
-    os.chmod(directory, 0o700)
-    path = directory / 'native.sqlite3'
-    if path.is_symlink():
-        raise ValueError('Native database cannot be a symlink')
-    db = sqlite3.connect(path, timeout=10)
-    db.row_factory = sqlite3.Row
-    if db.execute('PRAGMA journal_mode').fetchone()[0] != 'wal':
-        db.execute('PRAGMA journal_mode=WAL')
-    db.execute('PRAGMA synchronous=FULL')
-    db.execute('PRAGMA secure_delete=ON')
-    if db.execute('PRAGMA user_version').fetchone()[0] >= 4:
-        os.chmod(path, 0o600)
+    """Open only a current native spool; never upgrade or adopt old records."""
+    directory=Path(directory)
+    directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if directory.is_symlink():raise ValueError('Native spool cannot be a symlink')
+    os.chmod(directory,0o700)
+    path=directory/'native.sqlite3'
+    if path.is_symlink():raise ValueError('Native database cannot be a symlink')
+    db=sqlite3.connect(path,timeout=10)
+    db.row_factory=sqlite3.Row
+    try:
+        version=db.execute('PRAGMA user_version').fetchone()[0]
+        if version!=NATIVE_SCHEMA:
+            # Inspect before changing WAL mode or writing anything. After the
+            # write lock, recheck to serialize concurrent first-time openers.
+            tables=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+            if version or tables:
+                raise RuntimeError('NATIVE_DATABASE_REQUIRED: old or unknown native schema is not supported; use a separate empty native spool. No data was converted.')
+            db.execute('BEGIN IMMEDIATE')
+            version=db.execute('PRAGMA user_version').fetchone()[0]
+            if version!=NATIVE_SCHEMA:
+                tables=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+                if version or tables:
+                    raise RuntimeError('NATIVE_DATABASE_REQUIRED: native schema changed during initialization')
+                for statement in NATIVE_DDL.split(';'):
+                    if statement.strip():db.execute(statement)
+                db.execute(f'PRAGMA user_version={NATIVE_SCHEMA}')
+            db.commit()
+        if db.execute('PRAGMA journal_mode').fetchone()[0]!='wal':db.execute('PRAGMA journal_mode=WAL')
+        db.execute('PRAGMA synchronous=FULL')
+        db.execute('PRAGMA secure_delete=ON')
+        os.chmod(path,0o600)
         return db
-    db.executescript('''
-    BEGIN IMMEDIATE;
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, device_id TEXT NOT NULL,
-      root TEXT NOT NULL, cwd TEXT NOT NULL, provider TEXT NOT NULL, title TEXT NOT NULL,
-      status TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL,
-      size INTEGER NOT NULL DEFAULT 0, exit_code INTEGER, error TEXT NOT NULL DEFAULT '',
-      heartbeat REAL NOT NULL DEFAULT 0, lease TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0,
-      argv TEXT NOT NULL DEFAULT '[]');
-    CREATE TABLE IF NOT EXISTS output (session TEXT NOT NULL, offset INTEGER NOT NULL, data BLOB NOT NULL,
-      PRIMARY KEY(session,offset));
-    CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, session TEXT NOT NULL, kind TEXT NOT NULL,
-      payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued', created REAL NOT NULL);
-    CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root TEXT NOT NULL,
-      name TEXT NOT NULL, size INTEGER NOT NULL, sha TEXT NOT NULL, received INTEGER NOT NULL DEFAULT 0,
-      ready INTEGER NOT NULL DEFAULT 0, path TEXT NOT NULL);
-    ''')
-    columns = {r[1] for r in db.execute('PRAGMA table_info(sessions)')}
-    for name, declaration in {
-        'worker_pid': 'INTEGER NOT NULL DEFAULT 0',
-        'child_pid': 'INTEGER NOT NULL DEFAULT 0',
-        'launch_signature': "TEXT NOT NULL DEFAULT ''",
-        'mode': "TEXT NOT NULL DEFAULT 'terminal'",
-        'native_thread': "TEXT NOT NULL DEFAULT ''",
-        'chat_settings': "TEXT NOT NULL DEFAULT '{}'",
-    }.items():
-        if name not in columns:
-            db.execute('ALTER TABLE sessions ADD COLUMN ' + name + ' ' + declaration)
-    db.execute('CREATE TABLE IF NOT EXISTS session_files (session TEXT, file TEXT, PRIMARY KEY(session,file))')
-    db.execute('CREATE INDEX IF NOT EXISTS native_commands_pending ON commands(session,state)')
-    db.execute('CREATE INDEX IF NOT EXISTS native_attachments_project ON attachments(project_id)')
-    db.execute('''CREATE TABLE IF NOT EXISTS native_security (
-        kind TEXT NOT NULL CHECK(kind IN ('session','file')), id TEXT NOT NULL,
-        owner TEXT NOT NULL, space TEXT NOT NULL, PRIMARY KEY(kind,id))''')
-    db.execute('PRAGMA user_version=4')
-    db.commit()
-    os.chmod(path, 0o600)
-    return db
+    except BaseException:
+        db.rollback();db.close();raise
 
 
 def process_exists(pid):
@@ -162,11 +168,11 @@ def retained_bytes(db):
 
 
 def public(row):
-    result = {k: row[k] for k in ('id','project_id','device_id','root','cwd','provider','title','status',
-                               'created','updated','size','exit_code','error')}
-    for key, default in (('mode','terminal'),('native_thread',''),('chat_settings','{}')):
-        result[key] = row[key] if key in row.keys() else default
-    return result
+    required=('id','project_id','device_id','root','cwd','provider','title','status',
+              'created','updated','size','exit_code','error','mode','native_thread','chat_settings')
+    if not set(required)<=set(row.keys()) or row['mode'] not in {'chat','terminal'}:
+        raise ValueError('Native record requires explicit current schema fields')
+    return {key:row[key] for key in required}
 
 
 def launch_argv(executable, provider, options, attachment_paths=()):

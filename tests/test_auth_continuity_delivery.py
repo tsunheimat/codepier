@@ -9,6 +9,7 @@ from hub.auth import Auth
 from hub.oidc import OIDCService, ProviderInput
 from shared.crypto import digest
 from tests.review_support import runtime as runtime, Peer
+from tests.current_model import CurrentModel
 
 
 @pytest.fixture
@@ -28,8 +29,10 @@ def delegated(runtime):
             VALUES('identity',?,'owner',?,'owner',?,?,?,?)""",
             (body.issuer, pid, now, now + 300, encrypted, now))
     principal = replace(principal, identity_id='identity', user_epoch=1)
-    grant = auth.issue_grant(principal, 'durable-fixture', ['read', 'write'], ['proj'])
-    principal = service.grant_principal(store.one('SELECT * FROM grants WHERE id=?', (grant['grant_id'],)))
+    profile=CurrentModel(store).profile(space=principal.space_id,creator=principal.user_id,policy={
+        'project_rules':[{'projects':['proj'],'actions':['read','write']}]})
+    grant=auth.issue_connection(principal,'durable-fixture',profile['id'],profile['version'],1)
+    principal=service.grant_principal(grant['connection_id'])
     return service, principal, encrypted, pid
 
 

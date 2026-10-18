@@ -2205,7 +2205,7 @@ function chatExport(format) {
     '/api/native/sessions/' +
     encodeURIComponent(sid) +
     '/export?' +
-    new URLSearchParams({ format, });
+    new URLSearchParams({ format });
   a.download = 'conversation.' + format;
   a.click();
   chatStatus('正在导出此会话的完整已同步记录');

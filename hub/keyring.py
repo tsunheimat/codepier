@@ -22,7 +22,7 @@ from shared.instance_lock import InstanceLock
 
 RING_FILE = "master.keys.json"
 JOURNAL_FILE = "rekey.json"
-CIPHER_COLUMNS = (("devices", "secret"), ("operations", "payload"), ("vps_connections", "secret"),
+CIPHER_COLUMNS = (("devices", "secret"), ("operations", "payload"),
                   ("oidc_providers", "client_secret"), ("external_identities", "upstream_tokens"),
                   ("oidc_transactions", "verifier"), ("gateway_secrets", "secret"), ("gateway_accounts", "secret"),
                   ("gateway_calls", "result"), ("oauth_refresh_receipts", "response"))

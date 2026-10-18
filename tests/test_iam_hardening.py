@@ -224,10 +224,9 @@ def test_queued_mcp_request_rechecks_direct_membership_before_reconnect(team):
     receipt=data(call(b['alice'],grant['token'],'exec',{'project':'same-alias','command':'echo fixture',
         'idempotency_key':'queued-offline-member','yield_seconds':0}))
     row=app.state.store.one('SELECT * FROM operations WHERE id=?',(receipt['operation_id'],))
-    request=json.loads(app.state.store.decrypt(row['payload']))
-    assert app.state.runtime.permission_error(row,request) is None
+    assert app.state.runtime.permission_error(row) is None
     app.state.store.execute("UPDATE memberships SET policy='{}',version=version+1 WHERE user_id='alice' AND space_id='team'")
-    assert app.state.runtime.permission_error(row,request) is not None
+    assert app.state.runtime.permission_error(row) is not None
 
 
 def test_inventory_enrollment_obeys_owner_account_not_ambient_space_membership(team):

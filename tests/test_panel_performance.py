@@ -278,18 +278,17 @@ def test_failed_basics_are_not_cached(event_page):
     assert page.evaluate('requests') == 2
 
 
-def test_panel_indexes_follow_legacy_iam_migration(tmp_path):
-    from tests.legacy_iam_fixture import legacy_store
-    directory = tmp_path / 'legacy-hub'
-    old = legacy_store(directory)
+def test_current_panel_indexes_survive_a_normal_restart(tmp_path):
+    directory=tmp_path/'current-hub'
+    store=Store(directory)
     try:
-        assert 'space_id' not in {row['name'] for row in old.all('PRAGMA table_info(operations)')}
-        old.execute("INSERT INTO meta VALUES ('panel-legacy-preserve','yes')")
-    finally:
-        old.close()
-    upgraded = Store(directory)
+        store.execute("INSERT INTO meta VALUES('panel-current-preserve','yes')")
+        before=store.all("SELECT name,sql FROM sqlite_master WHERE name LIKE 'operations_panel_%' ORDER BY name")
+        assert len(before)==2
+    finally:store.close()
+    store=Store(directory)
     try:
-        assert upgraded.one("SELECT value FROM meta WHERE key='panel-legacy-preserve'")['value'] == 'yes'
-        assert len(upgraded.all("SELECT name FROM sqlite_master WHERE name LIKE 'operations_panel_%'")) == 2
-    finally:
-        upgraded.close()
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one("SELECT value FROM meta WHERE key='panel-current-preserve'")['value']=='yes'
+        assert store.all("SELECT name,sql FROM sqlite_master WHERE name LIKE 'operations_panel_%' ORDER BY name")==before
+    finally:store.close()

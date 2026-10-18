@@ -764,9 +764,7 @@ function connectEvents() {
   stopEvents();
   const session = S.session,
     space = location.hash,
-    events = (S.events = new EventSource(
-      '/api/events?access_events=2',
-    ));
+    events = (S.events = new EventSource('/api/events?access_events=2'));
   const current = () => S.events === events && S.session === session;
   let opened = false,
     checkingAccess = false,
@@ -949,8 +947,8 @@ function productHash(page) {
   return page === 'resources'
     ? 'resources/' + (S.resourceTab || 'projects')
     : page === 'identity' && ['users', 'sso'].includes(S.identityTab)
-        ? 'identity/' + S.identityTab
-        : page;
+      ? 'identity/' + S.identityTab
+      : page;
 }
 function canonicalPage(page) {
   const [path, query = ''] = page.split('?');

@@ -16,16 +16,18 @@ import pytest
 from hub import keyring
 from hub.store import Store
 from shared.instance_lock import InstanceLock
-from tests.legacy_iam_fixture import seed_personal_owner
+from tests.current_model import CurrentModel
 
 
 def populated(directory: Path):
     store = Store(directory)
     try:
-        space_id=seed_personal_owner(store)
-        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('d','fixture',?,?,?,'owner')", (store.encrypt('fixture-device-key'), time.time(),space_id))
+        model=CurrentModel(store);model.user('owner')
+        space_id=model.workspace('key-space',owner='owner')
+        model.device('d',owner='owner',secret='fixture-device-key')
         store.execute("INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated,payload,space_id,owner_user_id) VALUES ('o','fixture','fs_read','{}','test','queued',?,?,?,?,'owner')", (time.time(), time.time(), store.encrypt('{"path":"fixture.py"}'),space_id))
-        store.execute("INSERT INTO vps_connections(id,name,name_key,host,port,username,secret,created,updated,space_id,owner_user_id) VALUES ('v','fixture','fixture','vps.invalid',22,'fixture',?,?,?,?,'owner')", (store.encrypt('fixture-password'), time.time(), time.time(),space_id))
+        store.execute("INSERT INTO gateway_connectors(id,owner_user_id,label,endpoint,protocol,networks,created) VALUES('connector','owner','Fixture','https://fixture.invalid/mcp','auto','[]',?)",(time.time(),))
+        store.execute("INSERT INTO gateway_accounts(id,connector_id,space_id,owner_user_id,label,sharing,secret,created) VALUES('account','connector',?,'owner','Fixture','private',?,?)",(space_id,store.encrypt('fixture-backend-token'),time.time()))
         return (directory / 'master.key').read_bytes()
     finally:
         store.close()
@@ -36,12 +38,12 @@ def assert_readable(directory):
     try:
         assert store.decrypt(store.one("SELECT secret FROM devices WHERE id='d'")['secret']) == 'fixture-device-key'
         assert store.decrypt(store.one("SELECT payload FROM operations WHERE id='o'")['payload']) == '{"path":"fixture.py"}'
-        assert store.decrypt(store.one("SELECT secret FROM vps_connections WHERE id='v'")['secret']) == 'fixture-password'
+        assert store.decrypt(store.one("SELECT secret FROM gateway_accounts WHERE id='account'")['secret']) == 'fixture-backend-token'
     finally:
         store.close()
 
 
-def test_normal_startup_keeps_legacy_format_and_missing_key_fails_closed(tmp_path):
+def test_current_key_startup_and_missing_key_fail_closed(tmp_path):
     directory = tmp_path / 'hub'
     old = populated(directory)
     assert not (directory / keyring.RING_FILE).exists()
@@ -64,7 +66,7 @@ def test_rotation_changes_all_ciphertexts_retains_recoverable_backup_and_can_rep
     backup = directory / result['backup']
     assert_readable(backup)
     with sqlite3.connect(directory / 'hub.sqlite3') as db:
-        for table, column in (('devices','secret'),('operations','payload'),('vps_connections','secret')):
+        for table, column in (('devices','secret'),('operations','payload'),('gateway_accounts','secret')):
             value = db.execute(f'SELECT {column} FROM {table}').fetchone()[0]
             assert value.startswith('cp1:' + result['key_id'] + ':')
             with pytest.raises(InvalidToken):

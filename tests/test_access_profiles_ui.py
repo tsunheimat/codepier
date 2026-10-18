@@ -9,7 +9,7 @@ import pytest
 from playwright.sync_api import expect
 
 
-@pytest.fixture(scope='module',params=['chromium','webkit'])
+@pytest.fixture(params=['chromium','webkit'])
 def profiles_browser(request,chat_browser_pool):
     return chat_browser_pool(request.param)
 
@@ -42,13 +42,13 @@ def test_create_rename_and_concurrent_edit_keep_identity(profiles_page,stack):
     identifier=current['id']
     assert current['policy']['project_rules']==[{'projects':[stack.project['id']],'actions':['read'],
         'all_projects':False,'excluded_projects':[]}]
-    page.locator('[data-ws-action="profiles"][data-id="'+identifier+'"]').click()
+    page.locator('[data-ws-action="profile"][data-id="'+identifier+'"]').click()
     form.locator('[name="label"]').fill(label+' renamed')
     page.get_by_role('button',name='保存',exact=True).click()
     expect(form).to_have_count(0,timeout=15000)
     expect(page.locator('#workspace-page h3').filter(has_text=label+' renamed')).to_be_visible()
     assert stack.must(stack.client.get(profile_url(stack,identifier)))['id']==identifier
-    page.locator('[data-ws-action="profiles"][data-id="'+identifier+'"]').click()
+    page.locator('[data-ws-action="profile"][data-id="'+identifier+'"]').click()
     form.locator('[name="label"]').fill('Local unsaved draft')
     current=stack.must(stack.client.get(profile_url(stack,identifier)))
     updated=stack.must(stack.client.put(profile_url(stack,identifier),json={

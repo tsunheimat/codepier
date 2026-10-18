@@ -15,7 +15,7 @@ async def test_tasks_list_bypasses_project_and_worker_locks(local_agent):
     agent.config['tasks'] = {'check': {'command': ['python3'], 'projects': ['fixture'], 'env': {'PRIVATE': 'hidden'}}}
     async with agent.project_slot(root, write=True, operation_id='long-test'):
         await asyncio.wait_for(agent.handle({
-            'id': 'metadata', 'tool': 'tasks_list',
+            'id': 'metadata', 'tool': 'tasks_list', 'tool_contract_version': 1,
             'project': {'root': str(root), 'alias': 'fixture', 'allow_tasks': True},
             'args': {'project': 'fixture'},
         }), 1)
@@ -30,7 +30,7 @@ async def test_tasks_list_bypasses_project_and_worker_locks(local_agent):
 @pytest.mark.asyncio
 async def test_tasks_list_fast_path_preserves_root_authorization(local_agent):
     agent, root = local_agent
-    await agent.handle({'id': 'denied', 'tool': 'tasks_list',
+    await agent.handle({'id': 'denied', "tool_contract_version": 1, 'tool': 'tasks_list',
         'project': {'root': str(root.parent), 'alias': 'fixture', 'allow_tasks': True},
         'args': {'project': 'fixture'}})
     assert agent.journal.status('denied')['result']['ok'] is False
@@ -66,11 +66,13 @@ async def test_metadata_coalescing_respects_receipt_boundaries(runtime, change):
     elif change == 'actor':
         p = replace(p, actor='different-owner')
     elif change == 'grant':
-        from tests.legacy_iam_fixture import seed_grant
-        seed_grant(r.store, 'different-grant', p.user_id, projects=('proj',))
-        p = replace(p, grant_id='different-grant', admin=False)
+        from tests.current_model import CurrentModel
+        model=CurrentModel(r.store)
+        profile=model.profile(space=p.space_id,creator=p.user_id,policy={
+            'project_rules':[{'projects':['proj'],'actions':['read']}]})
+        _,p=model.connection(user=p.user_id,space=p.space_id,profile=profile)
     elif change == 'root':
-        r.store.execute("UPDATE projects SET root='/tmp/other' WHERE id='proj'")
+        r.store.execute("UPDATE space_folders SET device_path='/tmp/other',version=version+1 WHERE id='test-folder'")
     elif change == 'explicit':
         args['idempotency_key'] = 'intentional-new-query'
     second = await r.invoke('tasks_list', args, p)

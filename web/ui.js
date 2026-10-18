@@ -62,10 +62,10 @@ function uiSyncNavigation() {
     S.page === 'resources'
       ? S.resourceTab || 'projects'
       : S.page === 'identity'
-          ? S.identityTab || 'account'
-          : S.page === 'audit'
-            ? S.auditMode || 'operations'
-            : '';
+        ? S.identityTab || 'account'
+        : S.page === 'audit'
+          ? S.auditMode || 'operations'
+          : '';
   $$('[data-nav]').forEach((b) => {
     const chosen = b.hasAttribute('data-nav-tab')
       ? b.closest('[data-nav-subtabs]').dataset.navSubtabs === S.page &&
@@ -582,9 +582,9 @@ function uiSectionTabs(host, groups) {
   choose(groups.some((g) => g.id === tabs[key]) ? tabs[key] : groups[0].id);
 }
 function uiManagementLayout(page) {
-  const area = S.page==='spaces' && CodePierSpaces.route().tab==='mcp'?'mcp-gateway':S.page;
-  if(!['identity','mcp-gateway'].includes(area))return;
-  const host=$('#gateway-page',page)||page;
+  const area = S.page === 'spaces' && CodePierSpaces.route().tab === 'mcp' ? 'mcp-gateway' : S.page;
+  if (!['identity', 'mcp-gateway'].includes(area)) return;
+  const host = $('#gateway-page', page) || page;
   host.classList.add('management-page');
   const panels = $$(':scope > .panel', host);
   if (panels.length > 1 && area === 'mcp-gateway') {

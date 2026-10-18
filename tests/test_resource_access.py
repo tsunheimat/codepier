@@ -72,11 +72,10 @@ def test_worker_action_pairs_authorize_testing_not_production_or_other_project(t
             ((testing['id'],),('execute','read')),((production['id'],),('read',))}
     assert '"password"' not in json.dumps(record) and '"private_key"' not in json.dumps(record)
     operation=app.state.store.one('SELECT * FROM operations WHERE id=?',(receipt['operation_id'],))
-    request=json.loads(app.state.store.decrypt(operation['payload']))
     assert operation['project_id'] is None
-    assert app.state.runtime.permission_error(operation,request) is None
+    assert app.state.runtime.permission_error(operation) is None
     update_profile(b['owner'],profile,{**policy,'vps_rules':[{'actions':['read'],'vps':[testing['id'],production['id']]}]})
-    assert app.state.runtime.permission_error(operation,request)
+    assert app.state.runtime.permission_error(operation)
     result_error(execute(b['alice'],created['token'],testing),'VPS_NOT_FOUND')
     assert b['owner'].get('/api/operations/'+receipt['operation_id']).status_code==403
 

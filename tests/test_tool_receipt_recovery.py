@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from playwright.sync_api import expect
-from tests.test_chat_sse import service, TestAuth, request, sync  # noqa: F401
+from tests.test_chat_sse import service, native_auth, request, sync  # noqa: F401
 from tests.test_devtools_browser_actions import browser_page  # noqa: F401
 from tests.test_devtools_flow import tools_page  # noqa: F401
 from tests.test_integrations_stack import integrated_stack  # noqa: F401
@@ -29,7 +29,7 @@ async def test_export_reconciles_deltas_without_duplicating_the_final_answer(ser
             {'type':'message','receipt':'two','item_id':'answer','text':'Next answer'},
             {'type':'done','receipt':'two','status':'completed'}]
     await sync(obj,sid,''.join(json.dumps(frame)+'\n' for frame in frames).encode())
-    endpoint=next(route.endpoint for route in make_native_router(TestAuth(),obj.runtime).routes if route.path.endswith('/export'))
+    endpoint=next(route.endpoint for route in make_native_router(native_auth(obj),obj.runtime).routes if route.path.endswith('/export'))
     response=await endpoint(sid,request(),fmt)
     data=''.join([chunk async for chunk in response.body_iterator])
     if fmt=='md':

@@ -271,7 +271,7 @@ async def test_saved_vps_target_keeps_credentials_private_and_binding_pinned(run
     saved=instance.vps.get(connection['id'],principal)
     instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', runner_device_id='dev',
         connection_ref='production', enabled=False, expected_version=saved['version'], idempotency_key='disable-vps-binding'), principal, connection['id'])
-    assert instance.permission_error(row, principal)
+    assert instance.permission_error(row, principal=principal)
     with pytest.raises(DevError):
         instance.vps.transport(request_data, None)
 
