@@ -22,6 +22,7 @@ import time
 
 from agent.execution import LocalBackend, SSHBackend
 from agent.ssh import target_fingerprint
+from agent.session_windows import ConPTYProcess
 from shared.execution_policy import agent_blocks_codex, enforce_argv
 from shared.util import DevError
 
@@ -75,7 +76,7 @@ class Handle:
     id: str
     binding: str
     mode: str
-    process: asyncio.subprocess.Process
+    process: asyncio.subprocess.Process | ConPTYProcess
     remote: bool
     config_hash: str | None
     shell: str
@@ -87,6 +88,8 @@ class Handle:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     reader: asyncio.Task | None = None
     master: int | None = None
+    guard: object | None = None
+    close_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     busy: bool = False
 
     def status(self):
@@ -146,8 +149,28 @@ class SessionManager:
             finally:
                 loop.remove_reader(fd)
         await handle.process.wait()
-        if handle.state == 'active':
-            handle.state = 'lost'
+        await self._close(handle, 'lost')
+
+    async def _windows_pty_output(self, handle):
+        drained_at = None
+        try:
+            while handle.state == 'active':
+                data = await asyncio.to_thread(handle.process.read)
+                if data:
+                    handle.output.append(data)
+                    drained_at = None
+                elif handle.process.returncode is not None:
+                    # ConPTY can retain an open output pipe after child exit.
+                    # Drain late output without waiting forever for a false EOF.
+                    drained_at = drained_at or time.monotonic()
+                    if time.monotonic() - drained_at >= 0.25:
+                        break
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            handle.errors.append(b'ConPTY output transport ended unexpectedly')
+        await self._close(handle, 'lost')
 
     async def _reap(self):
         while True:
@@ -162,37 +185,50 @@ class SessionManager:
             # Subsequent calls report LOST rather than ever reopening the shell.
             for identifier, handle in list(self.handles.items()):
                 if handle.state != 'active' and now - handle.touched > 600:
+                    await self._close(handle, handle.state)
                     self.handles.pop(identifier, None)
 
     async def _close(self, handle, state='closed'):
-        # A command's EOF callback cannot overwrite a concurrent explicit close
-        # or reaper expiry with a different terminal lifecycle reason.
-        if handle.state == 'active':
-            handle.state = state
-        try:
-            if handle.process.returncode is None:
-                if os.name == 'posix':
-                    os.killpg(handle.process.pid, signal.SIGTERM)
-                else:
+        async with handle.close_lock:
+            # A command's EOF cannot overwrite explicit close/reaper expiry.
+            if handle.state == 'active':
+                handle.state = state
+            try:
+                if handle.guard is not None:
+                    handle.guard.terminate()
+                elif isinstance(handle.process, ConPTYProcess):
                     handle.process.terminate()
-                try:
-                    await asyncio.wait_for(handle.process.wait(), 2)
-                except asyncio.TimeoutError:
+                elif handle.process.returncode is None:
                     if os.name == 'posix':
-                        os.killpg(handle.process.pid, signal.SIGKILL)
+                        os.killpg(handle.process.pid, signal.SIGTERM)
                     else:
-                        handle.process.kill()
-                    await handle.process.wait()
-        except ProcessLookupError:
-            pass
-        if handle.reader:
-            handle.reader.cancel()
-            await asyncio.gather(handle.reader, return_exceptions=True)
-        if handle.master is not None:
-            os.close(handle.master)
-            handle.master = None
-        if handle.process.stdin:
-            handle.process.stdin.close()
+                        handle.process.terminate()
+                if handle.process.returncode is None:
+                    try:
+                        await asyncio.wait_for(handle.process.wait(), 2)
+                    except asyncio.TimeoutError:
+                        if handle.guard is not None:
+                            handle.guard.terminate()
+                        elif os.name == 'posix':
+                            os.killpg(handle.process.pid, signal.SIGKILL)
+                        else:
+                            handle.process.kill()
+                        await handle.process.wait()
+            except ProcessLookupError:
+                pass
+            if handle.reader and handle.reader is not asyncio.current_task():
+                handle.reader.cancel()
+                await asyncio.gather(handle.reader, return_exceptions=True)
+            if handle.master is not None:
+                os.close(handle.master)
+                handle.master = None
+            if handle.process.stdin:
+                handle.process.stdin.close()
+            if handle.guard is not None:
+                handle.guard.close()
+                handle.guard = None
+            if isinstance(handle.process, ConPTYProcess):
+                handle.process.release()
 
     def _local_plan(self, project, args, tty):
         return LocalBackend(self.agent).plan(project, args, session=True, tty=tty)
@@ -215,16 +251,20 @@ class SessionManager:
             if len(self.active()) >= settings['max_sessions']:
                 raise DevError('SESSION_LIMIT', 'Close an existing Session before opening another', 409)
             tty = args['mode'] == 'pty'
-            if tty and os.name != 'posix':
-                raise DevError('PTY_PLATFORM_UNSUPPORTED', 'This Runner has no installed ConPTY backend', 409)
+            if tty and os.name not in {'posix', 'nt'}:
+                raise DevError('PTY_PLATFORM_UNSUPPORTED', 'No terminal backend for this Runner platform', 409)
             remote = bool(project.get('_vps_context'))
             spec = (SSHBackend(self.agent) if remote else LocalBackend(self.agent)).plan(project, args, session=True, tty=tty)
             env = dict(os.environ) if spec.inherit_env else {'PATH': os.environ.get('PATH', os.defpath)}
+            if os.name == 'nt' and not spec.inherit_env:
+                env.update({key: os.environ[key] for key in ('SystemRoot', 'COMSPEC', 'TEMP', 'TMP', 'PATHEXT') if key in os.environ})
             env.update(spec.env)
             enforce_argv(self.agent.config, project, spec.argv, spec.cwd, env)
-            master = slave = None
+            master = slave = guard = process = None
             try:
-                if tty:
+                if tty and os.name == 'nt':
+                    process = ConPTYProcess.start(spec.argv, spec.cwd, env, args['rows'], args['cols'])
+                elif tty:
                     import fcntl
                     import termios
                     master, slave = os.openpty()
@@ -236,27 +276,41 @@ class SessionManager:
                 else:
                     process = await asyncio.create_subprocess_exec(*spec.argv, cwd=spec.cwd, env=env,
                         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                        **({'start_new_session': True} if os.name == 'posix' else {}))
+                        **({'start_new_session': True} if os.name == 'posix' else {'creationflags': 0x00000200}))
+                    if os.name == 'nt':
+                        from agent.native_windows import ProcessJob
+                        guard = ProcessJob(process.pid)
                 handle = Handle(identifier, binding, args['mode'], process, remote,
-                    target_fingerprint(self.agent.config, project) if remote else None, spec.shell, master=master)
+                    target_fingerprint(self.agent.config, project) if remote else None, spec.shell, master=master, guard=guard)
                 self.handles[identifier] = handle
-                handle.reader = asyncio.create_task(self._pty_output(handle) if tty else self._stderr(handle))
-                if not tty:
+                handle.reader = asyncio.create_task(
+                    self._windows_pty_output(handle) if isinstance(process, ConPTYProcess)
+                    else self._pty_output(handle) if tty else self._stderr(handle))
+                if not tty and spec.shell != 'powershell':
                     setup = ("umask 077\n__cp_dir=$(mktemp -d) || exit 70\n"
                              "trap 'rm -rf -- \"$__cp_dir\"' EXIT\n"
                              "printf 'CPREADY\\n'\n")
                     process.stdin.write(setup.encode())
                     await process.stdin.drain()
+                if not tty:
                     if await asyncio.wait_for(process.stdout.readline(), 20) != b'CPREADY\n':
-                        raise DevError('SESSION_PROTOCOL_FAILED', 'The saved target did not establish a framed POSIX shell', 409)
+                        raise DevError('SESSION_PROTOCOL_FAILED', 'The saved target did not establish its framed shell protocol', 409)
                 if self.reaper is None or self.reaper.done():
                     self.reaper = asyncio.create_task(self._reap())
                 return handle.status()
             except BaseException:
                 if identifier in self.handles:
                     await self._close(self.handles[identifier], 'lost')
-                elif master is not None:
-                    os.close(master)
+                else:
+                    if process is not None and process.returncode is None:
+                        process.kill()
+                        await process.wait()
+                    if guard is not None:
+                        guard.close()
+                    if isinstance(process, ConPTYProcess):
+                        process.release()
+                    if master is not None:
+                        os.close(master)
                 raise
             finally:
                 if slave is not None:
@@ -291,10 +345,15 @@ class SessionManager:
                 f'__cp_n=$__cp_err; [ "$__cp_n" -le {OUTPUT_LIMIT} ] || __cp_n={OUTPUT_LIMIT}; head -c "$__cp_n" "$__cp_dir/{identifier}.err"\n'
                 f'rm -f -- "$__cp_dir/{identifier}.out" "$__cp_dir/{identifier}.err"\n')
             async def command():
-                handle.process.stdin.write(script.encode())
+                if handle.shell == 'powershell' and not handle.remote:
+                    from agent.session_powershell import command as powershell_command
+                    payload = powershell_command(identifier, args['command'])
+                else:
+                    payload = script.encode()
+                handle.process.stdin.write(payload)
                 await handle.process.stdin.drain()
                 header = await handle.process.stdout.readline()
-                pattern = rb'CP1 ' + identifier.encode() + rb' ([0-9]{1,3}) ([0-9]{1,20}) ([0-9]{1,20})\n'
+                pattern = rb'CP1 ' + identifier.encode() + rb' (-?[0-9]{1,10}) ([0-9]{1,20}) ([0-9]{1,20})\n'
                 match = re.fullmatch(pattern, header)
                 if match is None:
                     raise DevError('SESSION_PROTOCOL_LOST', 'The original shell ended or broke its control stream', 409)
@@ -344,7 +403,7 @@ class SessionManager:
                 if target_fingerprint(self.agent.config, project) != handle.config_hash:
                     raise DevError('SESSION_TARGET_CHANGED', 'SSH settings changed; the original Session cannot be retargeted', 409)
             else:
-                LocalBackend(self.agent).plan(project, {'cwd': '.', 'env': {}, 'shell': handle.shell}, session=True)
+                LocalBackend(self.agent).plan(project, {'cwd': '.', 'env': {}, 'shell': handle.shell}, session=True, tty=handle.mode == 'pty')
         handle.touched = time.monotonic()
         if operation == 'status':
             return handle.status()
@@ -359,27 +418,45 @@ class SessionManager:
             return await self._command(handle, identifier, args, project)
         if operation == 'signal':
             if args['signal'] == 'interrupt':
-                if handle.master is not None:
+                if isinstance(handle.process, ConPTYProcess):
+                    count = await asyncio.wait_for(handle.process.write(b'\x03'), 10)
+                    if count != 1:
+                        return {**handle.status(), 'outcome_uncertain': True, 'error': 'The terminal did not confirm its interrupt input'}
+                elif handle.master is not None:
                     os.write(handle.master, b'\x03')
+                elif os.name == 'nt':
+                    handle.process.send_signal(signal.CTRL_BREAK_EVENT)
                 else:
                     os.killpg(handle.process.pid, signal.SIGINT)
             else:
                 await self._close(handle, 'lost')
             return handle.status()
-        if handle.mode != 'pty' or handle.master is None:
+        terminal = isinstance(handle.process, ConPTYProcess)
+        if handle.mode != 'pty' or handle.master is None and not terminal:
             raise DevError('SESSION_MODE_MISMATCH', 'Raw input and resize require an active PTY')
         if operation == 'resize':
-            import fcntl
-            import termios
-            fcntl.ioctl(handle.master, termios.TIOCSWINSZ, struct.pack('HHHH', args['rows'], args['cols'], 0, 0))
+            if terminal:
+                handle.process.resize(args['rows'], args['cols'])
+            else:
+                import fcntl
+                import termios
+                fcntl.ioctl(handle.master, termios.TIOCSWINSZ, struct.pack('HHHH', args['rows'], args['cols'], 0, 0))
             return {**handle.status(), 'rows': args['rows'], 'cols': args['cols']}
         if operation == 'write':
             data = base64.b64decode(args['data_base64'], validate=True) if args.get('data_base64') else args['data'].encode()
             async with handle.lock:
                 self._require_input_policy(project)
                 sent = 0
+                if self.cancelled(identifier):
+                    return {**handle.status(), 'bytes_written': 0, 'cancelled': True, 'outcome_uncertain': False}
+                self.executing[identifier] = handle
                 try:
                     async with asyncio.timeout(10):
+                        if terminal:
+                            # ConPTY reports the original UTF-8 write length. A
+                            # partial/ambiguous write is not automatically resent.
+                            sent = await handle.process.write(data)
+                            return {**handle.status(), 'bytes_written': sent, 'outcome_uncertain': sent != len(data)}
                         while sent < len(data):
                             if self.cancelled(identifier):
                                 return {**handle.status(),'bytes_written':sent,'cancelled':True,'outcome_uncertain':bool(sent)}
@@ -388,8 +465,12 @@ class SessionManager:
                             except BlockingIOError:
                                 await asyncio.sleep(0.01)
                 except (TimeoutError, OSError):
+                    if terminal:
+                        await self._close(handle, 'lost')
                     return {**handle.status(), 'bytes_written': sent, 'outcome_uncertain': True,
                             'error': 'PTY input may be partial; inspect the original operation, never resend automatically'}
+                finally:
+                    self.executing.pop(identifier, None)
                 return {**handle.status(), 'bytes_written': sent}
         raise DevError('UNKNOWN_SESSION_OPERATION', 'Unknown Session operation')
 

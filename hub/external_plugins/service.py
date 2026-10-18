@@ -125,7 +125,7 @@ class ExternalPlugins:
         try:
             for record in self.records(principal):
                 context, row = record['context'], record['integration']
-                definition = public_definition(row['alias'], context['action'], record['action'], 'workspace')
+                definition = public_definition(row['alias'], context['action'], record['action'])
                 tools[definition['name']] = definition
         except DevError:
             return []
@@ -139,7 +139,7 @@ class ExternalPlugins:
             except DevError:
                 continue
             for action_name, action in spec.actions.items():
-                definition = public_definition(row['alias'], action_name, action, 'workspace')
+                definition = public_definition(row['alias'], action_name, action)
                 if definition['name'] != name:
                     continue
                 validate_value(definition['inputSchema'], arguments)

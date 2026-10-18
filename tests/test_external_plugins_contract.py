@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from hub.external_plugins.contracts import Registry, parse_spec, map_arguments, public_definition
 from hub.external_plugins.rules import PluginRule, intersect, allows
-from hub.roles import RolePolicy
+from hub.permissions import AccessPolicy
 from shared.util import DevError
 
 
@@ -91,9 +91,9 @@ def test_non_json_or_oversized_manifests_fail():
 
 def test_rule_intersection_preserves_action_project_pairs():
     identifier = 'ext_' + 'a' * 32
-    ceiling = RolePolicy(plugin_rules=[{'integration_id': identifier, 'projects': ['a'], 'actions': ['pipeline.get']}])
-    current = RolePolicy(plugin_rules=[{'integration_id': identifier, 'projects': ['a', 'b'], 'actions': ['pipeline.get', 'pipeline.list']}])
-    effective = RolePolicy(plugin_rules=[r.model_dump() for r in intersect(ceiling, current)])
+    ceiling = AccessPolicy(plugin_rules=[{'integration_id': identifier, 'projects': ['a'], 'actions': ['pipeline.get']}])
+    current = AccessPolicy(plugin_rules=[{'integration_id': identifier, 'projects': ['a', 'b'], 'actions': ['pipeline.get', 'pipeline.list']}])
+    effective = AccessPolicy(plugin_rules=[r.model_dump() for r in intersect(ceiling, current)])
     assert allows(effective, identifier, 'pipeline.get', 'a')
     assert not allows(effective, identifier, 'pipeline.get', 'b')
     assert not allows(effective, identifier, 'pipeline.list', 'a')
@@ -105,5 +105,5 @@ def test_rules_reject_implicit_space_scope_and_unbounded_surface():
     with pytest.raises(ValidationError): PluginRule(integration_id=identifier, actions=['pipeline.get'])
     with pytest.raises(ValidationError): PluginRule(integration_id=identifier, scope='space', projects=['a'], actions=['pipeline.get'])
     with pytest.raises(ValidationError):
-        RolePolicy(plugin_rules=[{'integration_id': identifier, 'projects': [str(i) for i in range(100)], 'actions': ['a', 'b', 'c']}])
-    assert json.loads(RolePolicy().model_dump_json())['plugin_rules'] == []
+        AccessPolicy(plugin_rules=[{'integration_id': identifier, 'projects': [str(i) for i in range(100)], 'actions': ['a', 'b', 'c']}])
+    assert json.loads(AccessPolicy().model_dump_json())['plugin_rules'] == []

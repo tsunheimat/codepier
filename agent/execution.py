@@ -39,13 +39,23 @@ class LocalBackend:
         shell = self.agent.config['shell']
         requested = None
         if session:
-            requested = args.get('shell') or 'sh'
-            if requested not in {'sh', 'bash', 'zsh'}:
-                raise DevError('SESSION_SHELL_UNSUPPORTED', 'Stateful sessions currently require a POSIX shell', 409)
-            executable = shutil.which(requested, path=shell['env'].get('PATH', os.environ.get('PATH')))
+            requested = args.get('shell') or ('powershell' if os.name == 'nt' else 'sh')
+            if requested not in {'sh', 'bash', 'zsh', 'powershell', 'cmd'}:
+                raise DevError('SESSION_SHELL_UNSUPPORTED', 'The selected Session shell is unsupported', 409)
+            if requested == 'cmd' and (os.name != 'nt' or not tty):
+                raise DevError('SESSION_SHELL_UNSUPPORTED', 'cmd is an interactive Windows PTY shell; use PowerShell for persistent exec', 409)
+            names = {'powershell': ['pwsh', 'powershell'], 'cmd': ['cmd.exe']}.get(requested, [requested])
+            path = shell['env'].get('PATH', os.environ.get('PATH'))
+            executable = next((found for name in names if (found := shutil.which(name, path=path))), None)
             if not executable:
                 raise DevError('SESSION_SHELL_MISSING', 'The requested shell is not installed on this Runner', 409)
-            argv = [executable, '-i' if tty else '-s']
+            if requested == 'powershell':
+                from agent.session_powershell import argv as powershell_argv
+                argv = [executable, '-NoLogo', '-NoProfile', '-NoExit'] if tty else powershell_argv(executable)
+            elif requested == 'cmd':
+                argv = [executable, '/D', '/Q', '/K']
+            else:
+                argv = [executable, '-i' if tty else '-s']
             env = {**shell['env'], **args.get('env', {})}
         else:
             argv, _, env = prepare_shell(self.agent.config, project, local, root, args)
