@@ -849,7 +849,7 @@ class OIDCService:
                 store.audit('panel:'+user['username'],'oidc.unlinked',identifier,commit=False)
             return {'ok':True,'relogin_required':session['identity_id']==identifier}
 
-        async def finish_callback(request:Request,legacy_identifier:str|None=None):
+        async def finish_callback(request:Request):
             params=dict(request.query_params)
             if len(params)!=len(request.query_params.multi_items()):raise DevError('OIDC_CALLBACK_INVALID','回调参数重复',400)
             state=params.get('state','');code=params.get('code','')
@@ -859,8 +859,7 @@ class OIDCService:
                 with store.lock,store.db:
                     store.db.execute('BEGIN IMMEDIATE')
                     txn=store.one('SELECT * FROM oidc_transactions WHERE state_hash=? AND expires>? AND used=0',(state_hash,time.time()))
-                    if (not txn or legacy_identifier is not None and txn['provider_id']!=legacy_identifier
-                            or not hmac.compare_digest(txn['browser_hash'],digest(request.cookies.get(cookie_name,'')))):
+                    if (not txn or not hmac.compare_digest(txn['browser_hash'],digest(request.cookies.get(cookie_name,'')))):
                         raise DevError('OIDC_STATE_INVALID','登录状态已过期、已使用或不属于本浏览器',400)
                     if txn['link_user_id'] and digest(request.cookies.get('rd_session',''))!=txn['link_session_hash']:raise DevError('LINK_SESSION_EXPIRED','关联期间账号已切换',401)
                     store.db.execute('UPDATE oidc_transactions SET used=1 WHERE state_hash=? AND provider_id=?',(state_hash,txn['provider_id']))
@@ -873,8 +872,7 @@ class OIDCService:
                 if 'iss' in params and params['iss']!=provider['issuer']:raise DevError('OIDC_ISSUER_MISMATCH','回调身份来源不匹配',401)
                 meta,keys=await self.metadata(provider)
                 def exchange_form():
-                    suffix='/auth/oidc/'+legacy_identifier+'/callback' if legacy_identifier is not None else '/auth/oidc/callback'
-                    return {'grant_type':'authorization_code','code':code,'redirect_uri':self.public_url()+suffix,'code_verifier':store.decrypt(txn['verifier'])}
+                    return {'grant_type':'authorization_code','code':code,'redirect_uri':self.public_url()+'/auth/oidc/callback','code_verifier':store.decrypt(txn['verifier'])}
                 tokens=await self.exchange(provider,meta,await store.run(exchange_form))
                 if tokens.get('token_type','').lower()!='bearer' or not isinstance(tokens.get('access_token'),str):raise DevError('OIDC_TOKEN_INVALID','没有收到有效访问令牌',401)
                 claims=await self.verify_claims(tokens.get('id_token'),provider,keys,nonce=txn['nonce'],access_token=tokens['access_token'])
@@ -892,19 +890,11 @@ class OIDCService:
                         return cookie(RedirectResponse(txn['return_to'],status_code=303),value['cookie'])
                 response=await store.run(finish_login)
             response.delete_cookie(cookie_name,path='/auth/oidc/callback')
-            if legacy_identifier is not None:
-                response.delete_cookie(cookie_name,path='/auth/oidc/'+legacy_identifier+'/callback')
             return response
 
         @router.get('/auth/oidc/callback')
         async def callback(request:Request):
             return await finish_callback(request)
-
-        # Compatibility for OIDC transactions started before the stable callback
-        # route was introduced. New authorization requests never emit this URL.
-        @router.get('/auth/oidc/{identifier}/callback',include_in_schema=False)
-        async def legacy_callback(identifier:str,request:Request):
-            return await finish_callback(request,identifier)
 
         @router.post('/auth/oidc/{identifier}/backchannel-logout')
         async def backchannel(identifier:str,request:Request):

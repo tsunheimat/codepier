@@ -223,7 +223,7 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
             elif method=='resources/read':
                 uri=params.get('uri')
                 if 'read' not in principal.scopes:raise DevError('INSUFFICIENT_SCOPE','缺少读取权限',403)
-                if uri in mcp_apps.RESOURCES or uri in mcp_apps.LEGACY_RESOURCES:item=await runtime.store.run(mcp_apps.read_resource,uri,request_public_url)
+                if uri in mcp_apps.RESOURCES:item=await runtime.store.run(mcp_apps.read_resource,uri,request_public_url)
                 elif uri=='rd://projects':item={'uri':uri,'mimeType':'application/json','text':json.dumps(await runtime.store.run(project_resources,principal),ensure_ascii=False)}
                 elif uri == 'rd://conversations':item={'uri':uri,'mimeType':'text/plain','text':instructions}
                 else:return failure(identifier,-32602 if modern else -32002,'Resource not found',404 if modern else 200)

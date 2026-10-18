@@ -46,6 +46,7 @@ jobs:
         run: |
           mkdir -p dist/workspace-checks
           .venv/bin/python -m pytest -q \
+            tests/test_workspace_cutoff.py tests/test_mcp_workspace_retirement.py \
             tests/test_workspace_model.py tests/test_workspace_policy.py \
             tests/test_workspace_http.py tests/test_workspace_acceptance.py \
             tests/test_execution_workspace.py tests/test_workspace_integration.py \

@@ -1,7 +1,43 @@
 # Workspace refactor validation — 2026-10-18
 
-Status: **new-model acceptance passes; full-repository release acceptance remains
-blocked**. PR #10 stays Draft. This record covers code/test commit
+## Latest hard-cutoff update
+
+The user explicitly requires a direct cutoff, not retention or migration of any
+former application model. This overrides any interpretation below that all old
+positive tests must be restored or preserved. See the hard-cutoff contract in
+`WORKSPACES.md`.
+
+This change removes the three dedicated Role unit/integration/UI suites (593
+lines), the old readable-App-alias expectation, the provider-ID OIDC callback,
+saved workspace App notices/aliases and the dual-brand App binding. The current
+review App and stable `/auth/oidc/callback` remain. Workspace initialization also
+rejects retired tables or columns even under the current schema marker. Rejection
+never mutates an existing database or tries to upgrade its tokens, projects or
+permissions. No runtime compatibility helper replaces the deleted Role test helper.
+
+The new `test_workspace_cutoff.py` and updated App retirement rejection tests run
+in the focused workflow. **524 tests passed** in one completed combined pinned
+Python 3.13 Linux run, including the existing 468 new-model/backend/browser cases
+and 56 cutoff/catalog/retirement cases. No failures, errors, skips or deselections;
+one upstream TestClient deprecation warning. Source checks, the configured mypy
+scope, generated assets and packaging/credential-pattern checks also passed.
+The actual new-model Chromium/WebKit browser cases remain in that combined run.
+This update does not claim a new native Windows or completed GitHub Actions run;
+the previous exact-head CI results below are historical evidence.
+
+A fresh repository collection reports **3697 collected with 30 collection
+errors**. The three-error reduction comes from deleting the obsolete Role suites,
+not fixing three retained features. Remaining modules which import old helpers
+must be retired if they assert removed behavior, or replaced with tests of retained
+new-model features. Restoring the old helpers, dummy re-exports, migration paths,
+skips and broad collection exclusions are not the resolution. Do not describe
+these errors as a requirement for backward compatibility or the selected suite as
+full-repository acceptance. PR #10 remains Draft; no merge or deployment occurred.
+
+## Previous verification checkpoint
+
+Status at the previous checkpoint: **new-model acceptance passes; full-repository
+release acceptance remains blocked**. That record covers code/test commit
 `43fe86421fef18c045c98b70a75fc26a67c22c85` on `refactor/workspace-abstract`, based on
 main `ecd0753f8e8e6e1c37afb96845949f1f83d2f8f0`. Later documentation-only changes do
 not represent an additional code validation run.

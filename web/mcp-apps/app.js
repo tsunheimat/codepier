@@ -103,7 +103,7 @@ app.ontoolinput = params => {
   root.setAttribute('aria-busy', 'true');
 };
 app.ontoolresult = result => {
-  stop(); binding = {...(result._meta?.['com.codepier/binding'] || result._meta?.['me.infpro.relay/binding'])};
+  stop(); binding = {...result._meta?.['com.codepier/binding']};
   try { render(valueOf(result), generation); }
   catch (error) { root.replaceChildren(); notice(root, error.message, true); root.setAttribute('aria-busy', 'false'); }
 };

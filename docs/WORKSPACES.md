@@ -6,6 +6,37 @@ initialize new connections. Do not deploy this development branch over an existi
 data volume. Working folders, NFS exports and VPS files are not database state and
 are never deleted by choosing a new database.
 
+## Hard cutoff, not backward compatibility
+
+The workspace architecture is a direct replacement, not an additive upgrade.
+There is no requirement to preserve former Role/grant semantics, ambient Current
+Space, device/root Project records, old authorization URLs or saved workspace
+App cards. Do not add migration adapters, import aliases, fallback identities,
+inert compatibility resources or flags which restore the former model.
+
+Old databases and mixed old/new schemas are refused without modifying them. Even
+a current schema marker does not permit retired model tables or columns. New
+connections must be created against a new workspace database. Refusal to delete
+an unrelated existing data volume is a safety boundary, not legacy support.
+
+Old tests which require a removed feature to keep working must be deleted, not
+made green by restoring that feature or by disguising an old fixture as the new
+model. The dedicated Role unit/integration/UI suites are removed. Their former
+migration and Role-specific behavior is not a release requirement. Continued
+features are tested directly against workspace members, Profiles, Connections,
+source bindings and the new execution model; cross-space denial, privilege limits,
+private receipts, revocation and no-replay behavior still require real tests.
+
+`tests/test_workspace_cutoff.py` enforces absent APIs/modules, rejection of former
+authorization fields, refusal of retired database structures, and removed App
+URI/metadata aliases. OIDC has one callback, `/auth/oidc/callback`; the former
+provider-ID callback is not a redirect or compatibility endpoint. The fixed-review
+App uses only `ui://codepier/changes-v1.html` and `com.codepier/binding`.
+
+Remaining old test modules are cleanup/replacement work, not a mandate to preserve
+old runtime behavior. Do not infer a full-suite pass merely from removing obsolete
+tests, and do not disable tests of retained features to conceal a regression.
+
 ## Objects and identities
 
 Global Resources register Devices, Shared Storage, VPS metadata and external MCP

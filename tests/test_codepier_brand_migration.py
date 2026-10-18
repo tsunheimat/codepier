@@ -132,17 +132,6 @@ def test_default_directory_recognizes_only_owned_legacy_alias(tmp_path,monkeypat
     with pytest.raises((RuntimeError,ValueError)):installer.default_install_base()
 
 
-def test_legacy_mcp_resources_and_binding_remain_readable():
-    from hub import mcp_apps
-    for kind in ('workspace','changes'):
-        old=mcp_apps.read_resource('ui://relay/'+kind+'-v1.html',lambda:'https://hub.example')
-        new=mcp_apps.read_resource('ui://codepier/'+kind+'-v1.html',lambda:'https://hub.example')
-        assert old['text']==new['text'] and 'CodePier' in new['text']
-    result=mcp_apps.attach({},'show_changes',{'project':'fixture'},{},lambda:'https://hub.example')
-    assert result['_meta']['com.codepier/binding']==result['_meta']['me.infpro.relay/binding']
-    assert all(x['uri'].startswith('ui://codepier/') for x in mcp_apps.list_resources())
-
-
 def test_exact_old_updater_accepts_new_agent_package(tmp_path):
     from hub.agent_install import AgentPackage
     source=ROOT/'tests/fixtures/legacy-agent-lifecycle-v180.py';spec=importlib.util.spec_from_file_location('legacy_codepier_compat',source)
