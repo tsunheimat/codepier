@@ -174,6 +174,7 @@ REQUIRED_FILES = {
 }
 
 PUBLIC_DOCS = {
+    'docs/WORKSPACE_REFACTOR_VALIDATION.md',
     'docs/PROJECT_ROUTING.md',
     'docs/AUTH_CONTINUITY.md',
     'docs/EXTERNAL_PLUGINS.md',
