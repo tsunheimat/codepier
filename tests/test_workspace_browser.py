@@ -61,6 +61,13 @@ def test_two_tabs_do_not_share_current_workspace(workspace_server, workspace_bro
     second.get_by_role('button', name='保存', exact=True).click()
     expect(second).to_have_url(re.compile(r'#spaces/(?!alice)[^/]+$'), timeout=15000)
     expect(second.locator('#workspace-page h1')).to_contain_text('Independent workspace')
+    created_url = second.url
+    second.go_back()
+    expect(second).to_have_url(re.compile(r'#spaces$'))
+    expect(second.get_by_role('button', name='新建工作空间', exact=True)).to_be_visible()
+    second.go_forward()
+    expect(second).to_have_url(created_url)
+    expect(second.locator('#workspace-page h1')).to_contain_text('Independent workspace')
     expect(first).to_have_url(re.compile(r'#spaces/alice/profiles$'))
     expect(first.locator('#workspace-page h2')).to_have_text('Profiles')
     me = server.must(server.client.get('/api/iam/me'))

@@ -45,7 +45,10 @@ window.CodePierSpaces = (() => {
           status.textContent = '正在校验并保存…';
           const value = await submit(f,key,submitted);
           if (!current()) return;
-          closeModal(d);
+          await closeModal(d);
+          // Logout, another editor or explicit navigation may have happened
+          // during history traversal. Never resurrect the old form's view.
+          if (login !== S.session || page !== location.hash || $('.modal')) return;
           if (done) await done(value);
           else { await renderPage(false); toast('已保存'); }
         } catch (error) {
@@ -131,7 +134,7 @@ window.CodePierSpaces = (() => {
     $('#workspace-next',d).onclick=()=>busy($('#workspace-next',d),async()=>{
       const id=$('select',d).value;
       if (!id) throw new Error('请选择工作空间。');
-      closeModal(d); await proceed(id);
+      await closeModal(d); await proceed(id);
     });
   }
   async function newSpace() {
@@ -201,7 +204,7 @@ window.CodePierSpaces = (() => {
       `<button class="btn" data-ws-project-folder>Folder</button><button class="btn" data-ws-project-shell>Shell</button><button class="btn primary" data-ws-project-tools>开发工具</button>`,true);
     $('[data-ws-project-folder]',d).onclick=()=>{closeModal(d);void projectEditor(id);};
     $('[data-ws-project-shell]',d).onclick=()=>{closeModal(d);void shellEditor(old.workspace?.id,id);};
-    $('[data-ws-project-tools]',d).onclick=()=>{closeModal(d);void navigate('project/'+enc(id)+'/tools');};
+    $('[data-ws-project-tools]',d).onclick=async()=>{await closeModal(d);await navigate('project/'+enc(id)+'/tools');};
     $$('[data-ws-action="project-vps-command"]',d).forEach(b=>b.onclick=()=>{closeModal(d);void commandVPS(result.vps.find(x=>x.id===b.dataset.id),id);});
   }
   async function shellEditor(spaceId,projectId='') {

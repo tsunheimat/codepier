@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import pytest
 
 from agent.execution_sessions import SessionManager
-from agent.native_windows import capabilities
+from agent.session_conpty import capabilities
 from shared.util import DevError
 from tests.test_execution_workspace import setup, args
 
@@ -118,9 +118,9 @@ async def test_real_conpty_read_write_resize_and_original_close(tmp_path, shell)
                 break
             await asyncio.sleep(.05)
         assert manager.handles[sid].process.returncode is None
-        text = 'echo cp' + '-terminal-output\r'
+        text = 'echo cp' + '-terminal-output>pty-proof.txt\r'
         receipt = await manager.execute('d'*32, project, args('write', session_id=sid, data=text))
-        assert receipt['bytes_written'] == len(text.encode()) and not receipt.get('outcome_uncertain')
+        assert receipt['bytes_written'] == len(text.encode()) and not receipt.get('outcome_uncertain'), receipt
         output = ''
         cursor = 0
         for _ in range(200):
@@ -132,6 +132,13 @@ async def test_real_conpty_read_write_resize_and_original_close(tmp_path, shell)
                 break
             await asyncio.sleep(.05)
         assert 'cp-terminal-output' in output, output
+        for _ in range(200):
+            if (tmp_path/'pty-proof.txt').exists():
+                break
+            await asyncio.sleep(.05)
+        raw = (tmp_path/'pty-proof.txt').read_bytes()
+        encoding = 'utf-16' if raw.startswith(b'\xff\xfe') else 'utf-8-sig'
+        assert raw.decode(encoding).strip() == 'cp-terminal-output'
         with pytest.raises(DevError, match='complete UTF-8'):
             await manager.execute('f'*32, project, args('write', session_id=sid, data_base64='/w=='))
         closed = await manager.execute('1'*32, project, args('close', session_id=sid))

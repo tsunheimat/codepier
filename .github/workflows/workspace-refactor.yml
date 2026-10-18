@@ -52,6 +52,7 @@ jobs:
             tests/test_workspace_panel_contracts.py \
             tests/test_routing_contracts.py tests/test_execution_policy_interpreters.py \
             tests/test_session_windows_contracts.py tests/test_external_plugins_contract.py \
+            tests/test_core_tools.py tests/test_core_output_schemas.py \
             --junitxml=dist/workspace-checks/focused.xml
       - name: Retain actual test evidence
         if: always()
@@ -113,7 +114,7 @@ jobs:
           python -m venv .venv
           & .venv/Scripts/python.exe -m pip install --require-hashes -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .venv/Scripts/python.exe -c "from agent.native_windows import capabilities; c=capabilities(); print(c); assert c['available']"
+          & .venv/Scripts/python.exe -c "from agent.session_conpty import capabilities; c=capabilities(); print(c); assert c['available']"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Command powershell.exe, pwsh.exe
       - name: Real native execution and transport contracts

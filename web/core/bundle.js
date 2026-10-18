@@ -283,7 +283,7 @@ var CP = (() => {
     focusable: uiFocusable
   }) {
     const lifetime = createPanel({ owner: () => S.session });
-    let editorRoute = null, pendingBack = false, pendingEditor = null;
+    let editorRoute = null, pendingBack = false, pendingEditor = null, backCompletion = Promise.resolve(), completeBack = null;
     const enterEditor = () => {
       editorRoute = { id: uid() };
       history.pushState({ ...history.state, codepierEditor: editorRoute.id }, "", location.href);
@@ -293,6 +293,9 @@ var CP = (() => {
         pendingBack = false;
         if (pendingEditor?.isConnected && S.session) enterEditor();
         pendingEditor = null;
+        const complete = completeBack;
+        completeBack = null;
+        complete?.();
         return;
       }
       if (editorRoute && history.state?.codepierEditor !== editorRoute.id) {
@@ -346,6 +349,9 @@ var CP = (() => {
         editorRoute = null;
         if (owned) {
           pendingBack = true;
+          backCompletion = new Promise((resolve) => {
+            completeBack = resolve;
+          });
           history.back();
         }
       }
@@ -353,6 +359,7 @@ var CP = (() => {
         focus = focus.closest(".tool-menu")?.querySelector("summary");
       if (focus?.isConnected && focus.getClientRects().length && !focus.closest("[inert]"))
         focus.focus({ preventScroll: true });
+      return backCompletion;
     }
     function modal(title, body, footer = "", large = false, closable = true) {
       const origin = $(".modal") ? S.modalLastFocus : document.activeElement;

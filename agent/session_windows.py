@@ -1,14 +1,16 @@
 """Windows Session transport backed by ConPTY and retained process handles.
 
-Reuse the native CLI's reviewed ConPTY/Job primitives, not its private sessions,
-credentials or database. No fallback to an ordinary pipe masquerading as a PTY.
+Reuse the native CLI's retained Job primitive, not its private sessions or
+credentials. Session ConPTY owns its synchronous channels so every write has a
+real byte-count acknowledgement. No plain-pipe fallback masquerades as a PTY.
 """
 from __future__ import annotations
 
 import asyncio
 import threading
 
-from agent.native_windows import ProcessJob, capabilities, create_pty
+from agent.native_windows import ProcessJob
+from agent.session_conpty import capabilities, create_pty
 from shared.util import DevError
 
 
@@ -58,12 +60,15 @@ class ConPTYProcess:
         if not availability['available']:
             raise DevError('PTY_PLATFORM_UNSUPPORTED', availability['reason'], 409)
         native = create_pty(argv, str(cwd), env, rows, cols)
+        guard = None
         try:
             guard = ProcessJob(int(native.pid))
+            native.resume()  # The child cannot execute before Job ownership exists.
         except BaseException:
-            # ProcessJob terminates its retained child handle on ownership failure.
-            # Releasing the ConPTY cannot transfer or reopen the original process.
-            del native
+            if guard is not None:
+                guard.terminate()
+                guard.close()
+            native.close()
             raise
         return cls(native, guard)
 
@@ -89,7 +94,8 @@ class ConPTYProcess:
     def read(self):
         if self.native is None:
             return b''
-        return self.native.read(blocking=False).encode('utf-8')
+        data = self.native.read(blocking=False)
+        return data.encode('utf-8') if isinstance(data, str) else data
 
     async def write(self, data: bytes) -> int:
         try:
@@ -109,4 +115,6 @@ class ConPTYProcess:
             self._exit_code = self.guard.exit_code()
             self.guard.close()
             self.guard = None
-        self.native = None
+        if self.native is not None:
+            self.native.close()
+            self.native = None

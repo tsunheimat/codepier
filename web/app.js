@@ -1039,7 +1039,13 @@ async function navigate(page) {
   if (page === 'integrations' && S.page !== page) window.CodePierIntegrations?.inherit(S.page);
   const changed = page !== S.page;
   S.page = page;
-  location.hash = productHash(page);
+  // Commit the explicit resource URL before rendering reads it. Assigning hash
+  // schedules another navigation in WebKit: the render/normalization handler can
+  // observe the previous workspace path and undo an otherwise successful save.
+  // User links and browser back/forward still use the hashchange handler below.
+  const destination = productHash(page);
+  if (location.hash.slice(1) !== destination)
+    history.pushState(null, '', location.pathname + location.search + '#' + destination);
   $('#breadcrumb-page').textContent = nav.find((x) => x[0] === page)[2];
   uiSetMenu(false, false);
   uiSyncNavigation();

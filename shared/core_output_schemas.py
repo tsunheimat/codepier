@@ -282,12 +282,12 @@ def build_core_output_schemas(legacy, *, include_queries=False):
         computer.append(copy(name, fields=fields))
 
     vps = obj({
-        **{key: STR for key in ('id', 'name', 'host', 'username', 'host_key_policy',
-                               'provider', 'region', 'system', 'notes', 'target')},
-        'port': INT, 'enabled': BOOL, 'version': INT, 'connection_revision': INT,
-        'created': NUM, 'updated': NUM, 'has_password': BOOL,
-        'projects': array(PROJECT), 'project_ids': array(STR),
-    }, ('id', 'name', 'host', 'port', 'username', 'target', 'enabled', 'projects'))
+        **{key: STR for key in ('id', 'name', 'host', 'provider', 'region', 'system', 'notes', 'target')},
+        'enabled': BOOL, 'version': INT, 'online': BOOL, 'can_execute': BOOL,
+        'display_mode': {'type': 'string', 'enum': ['top_level', 'project_only', 'both']},
+        'actions': array({'type': 'string', 'enum': ['read', 'execute']}),
+        'projects': array(obj({'id': STR, 'alias': STR}, ('id', 'alias'))),
+    }, ('id', 'name', 'host', 'target', 'enabled', 'projects', 'display_mode', 'actions', 'can_execute', 'online'))
     result = {
         'workspace': union(workspace),
         'read': union(read), 'write': union(write), 'edit': union(edit),

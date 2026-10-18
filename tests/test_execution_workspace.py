@@ -39,6 +39,28 @@ def args(operation, **kw):
     return Session(operation=operation, idempotency_key='test-intent-0001', **kw).model_dump()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['data', 'data_base64'])
+async def test_pty_text_and_base64_send_the_selected_payload(tmp_path, field):
+    agent, project = setup(tmp_path)
+    manager = SessionManager(agent)
+    sid = 'a'*32
+    text = 'printf text-accepted > input-receipt.txt\n'
+    value = text if field == 'data' else base64.b64encode(text.encode()).decode()
+    try:
+        await manager.execute(sid, project, args('open', project='demo', mode='pty'))
+        receipt = await manager.execute('b'*32, project, args('write', session_id=sid, **{field: value}))
+        assert receipt['bytes_written'] == len(text.encode()), receipt
+        for _ in range(200):
+            if (tmp_path/'input-receipt.txt').exists():
+                break
+            await asyncio.sleep(.01)
+        # Terminal echo alone is not evidence that the selected input executed.
+        assert (tmp_path/'input-receipt.txt').read_text() == 'text-accepted'
+    finally:
+        await manager.close()
+
+
 def test_buffer_is_bytes_and_reports_loss():
     buffer = OutputBuffer(4)
     buffer.append(b'abc\xffde')

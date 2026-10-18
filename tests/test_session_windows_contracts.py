@@ -22,6 +22,13 @@ class Native:
         self.count = count
         self.writes = []
         self.dimensions = None
+        self.resumed = self.closed = False
+
+    def resume(self):
+        self.resumed = True
+
+    def close(self):
+        self.closed = True
 
     def write(self, text):
         self.writes.append(text)
@@ -83,7 +90,7 @@ async def test_conpty_reports_original_utf8_write_length(text):
     assert await process.wait() == 1
     process.release()
     process.release()
-    assert guard.closed and guard.terminated == 1
+    assert guard.closed and guard.terminated == 1 and native.closed
     assert process.returncode == 1
 
 
@@ -164,7 +171,7 @@ def test_conpty_start_uses_exact_runner_plan_and_owned_job(monkeypatch, tmp_path
     monkeypatch.setattr(session_windows, 'ProcessJob', lambda pid: guard if pid == 42 else None)
     process = ConPTYProcess.start(['ssh.exe', '-tt', 'saved-host'], tmp_path, {'PATH': 'fixture'}, 30, 120)
     assert calls == [(['ssh.exe', '-tt', 'saved-host'], str(tmp_path), {'PATH': 'fixture'}, 30, 120)]
-    assert process.guard is guard
+    assert process.guard is guard and native.resumed
     process.terminate()
     process.release()
 
