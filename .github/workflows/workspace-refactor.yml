@@ -53,7 +53,7 @@ jobs:
             tests/test_routing_contracts.py tests/test_execution_policy_interpreters.py \
             tests/test_session_windows_contracts.py tests/test_external_plugins_contract.py \
             tests/test_core_tools.py tests/test_core_output_schemas.py \
-            tests/test_ssh.py tests/test_vps.py tests/test_frontend_core.py \
+            tests/test_ssh.py tests/test_vps.py tests/test_shell.py \
             --junitxml=dist/workspace-checks/focused.xml
       - name: Retain actual test evidence
         if: always()
@@ -85,7 +85,7 @@ jobs:
       - name: Browser form and MCP discovery acceptance
         run: |
           mkdir -p dist/workspace-browser
-          .venv/bin/python -m pytest -q tests/test_workspace_browser.py tests/test_vps_ui.py \
+          .venv/bin/python -m pytest -q tests/test_workspace_browser.py tests/test_vps_ui.py tests/test_frontend_core.py \
             --junitxml=dist/workspace-browser/browser.xml
       - name: Retain browser test evidence only
         if: always()
