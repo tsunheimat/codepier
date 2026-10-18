@@ -150,20 +150,30 @@ and are serialized; per-command output is length-framed, not parsed from prompts
 PTY input/output is a bounded terminal byte stream with cursor/loss reporting,
 not per-command exit status. Mutating input requires an idempotency key.
 
-Ordinary opens omit `shell`: SSH uses the shell saved on its Runner target and
-local sessions use `sh`. Explicit SSH shell selection must match that saved target.
+Ordinary opens omit `shell`: SSH uses the shell saved on its Runner target;
+local sessions default to `sh` on POSIX and Windows PowerShell on Windows.
+Explicit SSH shell selection must match that saved target.
 The resolved shell is returned in Session status. Opening a Session does not apply
 the per-command timeout to the lifetime of the shell; setup is bounded separately,
 and each persistent command obeys the Runner command ceiling. Tightening Runner
 Session/input policy blocks new and queued command/PTY input, while observation
 and close continue to address the original handle.
 
-Local persistent shells and PTYs are implemented with real POSIX processes. SSH
-uses the same interface and a saved POSIX remote shell. This branch does not yet
-provide a Windows ConPTY implementation for the new execution-session tool;
-unsupported modes fail explicitly rather than emulating persistence. Existing
-native CLI ConPTY support is a different subsystem and is not evidence of support
-for this new tool.
+Local persistent shells and PTYs use real POSIX processes on Unix. Windows
+persistent sessions use native Windows PowerShell or PowerShell 7 with framed
+per-command output. Interactive Windows sessions use native ConPTY with `cmd`,
+Windows PowerShell or PowerShell 7; console input is UTF-8 and successful writes
+report the bytes actually accepted by the pipe. Suspended startup establishes
+process ownership before user code runs, and child trees are contained in a
+Windows Job Object for timeout/close cleanup. Unsupported mode/dialect pairs fail
+explicitly rather than pretending to retain shell state. SSH uses the same tool
+interface with its saved POSIX remote shell.
+
+Native Windows acceptance exercises actual console input and file effects,
+framed command state, resize, timeout, policy changes and cleanup. It is separate
+from the existing native-CLI terminal subsystem and from portable mocked contracts.
+Passing it is not certification of every Windows service installation or real
+remote SSH configuration.
 
 A session stays pinned to its original target/connection. Runner loss or restart
 reports a lost session, never silently creates a replacement. SSH timeout,
@@ -180,8 +190,9 @@ fixtures. Real Chromium/WebKit test cases also exercise independent workspace
 pages, folder-bounded Shell choices, two-level OAuth consent, profile creation and
 return, and all three VPS display modes through actual HTTP/MCP calls. Browser
 runtime availability is reported separately; template tests are not browser passes.
-No production NFS, external VPS, live IdP, Windows session or deployed-upgrade
-acceptance is claimed by fixtures. See [validation record](WORKSPACE_REFACTOR_VALIDATION.md)
+Native Windows Session acceptance runs on a Windows CI worker; browser cases run
+in both Chromium and WebKit. No production NFS, external VPS, live IdP or deployed
+upgrade acceptance is claimed by these disposable fixtures. See [validation record](WORKSPACE_REFACTOR_VALIDATION.md)
 for actual commands, results and remaining release blockers.
 
 The former repository-wide suite still includes tests for deleted Role/schema APIs
