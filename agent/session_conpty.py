@@ -116,6 +116,15 @@ class Console:
                 self.console, C.sizeof(HANDLE), None, None))
             startup = STARTUPINFOEX()
             startup.StartupInfo.cb = C.sizeof(startup)
+            # A service/test host can have redirected std handles even when
+            # ordinary handle inheritance is disabled. Explicit NULL handles
+            # let console attachment supply CONIN$/CONOUT$ instead of copying
+            # the parent's capture pipes/files (which may already be at EOF).
+            # See Microsoft GetStdHandle: Attach/detach behavior.
+            startup.StartupInfo.dwFlags = 0x00000100  # STARTF_USESTDHANDLES
+            startup.StartupInfo.hStdInput = None
+            startup.StartupInfo.hStdOutput = None
+            startup.StartupInfo.hStdError = None
             startup.lpAttributeList = C.cast(attributes, C.c_void_p)
             command = C.create_unicode_buffer(subprocess.list2cmdline(arguments))
             # A double-NUL terminated Unicode environment, not inherited handles.
