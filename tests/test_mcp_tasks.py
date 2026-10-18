@@ -1,4 +1,4 @@
-"""Tasks keep original exec authority, terminal state and legacy wire behavior."""
+"""Tasks retain original workspace execution authority and negotiated wire state."""
 import asyncio
 from dataclasses import replace
 import json
@@ -13,21 +13,24 @@ from hub.store import Store
 from shared.crypto import token
 from shared.mcp_protocol import PREFIX, MODERN, complete, request_headers, validate_modern, ProtocolError
 from shared.util import DevError
-from tests.legacy_iam_fixture import seed_owner, seed_grant
+from tests.current_model import CurrentModel
 
 
 @pytest.fixture
 def task_runtime(tmp_path):
     store = Store(tmp_path / 'hub')
-    seed_owner(store, 'owner', 'admin')
-    seed_owner(store, 'other', 'other')
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','fixture',?,?,'legacy','owner')", (store.encrypt(token()), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev','/tmp/fixture','write',1,?,'legacy','owner')", (time.time(),))
-    seed_grant(store, 'grant', 'owner', scopes=('read','write','execute'), projects=('proj',))
-    seed_grant(store, 'second', 'owner', scopes=('read','write','execute'), projects=('proj',))
+    model=CurrentModel(store)
+    model.user('owner',username='admin');model.user('other')
+    model.workspace('task-space',owner='owner');model.device('dev',owner='owner',name='fixture')
+    model.bind_device('task-space','dev')
+    source=tmp_path/'source';source.mkdir()
+    model.folder('task-folder',space='task-space',device='dev',path=source)
+    model.project('proj',space='task-space',folder='task-folder',owner='owner',alias='Fixture')
+    profile=model.profile(space='task-space',creator='owner',policy={
+        'project_rules':[{'projects':['proj'],'actions':['read','write','execute']}]})
+    _,principal=model.connection(user='owner',space='task-space',profile=profile,live=True)
     runtime = Runtime(store)
     runtime.wait_seconds = 0
-    principal = Principal('mcp:grant:fixture', 'owner', {'read','write','execute'}, ['proj'], grant_id='grant', space_id='legacy')
     yield runtime, principal, TaskService(runtime)
     store.close()
 
@@ -97,15 +100,17 @@ async def test_tool_failure_is_completed_and_cancellation_is_cooperative(task_ru
 async def test_exact_grant_owner_scope_and_revocation_are_rechecked(task_runtime):
     runtime, principal, tasks = task_runtime
     identifier, _, _ = await create_task(runtime,principal,tasks)
-    for caller in [replace(principal,grant_id='second',actor='mcp:second:fixture'),
-                   replace(principal,user_id='other'), replace(principal,space_id='different')]:
+    profile=runtime.store.one('SELECT * FROM access_profiles WHERE id=?',(principal.profile_id,))
+    _,second=CurrentModel(runtime.store).connection(user='owner',space=principal.space_id,profile=profile)
+    for caller in [second,replace(principal,user_id='other'),replace(principal,space_id='different')]:
         with pytest.raises(DevError):
             tasks.get(identifier,caller)
     terminal(runtime,identifier)
-    runtime.store.execute("UPDATE grants SET scopes='[\"read\"]' WHERE id='grant'")
+    runtime.store.execute('UPDATE access_profiles SET policy=?,version=version+1 WHERE id=?',
+        (json.dumps({'project_rules':[{'projects':['proj'],'actions':['read']}]}),principal.profile_id))
     with pytest.raises(DevError):
         tasks.get(identifier,principal)
-    runtime.store.execute("UPDATE grants SET revoked=1 WHERE id='grant'")
+    runtime.store.execute('UPDATE grants SET revoked=1 WHERE id=?',(principal.grant_id,))
     with pytest.raises(DevError):
         tasks.get(identifier,principal)
 
@@ -116,7 +121,7 @@ async def test_revocation_during_cancel_does_not_release_result(task_runtime, mo
     identifier, _, _ = await create_task(runtime,principal,tasks)
     async def cancel(identifier, user):
         await asyncio.sleep(0)
-        runtime.store.execute("UPDATE grants SET revoked=1 WHERE id='grant'")
+        runtime.store.execute('UPDATE grants SET revoked=1 WHERE id=?',(principal.grant_id,))
     monkeypatch.setattr(runtime,'cancel',cancel)
     with pytest.raises(DevError):
         await tasks.call('tasks/cancel',identifier,principal)

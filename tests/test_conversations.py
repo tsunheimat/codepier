@@ -1,6 +1,5 @@
 """Simulated host metadata, durable associations and authenticated history isolation."""
 import json
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -8,15 +7,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hub.app import create_app
-from hub.conversations import validated_url
-from hub.store import Store
-from shared.crypto import password_hash
-from shared.util import DevError
+from tests.current_model import CurrentModel
 from tests.test_audit_api import api as api
-from tests.test_iam_integration import team as team, assign
-from tests.test_roles import role, must
-from tests.test_resource_access import connection, inventory
-from tests.test_mcp_gateway import gw as gw, connector, account, publish
+from tests.identity_fixtures import team, must, set_member, make_profile, make_connection, project_policy  # noqa: F401
+from tests.test_resource_access import inventory, another_project
+from tests.test_mcp_gateway import gw as gw, connector, account, publish, authorize
 
 
 def rpc(client, token, name='project_query', args=None, metadata=None):
@@ -36,14 +31,20 @@ def records(client,token):
     return value(rpc(client,token,'conversations',{'operation':'list'}))['conversations']
 
 
-def test_multiple_resources_and_concurrent_conversations_never_share_active_project(api):
-    app,client,_=api;testing,production=inventory(app,client)
-    from tests.test_continuous_access import add_project
-    add_project(app);app.state.store.execute("UPDATE projects SET allow_tasks=1 WHERE id='future'")
-    r=role(client,label='worker',project_rules=[{'actions':['read','write','execute'],'all_projects':True}],
-           vps_rules=[{'actions':['read','execute'],'vps':[testing['id']]}])
-    g=must(connection(client,r,'role'),201)
-    cases=[('one','fixture',testing['target']),('two','future','agent'),('one','future','agent'),('two','fixture','agent')]
+def test_multiple_resources_and_concurrent_conversations_never_share_active_project(team):
+    app,b=team;client=b['alice'];testing,_=inventory(app,b['owner'])
+    another_project(app)
+    testing=must(b['owner'].put('/api/spaces/team/vps/'+testing['id'],json={
+        'resource_id':testing['resource_id'],'name':testing['name'],'runner_device_id':'device-team',
+        'connection_ref':'testing','display_mode':'both','projects':['project-team'],
+        'expected_version':testing['version'],'idempotency_key':uuid.uuid4().hex}))
+    policy={'project_rules':[{'actions':['read','write','execute'],'all_projects':True}],
+        'vps_rules':[{'actions':['read','execute'],'vps':[testing['id']]}]}
+    set_member(b['owner'],'alice',policy)
+    profile=make_profile(b['owner'],policy)
+    g=make_connection(client,profile,live=True)
+    cases=[('one','same-alias','vps:'+testing['id']),('two','future','agent'),
+        ('one','future','agent'),('two','same-alias','agent')]
     def run(item):
         identity,project,target=item
         response=rpc(client,g['token'],'exec',{'project':project,'target':target,'command':'true',
@@ -53,7 +54,7 @@ def test_multiple_resources_and_concurrent_conversations_never_share_active_proj
     rows=records(client,g['token']);assert len(rows)==2
     for row in rows:
         detail=value(rpc(client,g['token'],'conversations',{'operation':'get','conversation_id':row['id']}))['conversation']
-        assert {x['id'] for x in detail['resources'] if x['type']=='project'}=={'project','future'}
+        assert {x['id'] for x in detail['resources'] if x['type']=='project'}=={'project-team','future'}
         expected={ids[i] for i,c in enumerate(cases) if c[0]==row['conversation_identifier']}
         assert {x['id'] for x in detail['operations']}==expected
         assert detail['original_url']=='' and detail['platform']=='chatgpt'
@@ -126,13 +127,12 @@ def test_manual_index_can_add_url_and_resources_but_never_progress_fields(api):
 
 
 def test_same_id_and_profile_never_cross_grant_user_or_space_histories(team):
-    app,b=team;r=role(b['owner'],label='reviewer',project_rules=[{'actions':['read'],'projects':['project-team']}])
-    for uid in ('alice','bob'):assign(b['owner'],r,uid)
-    alice=must(connection(b['alice'],r,'role'),201)
-    # Explicitly reusing a stable Profile still creates a separate private grant.
-    profile=must(b['alice'].get('/api/access-profiles/'+alice['profile_id']))
-    other=must(connection(b['alice'],r,'role',profile_id=profile['id'],profile_version=profile['version']),201)
-    bob=must(connection(b['bob'],r,'role'),201)
+    app,b=team;policy=project_policy('read')
+    for uid in ('alice','bob'):set_member(b['owner'],uid,policy)
+    profile=make_profile(b['owner'],policy)
+    alice=make_connection(b['alice'],profile)
+    other=make_connection(b['alice'],profile)
+    bob=make_connection(b['bob'],profile)
     for client,grant in [(b['alice'],alice),(b['alice'],other),(b['bob'],bob)]:
         value(rpc(client,grant['token'],metadata={'openai/session':'identical'}))
     first=records(b['alice'],alice['token'])[0]
@@ -142,21 +142,23 @@ def test_same_id_and_profile_never_cross_grant_user_or_space_histories(team):
     assert denied.json()['result']['structuredContent']['error']['code']=='CONVERSATION_NOT_FOUND'
     assert b['bob'].get('/api/conversations/'+first['id']).status_code==404
     assert b['owner'].get('/api/conversations/'+first['id']).status_code==404
-    assert b['alice'].get('/api/conversations/'+first['id'],headers={'X-CodePier-Space':profile.get('space_id','legacy')}).status_code in (403,404)
+    assert b['alice'].get('/api/conversations/'+first['id'],headers={'X-CodePier-Space':'other-team'}).status_code==400
     assert len(must(b['alice'].get('/api/conversations'))['conversations'])==2
     assert b['alice'].post('/api/conversations',json={'platform':'custom','conversation_identifier':'cross-space',
-        'resources':[{'type':'project','id':'project-legacy'}]}).status_code==404
+        'resources':[{'type':'project','id':'project-other-team'}]}).status_code==403
 
 
 def test_conversations_survive_actual_hub_close_reopen_and_preserve_receipt(tmp_path,monkeypatch):
     monkeypatch.setenv('HUB_PUBLIC_URL','http://testserver');monkeypatch.setenv('MCP_PUBLIC_URL','')
     directory=tmp_path/'hub';app=create_app(str(directory));store=app.state.store
-    store.execute('INSERT INTO users VALUES (?,?,?,?)',('owner','admin',password_hash('fixture-only'),time.time()))
-    space=store.one('SELECT personal_space_id FROM iam_users WHERE user_id=?',('owner',))['personal_space_id']
-    store.execute('INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)',('d','Fixture',store.encrypt('fixture'),time.time(),space,'owner'))
-    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?)',('p','P','p','d',str(tmp_path/'p'),'write',1,time.time(),space,'owner'))
-    from hub.principal import Principal
-    grant=app.state.auth.issue_grant(Principal('panel:admin','owner',{'read','execute'},[],admin=True),'client',['read','execute'],['p'])
+    model=CurrentModel(store);model.user('owner',username='admin')
+    space=model.workspace('conversation-space',owner='owner')
+    model.device('d',owner='owner',name='Fixture');model.bind_device(space,'d')
+    path=tmp_path/'source';path.mkdir()
+    folder=model.folder('conversation-folder',space=space,device='d',path=path)
+    model.project('p',space=space,folder=folder,owner='owner',alias='P')
+    profile=model.profile(space=space,creator='owner',policy={'project_rules':[{'projects':['p'],'actions':['read','execute']}]})
+    grant,_=model.connection(user='owner',space=space,profile=profile)
     key=uuid.uuid4().hex
     with TestClient(app) as client:
         args={'project':'P','command':'true','yield_seconds':0,'idempotency_key':key}
@@ -173,7 +175,7 @@ def test_conversations_survive_actual_hub_close_reopen_and_preserve_receipt(tmp_
         assert value(rpc(client,grant['token'],'exec',args,{'openai/session':'persistent'}))['operation_id']==operation
         assert app2.state.store.one('SELECT count(*) AS n FROM operations')['n']==1
         assert app2.state.store.one('SELECT * FROM audit_activity WHERE id=?', (saved_activity['id'],)) == saved_activity
-        caller = app2.state.runtime.grant_principal(app2.state.store.one('SELECT * FROM grants WHERE id=?', (grant['grant_id'],)))
+        caller = app2.state.runtime.grant_principal(grant['connection_id'])
         projected = app2.state.runtime.session_activity.sessions(caller)['sessions'][0]
         assert projected['id'] == original['id']
         assert projected['current'][0]['id'] == operation
@@ -183,8 +185,7 @@ def test_conversations_survive_actual_hub_close_reopen_and_preserve_receipt(tmp_
 
 def test_remote_mcp_calls_correlate_without_exposing_other_account(gw):
     app,b,backend=gw;c=connector(b);a=account(b,c);binding=publish(b,a)
-    r=role(b['owner'],label='reviewer',project_rules=[],connector_rules=[{'binding_id':binding['id'],'tools':['echo']}])
-    assign(b['owner'],r,'alice');g=must(connection(b['alice'],r,'role',confirm_external_mcp=True),201)
+    _,_,g=authorize(b,binding,tools=['echo'])
     response=rpc(b['alice'],g['token'],'kiln__echo',{'value':'fixture'},{'openai/session':'remote'})
     assert not response.json()['result'].get('isError')
     row=records(b['alice'],g['token'])[0]

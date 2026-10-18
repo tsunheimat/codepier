@@ -1,184 +1,201 @@
-"""Consolidated setup proves real action/resource checks on isolated Hub data."""
+"""Real action/resource pairs across workspace Projects, whole VPS and MCP tools."""
 import json
 import time
 import uuid
 
 import pytest
 
-from tests.test_audit_api import api as api
-from tests.test_roles import role, update_role, must, principal
-from tests.test_access_profiles import call, data
-from tests.test_continuous_access import add_project
-from tests.test_mcp_gateway import gw as gw, connector, account, publish
-from tests.test_iam_integration import team as team, assign
-from hub.roles import role_project_scopes
+from hub.permissions import project_scopes
+from tests.identity_fixtures import (team, must, call, data, set_member, make_profile,
+    make_connection, update_profile, project_policy)  # noqa: F401
+from tests.test_access_profiles import principal
+from tests.test_mcp_gateway import (gw, connector, account, publish, authorize,
+    update_policy, error_code)  # noqa: F401
 
 
-def connection(client, r, mode='fixed', **extra):
-    return client.post('/api/client-connections',json={
-        'name':'Worker client','role_id':r['id'],'expected_role_version':r['version'],
-        'authorization_mode':mode,'confirm_dynamic_role':mode == 'role',
-        'idempotency_key':uuid.uuid4().hex, **extra})
-
-
-def inventory(app, client):
-    app.state.store.execute("UPDATE projects SET allow_tasks=1 WHERE id='project'")
+def inventory(app, browser, *, space='team', device='device-team'):
     rows=[]
     for name in ('Testing','Production'):
-        rows.append(must(client.post('/api/vps',json={'name':name,'host':name.lower()+'.invalid',
-            'password':'ISOLATED_SSH_SECRET','project_ids':['project'],'execution_project_id':'project'})))
+        resource=must(browser.post('/api/vps',json={'name':name,'host':name.lower()+'.invalid',
+            'idempotency_key':uuid.uuid4().hex}))
+        rows.append(must(browser.post('/api/spaces/'+space+'/vps',json={
+            'resource_id':resource['id'],'name':name,'runner_device_id':device,'connection_ref':name.lower(),
+            'display_mode':'top_level','projects':[],'idempotency_key':uuid.uuid4().hex})))
     return rows
+
+
+def another_project(app, *, identifier='future', space='team', folder='folder-team'):
+    app.state.store.execute('''INSERT INTO projects
+        (id,alias,alias_key,folder_id,subpath,space_id,owner_user_id,created)
+        VALUES(?,?,?,?,?,?,'owner',?)''',(identifier,identifier,identifier,folder,identifier,space,time.time()))
+    return identifier
+
+
+def access(b, policy, *, live=False):
+    set_member(b['owner'],'alice',policy)
+    profile=make_profile(b['owner'],policy)
+    return profile,make_connection(b['alice'],profile,live=live)
 
 
 def result_error(response, code):
     value=response.json()['result'];assert value.get('isError'),value
-    error=value.get('structuredContent') or json.loads(value['content'][0]['text'])
-    assert error['error']['code']==code,error
+    result=value.get('structuredContent') or json.loads(value['content'][0]['text'])
+    assert result['error']['code']==code,result
 
 
-def execute(client, secret, vps, project='fixture', key=None):
-    return call(client,secret,'exec',{'project':project,'target':vps['target'],
-        'command':'printf isolated-test','yield_seconds':0,'idempotency_key':key or uuid.uuid4().hex})
+def execute(browser, token, vps, *, project=None, key=None):
+    args={'target':'vps:'+vps['id'],'command':'printf isolated-test','yield_seconds':0,
+        'idempotency_key':key or uuid.uuid4().hex}
+    if project is not None:args['project']=project
+    return call(browser,token,'exec',args)
 
 
-@pytest.mark.parametrize('mode',['fixed','role'])
-def test_worker_project_write_execute_testing_only(api,mode):
-    app,client,legacy=api;testing,production=inventory(app,client);add_project(app)
-    r=role(client,label='worker',project_rules=[{'actions':['read','write','execute'],'projects':['project']},
-        {'actions':['read'],'projects':['future']}],vps_rules=[{'actions':['read','execute'],'vps':[testing['id']]},
-        {'actions':['read'],'vps':[production['id']]}])
-    g=must(connection(client,r,mode),201)
-    assert role_project_scopes(app.state.store,principal(app,g['token']),'future')=={'read'}
-    receipt=data(execute(client,g['token'],testing));assert receipt['operation_id']
-    result_error(execute(client,g['token'],production),'VPS_POLICY_DENIED')
-    result_error(call(client,g['token'],'exec',{'project':'future','command':'true','idempotency_key':uuid.uuid4().hex}),'ROLE_POLICY_DENIED')
-    # Associations never authorize a legacy grant or a metadata-only VPS rule.
-    assert data(call(client,legacy,'vps'))['vps']==[]
-    result_error(execute(client,legacy,testing),'INSUFFICIENT_SCOPE')
-    rows=must(client.get('/api/client-connections'))['connections'];record=next(x for x in rows if x['id']==g['grant_id'])
-    assert record['role']['label']=='worker'
-    permissions={v['name']:v['actions'] for v in record['permissions']['vps']}
-    assert permissions=={'Production':['read'],'Testing':['execute','read']}
-    assert 'ISOLATED_SSH_SECRET' not in json.dumps(rows)
+@pytest.mark.parametrize('live',[False,True])
+def test_worker_action_pairs_authorize_testing_not_production_or_other_project(team, live):
+    app,b=team;testing,production=inventory(app,b['owner']);another_project(app)
+    policy={'project_rules':[{'actions':['read','write','execute'],'projects':['project-team']},
+        {'actions':['read'],'projects':['future']}],
+        'vps_rules':[{'actions':['read','execute'],'vps':[testing['id']]},
+                     {'actions':['read'],'vps':[production['id']]}]}
+    profile,created=access(b,policy,live=live)
+    p=principal(app,created['token'])
+    assert project_scopes(app.state.store,p,'future')=={'read'}
+    receipt=data(execute(b['alice'],created['token'],testing))
+    result_error(execute(b['alice'],created['token'],production),'VPS_NOT_FOUND')
+    result_error(call(b['alice'],created['token'],'exec',{'project':'future','command':'true',
+        'yield_seconds':0,'idempotency_key':uuid.uuid4().hex}),'WORKSPACE_POLICY_DENIED')
+    records=must(b['alice'].get('/api/spaces/team/connections'))['connections']
+    record=next(row for row in records if row['id']==created['connection_id'])
+    assert record['profile']['id']==profile['id']
+    assert {(tuple(row['vps']),tuple(sorted(row['actions'])))
+        for row in record['permissions']['vps_rules']}=={
+            ((testing['id'],),('execute','read')),((production['id'],),('read',))}
+    assert '"password"' not in json.dumps(record) and '"private_key"' not in json.dumps(record)
     operation=app.state.store.one('SELECT * FROM operations WHERE id=?',(receipt['operation_id'],))
     request=json.loads(app.state.store.decrypt(operation['payload']))
+    assert operation['project_id'] is None
     assert app.state.runtime.permission_error(operation,request) is None
-    r=must(update_role(client,r,vps_rules=[{'actions':['read'],'vps':[testing['id'],production['id']]}]))
+    update_profile(b['owner'],profile,{**policy,'vps_rules':[{'actions':['read'],'vps':[testing['id'],production['id']]}]})
     assert app.state.runtime.permission_error(operation,request)
-    result_error(execute(client,g['token'],testing),'VPS_POLICY_DENIED')
-    assert client.get('/api/operations/'+receipt['operation_id']).status_code==200  # Owner's independent panel rights.
+    result_error(execute(b['alice'],created['token'],testing),'VPS_NOT_FOUND')
+    assert b['owner'].get('/api/operations/'+receipt['operation_id']).status_code==403
 
 
-@pytest.mark.parametrize('mode',['fixed','role'])
-def test_fixed_snapshot_and_explicit_dynamic_future_consent(api,mode):
-    app,client,_=api;testing,production=inventory(app,client)
-    r=role(client,label='generic role',project_rules=[{'actions':['read'],'projects':['project']}],
-           vps_rules=[{'actions':['read'],'vps':[testing['id']]}])
-    g=must(connection(client,r,mode),201);before=app.state.store.one('SELECT * FROM grants WHERE id=?',(g['grant_id'],))
-    add_project(app)
-    r=must(update_role(client,r,project_rules=[{'actions':['read','write','execute'],'all_projects':True}],
-        vps_rules=[{'actions':['read','execute'],'vps':[testing['id'],production['id']]}]))
-    ctx=data(call(client,g['token'],'get_access_context'))
-    assert {p['id'] for p in ctx['projects']}==({'project','future'} if mode=='role' else {'project'})
-    assert role_project_scopes(app.state.store,principal(app,g['token']),'project')==({'read','write','execute'} if mode=='role' else {'read'})
-    assert {v['id'] for v in data(call(client,g['token'],'vps'))['vps']}==({testing['id'],production['id']} if mode=='role' else {testing['id']})
-    assert app.state.store.one('SELECT * FROM grants WHERE id=?',(g['grant_id'],))==before
-    must(update_role(client,r,enabled=False))
-    if mode == 'role': result_error(call(client,g['token'],'vps'),'ROLE_POLICY_DENIED')
-    else: assert data(call(client,g['token'],'vps'))['vps']==[]
-    status=next(x for x in must(client.get('/api/client-connections'))['connections'] if x['id']==g['grant_id'])
-    assert status['status']=='disabled' and not status['permissions']['projects']
+@pytest.mark.parametrize('live',[False,True])
+def test_fixed_snapshot_and_explicit_live_profile_future_consent(team, live):
+    app,b=team;testing,production=inventory(app,b['owner'])
+    policy={**project_policy('read'),'vps_rules':[{'actions':['read'],'vps':[testing['id']]}]}
+    profile,created=access(b,policy,live=live)
+    before=app.state.store.one('SELECT * FROM grants WHERE id=?',(created['connection_id'],))
+    another_project(app)
+    expanded={'project_rules':[{'actions':['read','write','execute'],'all_projects':True}],
+        'vps_rules':[{'actions':['read','execute'],'vps':[testing['id'],production['id']]}]}
+    set_member(b['owner'],'alice',expanded)
+    profile=update_profile(b['owner'],profile,expanded)
+    context=data(call(b['alice'],created['token']))
+    assert {p['id'] for p in context['projects']}==({'project-team','future'} if live else {'project-team'})
+    assert project_scopes(app.state.store,principal(app,created['token']),'project-team')==(
+        {'read','write','execute'} if live else {'read'})
+    assert {v['id'] for v in data(call(b['alice'],created['token'],'vps'))['vps']}==(
+        {testing['id'],production['id']} if live else {testing['id']})
+    assert app.state.store.one('SELECT * FROM grants WHERE id=?',(created['connection_id'],))==before
+    update_profile(b['owner'],profile,expanded,enabled=False)
+    assert data(call(b['alice'],created['token'],'vps'))['vps']==[]
+    record=next(x for x in must(b['alice'].get('/api/spaces/team/connections'))['connections'] if x['id']==created['connection_id'])
+    assert record['status']=='disabled' and not record['permissions']['project_rules']
 
 
-def test_creation_consent_version_and_request_key_are_transactional(api):
-    app,client,_=api;r=role(client,label='reviewer')
-    count=app.state.store.one('SELECT count(*) AS n FROM access_profiles')['n']
-    response=connection(client,r,'role',confirm_dynamic_role=False)
-    assert response.status_code==400 and response.json()['error']['code']=='DYNAMIC_CONSENT_REQUIRED'
-    assert app.state.store.one('SELECT count(*) AS n FROM access_profiles')['n']==count
-    assert connection(client,r,expected_role_version=r['version']+1).status_code==409
-    key=uuid.uuid4().hex;g=must(connection(client,r,idempotency_key=key),201)
-    replay=must(connection(client,r,idempotency_key=key),201)
-    assert replay['grant_id']==g['grant_id'] and replay['replayed'] and 'token' not in replay
-    assert connection(client,r,idempotency_key=key,name='Different').status_code==409
+def test_connection_confirmation_version_and_request_key_are_transactional(team):
+    app,b=team;policy=project_policy('read');set_member(b['owner'],'alice',policy)
+    profile=make_profile(b['owner'],policy)
+    body={'name':'Connection','profile_id':profile['id'],'profile_version':profile['version'],
+        'consent_mode':'live','confirm_live_profile':False,'idempotency_key':uuid.uuid4().hex}
+    response=b['alice'].post('/api/spaces/team/connections',json=body)
+    assert response.status_code==400 and response.json()['error']['code']=='LIVE_CONSENT_REQUIRED'
+    assert not app.state.store.all('SELECT id FROM grants')
+    assert b['alice'].post('/api/spaces/team/connections',json={**body,'confirm_live_profile':True,
+        'profile_version':profile['version']+1}).status_code==409
+    body.update(consent_mode='fixed')
+    first=must(b['alice'].post('/api/spaces/team/connections',json=body),201)
+    replay=must(b['alice'].post('/api/spaces/team/connections',json=body),201)
+    assert replay['connection_id']==first['connection_id'] and replay['replayed'] and 'token' not in replay
+    assert b['alice'].post('/api/spaces/team/connections',json={**body,'name':'Changed'}).status_code==409
 
 
-@pytest.mark.parametrize('end',['expiry','revoke','profile'])
-def test_expired_revoked_disabled_connections_reject_real_calls(api,end):
-    app,client,_=api;r=role(client,label='reviewer');g=must(connection(client,r),201)
-    assert 'projects' in data(call(client,g['token'],'get_access_context'))
-    if end=='expiry':app.state.store.execute('UPDATE tokens SET expires=? WHERE grant_id=?',(time.time()-1,g['grant_id']))
-    elif end=='revoke':must(client.delete('/api/grants/'+g['grant_id']))
-    else:app.state.store.execute('UPDATE access_profiles SET enabled=0 WHERE id=?',(g['profile_id'],))
-    response=call(client,g['token'],'get_access_context');assert response.status_code==401
+@pytest.mark.parametrize('end',['expiry','revoke'])
+def test_expired_and_revoked_connections_reject_real_calls(team, end):
+    app,b=team;_,created=access(b,project_policy('read'))
+    assert data(call(b['alice'],created['token']))['projects']
+    if end=='expiry':app.state.store.execute('UPDATE tokens SET expires=? WHERE grant_id=?',(time.time()-1,created['connection_id']))
+    else:must(b['alice'].post('/api/spaces/team/connections/'+created['connection_id']+'/revoke'))
+    assert call(b['alice'],created['token']).status_code==401
 
 
-def test_execution_route_is_explicit_validated_and_not_association(api):
-    app,client,_=api;testing,production=inventory(app,client)
-    no_route=must(client.post('/api/vps',json={'name':'Metadata','host':'meta.invalid','password':'fixture','project_ids':['project']}))
-    r=role(client,label='worker',project_rules=[{'actions':['read','execute'],'projects':['project']}],
-           vps_rules=[{'actions':['read','execute'],'vps':[no_route['id']]}])
-    g=must(connection(client,r,'role'),201)
-    result_error(execute(client,g['token'],no_route),'VPS_ROUTE_REQUIRED')
-    invalid=client.post('/api/vps',json={'name':'Invalid','host':'invalid.invalid','password':'fixture','execution_project_id':'missing'})
-    assert invalid.status_code==403
-    add_project(app)
-    assert client.post('/api/vps',json={'name':'Read route','host':'read.invalid','password':'fixture','execution_project_id':'future'}).status_code==403
-    # Route choice need not equal the purpose association.
-    app.state.store.execute('DELETE FROM vps_projects WHERE vps_id=?',(testing['id'],))
-    r=must(update_role(client,r,vps_rules=[{'actions':['read','execute'],'vps':[testing['id']]}]))
-    assert data(execute(client,g['token'],testing))['operation_id']
+def test_vps_transport_is_explicit_without_a_project_execution_route(team):
+    app,b=team;testing,_=inventory(app,b['owner'])
+    resource=must(b['owner'].post('/api/vps',json={'name':'Inventory only','host':'metadata.invalid',
+        'idempotency_key':uuid.uuid4().hex}))
+    invalid=b['owner'].post('/api/spaces/team/vps',json={'resource_id':resource['id'],
+        'name':'No transport','display_mode':'top_level','idempotency_key':uuid.uuid4().hex})
+    assert invalid.status_code==422
+    _,created=access(b,{'vps_rules':[{'vps':[testing['id']],'actions':['read','execute']}]})
+    receipt=data(execute(b['alice'],created['token'],testing))
+    assert app.state.store.one('SELECT project_id FROM operations WHERE id=?',(receipt['operation_id'],))['project_id'] is None
+    result_error(execute(b['alice'],created['token'],{'id':resource['id']}),'VPS_NOT_FOUND')
 
 
-def test_resource_read_and_use_never_allow_resource_or_authorization_admin(team):
-    app,b=team
-    r=role(b['owner'],label='manager',project_rules=[{'actions':['read','write','execute'],'projects':['project-team']}])
-    assign(b['owner'],r,'alice')
-    g=must(connection(b['alice'],r,'role'),201)
-    assert b['alice'].post('/api/vps',json={'name':'Forbidden','host':'a.invalid','password':'x'}).status_code==403
-    assert b['alice'].post('/api/access-roles',json={'label':'admin','idempotency_key':uuid.uuid4().hex}).status_code==403
-    assert b['alice'].get('/api/client-connections').status_code==200
-    assert g['grant_id'] not in b['bob'].get('/api/client-connections').text
-    assert b['alice'].get('/api/resources/project/project-legacy').status_code==404
-    assert connection(b['bob'],r,'role').status_code==403
+def test_resource_use_never_grants_inventory_or_authorization_administration(team):
+    app,b=team;_,created=access(b,project_policy('read','write','execute'))
+    owned=must(b['owner'].post('/api/vps',json={'name':'Owner inventory','host':'metadata.invalid',
+        'idempotency_key':uuid.uuid4().hex}))
+    denied=b['alice'].put('/api/vps/'+owned['id'],json={'name':'Not Alice owned','host':'metadata.invalid',
+        'expected_version':owned['version'],'idempotency_key':uuid.uuid4().hex})
+    assert denied.status_code==404 and denied.json()['error']['code']=='INVENTORY_RESOURCE_NOT_FOUND'
+    own=must(b['alice'].post('/api/vps',json={'name':'Alice inventory','host':'metadata.invalid',
+        'idempotency_key':uuid.uuid4().hex}))
+    # Registering one's own inventory is not a workspace resource grant.
+    assert b['alice'].post('/api/spaces/team/vps',json={'resource_id':own['id'],'name':'No grant',
+        'runner_device_id':'device-team','connection_ref':'testing','display_mode':'top_level',
+        'idempotency_key':uuid.uuid4().hex}).status_code==403
+    assert not app.state.store.all('SELECT id FROM space_vps')
+    assert b['alice'].post('/api/spaces/team/profiles',json={'label':'Admin','policy':{},
+        'idempotency_key':uuid.uuid4().hex}).status_code==403
+    assert b['alice'].get('/api/spaces/team/connections').status_code==200
+    assert created['connection_id'] not in b['bob'].get('/api/spaces/team/connections').text
+    assert b['alice'].get('/api/resources/project/project-other-team').status_code in {403,404}
+    assert principal(app,created['token']).admin is False
 
 
-@pytest.mark.parametrize('mode',['fixed','role'])
-def test_mcp_binding_tools_accounts_and_role_change_are_real_checks(gw,mode):
+@pytest.mark.parametrize('live',[False,True])
+def test_external_binding_accounts_and_profile_edits_are_real_effect_checks(gw, live):
     app,b,backend=gw;c=connector(b);a=account(b,c);binding=publish(b,a)
-    other=account(b,c,who='bob');other_binding=publish(b,other,who='bob',alias='bob')
-    r=role(b['owner'],label='worker',project_rules=[],connector_rules=[{'binding_id':binding['id'],'tools':['echo']}])
-    assign(b['owner'],r,'alice')
-    g=must(connection(b['alice'],r,mode,confirm_external_mcp=True),201)
-    first=call(b['alice'],g['token'],'kiln__echo',{'value':'permitted'})
-    assert not first.json()['result'].get('isError') and backend.effects==1
-    result_error(call(b['alice'],g['token'],'kiln__run',{}),'UNKNOWN_TOOL')
-    result_error(call(b['alice'],g['token'],'bob__echo',{'value':'forbidden'}),'UNKNOWN_TOOL')
+    other=account(b,c,token='UPSTREAM_TOKEN_B');other_binding=publish(b,other,alias='other')
+    _,profile,created=authorize(b,binding,tools=['echo'],live=live)
+    assert not call(b['alice'],created['token'],'kiln__echo',{'value':'permitted'}).json()['result'].get('isError')
     assert backend.effects==1
-    r=must(update_role(b['owner'],r,connector_rules=[{'binding_id':binding['id'],'tools':['echo','run']}]))
-    run=call(b['alice'],g['token'],'kiln__run',{})
-    assert (not run.json()['result'].get('isError')) == (mode=='role')
-    assert backend.effects==(2 if mode=='role' else 1)
-    # Revoke the role assignment: fixed and dynamic external-only connections both stop.
-    assignment=must(b['owner'].get('/api/iam/spaces/team/assignments'))['assignments']
-    current=next(x for x in assignment if x['role_id']==r['id'] and x['user_id']=='alice')
-    must(b['owner'].put('/api/iam/spaces/team/assignments/'+r['id']+'/alice',json={'active':False,'may_delegate':True,'expected_version':current['version']}))
-    assert call(b['alice'],g['token'],'kiln__echo',{'value':'denied'}).status_code in (200,401,403)
-    assert backend.effects==(2 if mode=='role' else 1)
+    assert error_code(call(b['alice'],created['token'],'kiln__run',{}))=='UNKNOWN_TOOL'
+    assert error_code(call(b['alice'],created['token'],'other__echo',{'value':'forbidden'}))=='UNKNOWN_TOOL'
+    assert backend.effects==1 and other_binding['id']!=binding['id']
+    update_policy(b,profile,[{'binding_id':binding['id'],'tools':['echo','run']}])
+    response=call(b['alice'],created['token'],'kiln__run',{})
+    assert (not response.json()['result'].get('isError')) is live
+    assert backend.effects==(2 if live else 1)
+    set_member(b['owner'],'alice',{})
+    denied=call(b['alice'],created['token'],'kiln__echo',{'value':'denied'})
+    assert denied.json()['result']['isError']
+    assert backend.effects==(2 if live else 1)
 
 
-@pytest.mark.parametrize('mode',['fixed','role'])
-def test_tool_republication_never_silently_changes_fixed_consent(gw,mode):
+@pytest.mark.parametrize('live',[False,True])
+def test_tool_republication_never_changes_fixed_consent_silently(gw, live):
     app,b,backend=gw;c=connector(b);a=account(b,c);binding=publish(b,a)
-    r=role(b['owner'],label='reviewer',project_rules=[],connector_rules=[{'binding_id':binding['id'],'tools':['echo']}])
-    assign(b['owner'],r,'alice');g=must(connection(b['alice'],r,mode,confirm_external_mcp=True),201)
-    definitions=app.state.gateway.tools(principal(app,g['token']))
-    exported=next(t for t in definitions if t['name']=='kiln__echo')
-    assert exported['securitySchemes'][0]['scopes']==(['codepier.role_access'] if mode=='role' else ['read'])
+    _,_,created=authorize(b,binding,tools=['echo'],live=live)
+    definition=next(t for t in app.state.gateway.tools(principal(app,created['token'])) if t['name']=='kiln__echo')
+    assert definition['securitySchemes'][0]['scopes']==['codepier.workspace']
     backend.tools[0]['description']='New reviewed definition'
-    discovery=must(b['alice'].post('/api/mcp-gateway/accounts/'+a['id']+'/discover'))
-    must(b['alice'].post('/api/mcp-gateway/bindings/'+binding['id']+'/publish',json={
-        'catalog_hash':discovery['catalog_hash'],'tools':['echo','run'],'confirmed':True,'expected_version':binding['version']}))
-    response=call(b['alice'],g['token'],'kiln__echo',{'value':'after review'})
-    assert not response.json()['result'].get('isError') if mode=='role' else response.json()['result'].get('isError')
-    assert backend.effects==(1 if mode=='role' else 0)
+    discovered=must(b['owner'].post('/api/spaces/team/mcp-gateway/accounts/'+a['id']+'/discover'))
+    must(b['owner'].post('/api/spaces/team/mcp-gateway/bindings/'+binding['id']+'/publish',json={
+        'catalog_hash':discovered['catalog_hash'],'tools':['echo','run'],'confirmed':True,'expected_version':binding['version']}))
+    response=call(b['alice'],created['token'],'kiln__echo',{'value':'after review'})
+    assert (not response.json()['result'].get('isError')) is live
+    assert backend.effects==(1 if live else 0)

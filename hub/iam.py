@@ -133,14 +133,40 @@ def panel_workspaces(store, principal):
 
 @read_decision
 def panel_access_snapshot(store, principal):
-    """A complete workspace permission revision, without an ambient selection."""
+    """Monotonic resource/action atoms plus mapping revisions, never ambient state.
+
+    Comparing serialized policy objects makes a harmless added Project appear
+    to remove every former permission. Compare actual action/resource pairs
+    instead. Removals still invalidate before emitting private stream data.
+    """
     from hub.permissions import principal_policy
     result = set()
     for scoped in panel_workspaces(store, principal):
         policy = principal_policy(store, scoped)
-        result.add((scoped.space_id, 'policy', policy.model_dump_json()))
+        space=scoped.space_id
+        result.add((space,'workspace','member'))
+        result.update((space,'manage',action) for action in policy.manage)
         for project, actions in project_permissions(store, scoped).items():
-            result.update((scoped.space_id, project, action) for action in actions)
+            result.update((space,'project:'+project,action) for action in actions)
+        # Keep future-resource selectors as explicit authority, without letting
+        # a newly enumerated resource replace existing snapshot atoms.
+        for rule in policy.project_rules:
+            if rule.all_projects:
+                selector='project:*:'+','.join(sorted(rule.excluded_projects))
+                result.update((space,selector,action) for action in rule.actions)
+        for rule in policy.device_rules:
+            result.update((space,'device:'+device,action) for device in rule.devices for action in rule.actions)
+        for rule in policy.folder_rules:
+            result.update((space,'folder:'+folder,action) for folder in rule.folders for action in rule.actions)
+        for rule in policy.vps_rules:
+            result.update((space,'vps:'+vps,action) for vps in rule.vps for action in rule.actions)
+            if rule.all_vps:result.update((space,'vps:*',action) for action in rule.actions)
+        for rule in policy.connector_rules:
+            result.update((space,'mcp:'+rule.binding_id,tool) for tool in rule.tools)
+        for rule in policy.plugin_rules:
+            for project in rule.projects if rule.scope=='project' else ['']:
+                selector='plugin:'+rule.integration_id+':'+rule.scope+':'+project
+                result.update((space,selector,action) for action in rule.actions)
         # Resource revisions invalidate stale mappings/editors even if the
         # account's action names have not changed.
         for table in ('space_folders', 'space_storage', 'space_vps', 'access_profiles', 'projects'):

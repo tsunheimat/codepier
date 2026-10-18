@@ -7,12 +7,13 @@ import uuid
 import pytest
 
 from agent.runner import Agent
-from hub.runtime import Principal, Runtime
+from hub.runtime import Runtime
 from hub.store import Store
 from shared.crypto import token
 from shared.tool_protocol import wire_version
 from shared.util import atomic_json
-from tests.legacy_iam_fixture import seed_owner
+from tests.current_model import CurrentModel
+from shared.tool_protocol import advertisement, catalog_digest, negotiate
 
 
 DATA = b'imported fixture'
@@ -35,14 +36,17 @@ def local_agent(tmp_path):
 @pytest.fixture
 def runtime(tmp_path):
     store = Store(tmp_path / 'hub')
-    seed_owner(store, 'owner', 'admin')
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')",
-                  (store.encrypt(token()), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Imago','imago','dev','/tmp/fixture','','write',1,?,'legacy','owner')",
-                  (time.time(),))
+    model=CurrentModel(store)
+    model.user('owner',username='admin')
+    model.workspace('review-space',owner='owner')
+    model.device('dev',owner='owner',name='home')
+    model.bind_device('review-space','dev')
+    source=tmp_path/'source';source.mkdir()
+    model.folder('review-folder',space='review-space',device='dev',path=source)
+    model.project('proj',space='review-space',folder='review-folder',owner='owner',alias='Imago')
     instance = Runtime(store)
     instance.wait_seconds = 0
-    principal = Principal('panel:admin', 'owner', {'read', 'write', 'execute'}, ['*'], admin=True, space_id='legacy')
+    principal=model.panel('owner','review-space')
     yield instance, principal
     store.close()
 
@@ -51,6 +55,9 @@ class Peer:
     def __init__(self, cancel_pending_protocol=0):
         self.last_seen = time.time()
         self.journal_id = 'journal-one'
+        self.tool_protocol=negotiate(advertisement(catalog_digest()))
+        self.workspace_protocol=1
+        self.project_routing_protocol=1
         self.unusable = False
         self.packets = []
         self.cancel_pending_protocol = cancel_pending_protocol

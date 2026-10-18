@@ -22,28 +22,31 @@ from hub.store import Store
 from shared.crypto import digest, token
 from shared.util import DevError
 from tests.install_support import package_tree
-from tests.legacy_iam_fixture import attach_session_security, seed_personal_owner
+from tests.current_model import CurrentModel
+from shared.tool_protocol import advertisement,catalog_digest,negotiate
 
 
 @pytest.fixture
 def panel(tmp_path):
     store = Store(tmp_path / 'hub')
-    space = seed_personal_owner(store, 'owner', 'admin')
+    model=CurrentModel(store)
+    model.user('owner',username='admin')
+    space=model.workspace('builtin-test-space',owner='owner')
     builtin = ensure_identity(store)['device_id']
     remote = 'remote-device'
     info = json.dumps({'builtin': True, 'version': 'old', 'roots': [],
                        'device_actions': ['agent_update', 'agent_restart', 'agent_uninstall'],
                        'management': {'managed': True, 'service': True, 'reason': 'agent claim'}})
     store.execute('UPDATE devices SET info=? WHERE id=?', (info, builtin))
-    store.execute('INSERT INTO devices(id,name,secret,info,created,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?)',
-                  (remote, 'Remote', store.encrypt('remote-secret'), info, 2, space, 'owner'))
-    for user, cookie in [('owner', 'owner-cookie'), ('other', 'other-cookie')]:
-        seed_personal_owner(store, user, 'admin' if user == 'owner' else user)
-        store.execute('INSERT INTO sessions(id_hash,user_id,csrf,expires) VALUES(?,?,?,?)',
-                      (digest(cookie), user, 'csrf', time.time() + 3600))
-    attach_session_security(store)
+    model.device(remote,owner='owner',name='Remote',secret='remote-secret',info=json.loads(info))
+    model.user('other',instance_admin=False)
+    for user,cookie in [('owner','owner-cookie'),('other','other-cookie')]:
+        model.session(user=user,cookie=cookie,csrf='csrf')
     runtime = Runtime(store)
     runtime.online = lambda _: True
+    runtime.connections[remote]=SimpleNamespace(
+        tool_protocol=negotiate(advertisement(catalog_digest())),
+        workspace_protocol=1,project_routing_protocol=1)
     wakes, disconnects = [], []
 
     def wake():
@@ -77,7 +80,7 @@ def panel(tmp_path):
 
 
 def principal(panel, cookie='owner-cookie'):
-    request = Request({'type': 'http', 'method': 'GET', 'path': '/',
+    request = Request({'type': 'http', 'method': 'GET', 'path': '/', 'query_string':b'',
                        'headers': [(b'cookie', ('rd_session=' + cookie).encode())]})
     return panel.auth.panel(request)
 
@@ -191,7 +194,7 @@ def test_runtime_rejects_builtin_lifecycle_before_durable_admission(panel, actio
             asyncio.run(panel.runtime.dispatch_device_action(action, args, panel.builtin, caller))
         else:
             asyncio.run(panel.runtime.dispatch(action, args, project, caller, background=True))
-    assert caught.value.code == 'BUILTIN_AGENT_MANAGED'
+    assert caught.value.code==('PROJECT_NOT_FOUND' if phase=='admission-with-project' else 'BUILTIN_AGENT_MANAGED')
     assert not panel.store.one('SELECT 1 FROM operations')
     other = principal(panel, 'other-cookie')
     with pytest.raises(DevError) as caught:
@@ -199,7 +202,7 @@ def test_runtime_rejects_builtin_lifecycle_before_durable_admission(panel, actio
     assert caught.value.code != 'BUILTIN_AGENT_MANAGED'
 
 
-def test_other_space_cannot_list_rotate_or_mutate_builtin(panel):
+def test_other_inventory_owner_cannot_list_rotate_or_mutate_builtin(panel):
     panel.client.cookies.set('rd_session', 'other-cookie')
     assert panel.client.get('/api/devices').json()['devices'] == []
     url = f'/api/devices/{panel.builtin}'

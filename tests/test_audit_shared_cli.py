@@ -13,7 +13,8 @@ from hub.__main__ import main, write_backup
 from hub.store import Store
 from hub.runtime import Runtime
 from shared.contracts import TOOLS
-from shared.crypto import SecureChannel, password_hash, token
+from shared.crypto import SecureChannel,password_hash,token,digest
+from tests.current_model import CurrentModel
 from shared.util import normalize_url, valid_json_value
 
 
@@ -139,10 +140,9 @@ def test_reset_password_rolls_back_when_revocation_fails(tmp_path, monkeypatch):
     directory = tmp_path / "store"
     store = Store(directory)
     old_hash = password_hash("previous-password")
-    store.execute("INSERT INTO users VALUES ('owner','admin',?,0)", (old_hash,))
-    store.execute("INSERT INTO sessions VALUES ('session','owner','csrf',9999999999)")
-    from tests.legacy_iam_fixture import attach_session_security
-    attach_session_security(store)
+    model=CurrentModel(store)
+    model.user('owner',username='admin',password_hash=old_hash)
+    model.session(user='owner',cookie='fixture-session',csrf='csrf')
     store.execute("CREATE TRIGGER fail_revocation BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'injected revoke failure'); END")
     monkeypatch.setenv("RD_ADMIN_PASSWORD", "replacement-password")
     monkeypatch.setattr(sys, "argv", ["hub", "--data-dir", str(directory), "reset-password"])
@@ -150,7 +150,7 @@ def test_reset_password_rolls_back_when_revocation_fails(tmp_path, monkeypatch):
         with pytest.raises(sqlite3.IntegrityError, match="injected revoke failure"):
             main()
         assert store.one("SELECT password_hash FROM users")["password_hash"] == old_hash
-        assert store.one("SELECT id_hash FROM sessions")["id_hash"] == "session"
+        assert store.one('SELECT id_hash FROM sessions')['id_hash']==digest('fixture-session')
     finally:
         store.close()
 
@@ -158,8 +158,8 @@ def test_reset_password_rolls_back_when_revocation_fails(tmp_path, monkeypatch):
 def test_unconfirmed_file_durability_is_marked_for_review(tmp_path):
     store = Store(tmp_path / "hub")
     try:
-        from tests.legacy_iam_fixture import seed_personal_owner
-        space_id = seed_personal_owner(store)
+        model=CurrentModel(store);model.user('owner')
+        space_id=model.workspace('durability-space',owner='owner')
         store.execute("INSERT INTO operations(id,actor,tool,args_summary,fingerprint,state,created,updated,space_id,owner_user_id) VALUES ('flush','panel:owner','fs_write','{}','hash','running',0,0,?,'owner')",(space_id,))
         runtime = Runtime(store)
         runtime.complete({"id": "flush"}, {"ok": False, "error": {"code": "DURABILITY_UNCONFIRMED", "message": "Directory sync failed after publication"}})

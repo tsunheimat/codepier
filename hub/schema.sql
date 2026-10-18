@@ -438,7 +438,7 @@ CREATE INDEX audit_activity_session ON audit_activity(conversation_id,updated DE
 CREATE INDEX audit_activity_receipt_lookup ON audit_activity_receipts(operation_type,operation_id);
 
 CREATE TRIGGER mcp_tasks_binding_insert BEFORE INSERT ON mcp_tasks
-        WHEN NOT EXISTS(SELECT 1 FROM operations o WHERE o.id=NEW.task_id AND o.tool='exec'
+        WHEN NOT EXISTS(SELECT 1 FROM operations o WHERE o.id=NEW.task_id AND o.tool IN ('exec','routed_exec')
             AND o.space_id=NEW.space_id AND o.owner_user_id=NEW.owner_user_id AND o.grant_id=NEW.grant_id)
         BEGIN SELECT RAISE(ABORT,'invalid MCP task binding'); END;
 

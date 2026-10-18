@@ -1,12 +1,11 @@
 """Synthetic install-package/auth fixtures shared by API and bootstrap tests."""
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from fastapi import FastAPI
 from hub.agent_install import make_agent_install_router
 from hub.auth import Auth
 from hub.store import Store
-from shared.crypto import digest
+from tests.current_model import CurrentModel
 from shared.util import DevError
 
 def package_tree(root: Path):
@@ -31,16 +30,12 @@ def _real_auth_app(tmp_path, *, enabled=True):
     store = Store(tmp_path / 'hub')
     secret = 's' * 48
     device_id = 'd' * 32
-    store.execute('INSERT INTO users(id,username,password_hash,created) VALUES (?,?,?,?)',
-                  ('u1', 'admin', 'unused-in-session-test', time.time()))
-    space_id=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='u1'")['personal_space_id']
-    store.execute('INSERT INTO devices(id,name,secret,enabled,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?)',
-                  (device_id, 'Laptop', store.encrypt(secret), int(enabled), time.time(),space_id,'u1'))
-    cookie, csrf = 'session-cookie', 'session-csrf'
-    store.execute('INSERT INTO sessions(id_hash,user_id,csrf,expires) VALUES (?,?,?,?)',
-                  (digest(cookie), 'u1', csrf, time.time() + 3600))
-    from tests.legacy_iam_fixture import attach_session_security
-    attach_session_security(store)
+    model=CurrentModel(store)
+    model.user('u1',username='admin',password_hash='unused-in-session-test')
+    # Enrollment manages an inventory device, without an ambient Space.
+    model.device(device_id,owner='u1',name='Laptop',secret=secret,enabled=enabled)
+    cookie,csrf='session-cookie','session-csrf'
+    model.session(user='u1',cookie=cookie,csrf=csrf)
     runtime = SimpleNamespace(store=store)
     app = FastAPI()
     @app.exception_handler(DevError)

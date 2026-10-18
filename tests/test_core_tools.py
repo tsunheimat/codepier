@@ -16,7 +16,7 @@ from hub.core_tools import result as core_result
 from scripts.mcp_stdio_bridge import prepare_request
 from shared.contracts import TOOLS, tool_definitions
 from shared.crypto import digest, token, password_hash
-from shared.tool_protocol import wire_version, negotiate, require_compatible
+from shared.tool_protocol import wire_version, negotiate, require_compatible, advertisement
 from shared.core_contracts import CORE_ACTIONS, REPLACED_MCP_TOOLS, CORE_TOOLS
 from shared.query_contracts import QUERY_TOOLS
 from shared.util import DevError, atomic_json
@@ -101,8 +101,11 @@ def test_catalog_compact_and_protocol_boundaries():
     assert len(json.dumps(core, ensure_ascii=False).encode()) < 110000
     assert {'browser', 'computer', 'exec', 'edit'} <= {t['name'] for t in tool_definitions('full')}
     assert not {'browser_open', 'computer_action', 'vps_exec', 'fs_read', 'shell_exec'} & {t['name'] for t in tool_definitions('full')}
-    with pytest.raises(DevError, match='不兼容'):
-        require_compatible(negotiate({'version': '1.13.0'}), 'exec')
+    with pytest.raises(ValueError):
+        negotiate({'version':'1.13.0'})
+    frame=advertisement('a'*64);frame['tool_contracts']['exec']=1
+    with pytest.raises(DevError,match='不兼容'):
+        require_compatible(negotiate(frame),'exec')
 
 
 def test_original_snapshot_edits_preserve_crlf_bom_and_backup(agent):

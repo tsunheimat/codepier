@@ -30,9 +30,9 @@ def result(stack, name, args):
     return data
 
 
-@pytest.mark.parametrize('path,key', [('/healthz','status'),('/api/devices','devices'),('/api/projects','projects'),('/api/grants','grants')])
+@pytest.mark.parametrize('path,key', [('/healthz','status'),('/api/devices','devices'),('/api/projects','projects'),('/api/spaces/{space}/connections','connections')])
 def test_authenticated_management_snapshot(stack, path, key):
-    response = stack.client.get(path)
+    response = stack.client.get(path.format(space=stack.space_id))
     assert response.status_code == 200 and key in response.json()
     if path == '/api/devices':
         assert any(device['id'] == stack.device and device['online'] for device in response.json()['devices'])
@@ -62,8 +62,8 @@ def test_anonymous_requests_never_access_private_management(stack, path):
 def test_forged_management_write_is_denied(stack, origin, csrf):
     headers = {'X-RD-CSRF': csrf or stack.client.headers['X-RD-CSRF']}
     if origin: headers['Origin'] = origin
-    body = {'alias':'NoAdmission','root':str(stack.root),'device_id':stack.device,'mode':'read','allow_tasks':False}
-    response = stack.client.post('/api/projects', json=body, headers=headers)
+    body = {'alias':'NoAdmission','folder_id':stack.folder['id'],'subpath':'.','idempotency_key':uuid.uuid4().hex}
+    response = stack.client.post(f'/api/spaces/{stack.space_id}/projects', json=body, headers=headers)
     assert response.status_code == 403
 
 
@@ -81,9 +81,19 @@ def test_write_is_idempotent_and_audited(stack):
 def test_project_creation_keeps_explicit_read_boundary(stack):
     directory = stack.root / ('Smoke-' + uuid.uuid4().hex)
     directory.mkdir()
-    project = stack.create_project({'alias':directory.name,'root':str(directory),'device_id':stack.device,'mode':'read','allow_tasks':False})
-    assert project['mode'] == 'read' and not project['allow_tasks']
-    stack.must(stack.client.delete('/api/projects/' + project['id']))
+    folder = stack.create_folder({'name':'Read-only smoke','source_kind':'device',
+        'device_id':stack.device,'device_path':str(directory),'mode':'read','allow_tasks':False})
+    project = stack.create_project({'alias':directory.name,'folder_id':folder['id'],'subpath':'.'})
+    view = stack.must(stack.client.get('/api/projects/'+project['id']))
+    assert view['mode'] == 'read' and not view['allow_tasks']
+    # The project cannot override the folder's read-only setting even with a
+    # Profile which otherwise allows write. Validate the real dispatch path.
+    profile = stack.create_profile({'project_rules':[{'projects':[project['id']],'actions':['read','write']}]})
+    connection = stack.create_connection(profile)
+    denied = stack.mcp('write', {'project':project['id'],'path':'forbidden','content':'no',
+        'expected_sha256':'new','idempotency_key':uuid.uuid4().hex},token_value=connection['token'])
+    assert denied['isError'] and not (directory/'forbidden').exists()
+    stack.must(stack.client.delete('/api/projects/' + project['id'],params={'expected_version':project['version']}))
 
 
 def test_named_task_executes_once_and_returns_real_output(stack):
@@ -97,7 +107,8 @@ def test_secret_path_is_denied(stack):
 
 
 def test_revoked_token_cannot_invoke_a_tool(stack):
-    grant = stack.must(stack.client.post('/api/grants', json={'label':'revocation smoke','scopes':['read'],'projects':[stack.project['id']],'days':1}))
-    stack.must(stack.client.delete('/api/grants/' + grant['grant_id']))
-    response = stack.rpc('tools/call', {'name':'workspace','arguments':{'operation':'tree','project':'Imago'}}, token_value=grant['token'])
+    profile = stack.create_profile({'project_rules':[{'projects':[stack.project['id']],'actions':['read']}]})
+    created = stack.create_connection(profile)
+    stack.must(stack.client.post(f'/api/spaces/{stack.space_id}/connections/'+created['connection_id']+'/revoke'))
+    response = stack.rpc('tools/call', {'name':'workspace','arguments':{'operation':'tree','project':'Imago'}}, token_value=created['token'])
     assert response.status_code == 401

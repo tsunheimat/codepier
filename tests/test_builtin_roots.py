@@ -14,13 +14,13 @@ from hub.builtin_roots import META_KEY, canonical_roots, load_settings, save_set
 from hub.store import Store
 from shared.crypto import digest
 from shared.util import DevError
-from tests.legacy_iam_fixture import seed_personal_owner
+from tests.current_model import CurrentModel
 
 
 @pytest.fixture
 def roots_store(tmp_path):
     store = Store(tmp_path / "app" / "data")
-    seed_personal_owner(store, "owner", "admin")
+    CurrentModel(store).user("owner",username="admin")
     ensure_identity(store)
     yield store
     store.close()
@@ -31,7 +31,7 @@ def save(store, roots, revision=0):
                          device_id=ensure_identity(store)["device_id"])
 
 
-def test_upgrade_defaults_separate_from_identity_and_persist(roots_store, tmp_path):
+def test_new_roots_defaults_separate_from_identity_and_persist(roots_store, tmp_path):
     store = roots_store
     marker = ensure_identity(store)
     assert load_settings(store) == {"version": 1, "revision": 0, "roots": []}

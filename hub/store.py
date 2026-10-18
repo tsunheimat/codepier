@@ -147,7 +147,11 @@ class Store:
         # A verified caller scope (including MCP) takes precedence even when the
         # target is an ID in another Space. Free-form names/URLs never cause lookup.
         if target_kind and target and not scoped and not actor.startswith('mcp:'):
-            row = self.one(f'SELECT space_id,owner_user_id FROM {tables[target_kind]} WHERE id=?', (target,))
+            # Inventory has no workspace; Profiles/Connections have distinct
+            # creator/owner columns. Audit routing needs only the resource's
+            # explicit workspace, never an inferred old-model owner shape.
+            column='NULL AS space_id' if target_kind in {'device','vps'} else 'space_id'
+            row = self.one(f'SELECT {column} FROM {tables[target_kind]} WHERE id=?', (target,))
             if row:
                 sid = row['space_id']
         sql = 'INSERT INTO audit(at,actor,action,target,status,detail,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?)'

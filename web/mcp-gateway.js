@@ -44,7 +44,7 @@ window.CodePierGateway = (() => {
       ${section('已批准的服务', state.connectors.map((c) => `<div class="grant-row"><div><strong>${esc(c.label)}</strong> · ${c.enabled ? '启用' : '暂停'}<p class="mono gw-wrap">${esc(c.endpoint)}</p><small>${esc(c.protocol)}${c.allow_http ? ' · 显式内网 HTTP' : ' · HTTPS'}</small></div>${state.instance_admin ? `<button class="btn small" data-gw-toggle="connectors" data-id="${esc(c.id)}" data-version="${c.version}" data-enabled="${c.enabled ? '1' : '0'}">${c.enabled ? '暂停' : '恢复'}</button>` : ''}</div>`).join('') || empty('先由实例管理员添加固定 MCP endpoint。'))}
       ${section('账号与凭据', state.accounts.map((a) => `<div class="grant-row"><div><strong>${esc(a.label)}</strong> · ${a.sharing === 'space' ? '空间共享' : '个人私有'} · ${a.enabled ? '启用' : '暂停'}<p class="mono gw-wrap">${esc(a.id)}</p><small>服务：${esc(state.connectors.find((c) => c.id === a.connector_id)?.label || '未提供')} · ${a.catalog_hash ? '已有发现目录，仍需明确发布' : '尚未发现当前帐户的工具'}</small></div>${manageable(a) ? `<div class="actions"><button class="btn small" data-gw-discover="${esc(a.id)}">发现 / 审核工具</button><button class="btn small" data-gw-account="${esc(a.id)}">更新凭据</button><button class="btn small" data-gw-toggle="accounts" data-id="${esc(a.id)}" data-version="${a.version}" data-enabled="${a.enabled ? '1' : '0'}">${a.enabled ? '暂停' : '恢复'}</button></div>` : ''}</div>`).join('') || empty('凭据加密存放在 Hub，不会回传到页面。'))}
       ${section('已发布工具', state.bindings.map((b) => `<div class="grant-row"><div><strong>${esc(b.alias)}__…</strong> · ${esc(accountLabel(b.account_id))} · ${b.enabled ? '启用' : '暂停'}<p class="mono gw-wrap">${esc(b.id)}</p><p class="gw-wrap">${b.tools.map(esc).join(' · ')}</p></div><div class="actions"><button class="btn small" data-resource-detail="${esc(b.id)}" data-resource-type="mcp">资源详情</button>${state.space_admin ? `<button class="btn small" data-gw-profile="${esc(b.id)}">配置 Profile 工具权限</button>` : ''}${manageable(state.accounts.find((a) => a.id === b.account_id)) ? `<button class="btn small" data-gw-toggle="bindings" data-id="${esc(b.id)}" data-version="${b.version}" data-enabled="${b.enabled ? '1' : '0'}">${b.enabled ? '暂停' : '恢复'}</button>` : ''}</div></div>`).join('') || empty('在帐户的工具发现窗口选择工具并发布命名空间。'))}
-      ${section('我的连接委派', `<p class="form-note">既有 Role grant 不会自动获得外部 MCP 权限。下列同意仅影响该 grant；撤销不影响本地 CodePier 项目权限。</p>${state.grants.map((g) => `<div class="grant-row"><div><strong>${esc(g.label)}</strong><p class="mono gw-wrap">${esc(g.id)}</p><small>${g.consent_version ? '已明确同意外部 MCP 委派' : '尚未同意'}</small></div><button class="btn small" data-gw-consent="${esc(g.id)}">${g.consent_version ? '撤销外部委派' : '查看政策并同意'}</button></div>`).join('') || empty('先在这个工作空间选择 Profile 建立 MCP 连接。')}`)}
+      ${section('我的连接委派', `<p class="form-note">每条工作空间连接都必须明确同意外部 MCP 委派。下列同意只影响该连接；撤销不影响其本地 CodePier 项目权限。</p>${state.grants.map((g) => `<div class="grant-row"><div><strong>${esc(g.label)}</strong><p class="mono gw-wrap">${esc(g.id)}</p><small>${g.consent_version ? '已明确同意外部 MCP 委派' : '尚未同意'}</small></div><button class="btn small" data-gw-consent="${esc(g.id)}">${g.consent_version ? '撤销外部委派' : '查看政策并同意'}</button></div>`).join('') || empty('先在这个工作空间选择 Profile 建立 MCP 连接。')}`)}
       ${section('最近调用', `<p class="form-note">最多显示 50 条私有调用摘要，不包含原始参数、凭据或结果。unknown 不等于未执行，必须核对原回执，不能自动重发。</p>${state.calls.map((c) => `<div class="grant-row"><div><strong>${esc(c.tool)}</strong> · ${esc(c.state)}<p class="mono gw-wrap">${esc(c.id)}</p><small>${esc(timeText(c.created))}${c.error_code ? ' · ' + esc(c.error_code) : ''}</small></div></div>`).join('') || empty('尚无外部 MCP 调用。')}`)}</div>`;
   }
 
@@ -232,8 +232,14 @@ window.CodePierGateway = (() => {
   }
 
   async function configureProfile(id) {
-    const base='/api/spaces/'+encodeURIComponent(workspaceId)+'/profiles';
+    const session=S.session, page=location.hash, space=workspaceId,
+      intent=(S.modalIntent=(S.modalIntent||0)+1);
+    const base='/api/spaces/'+encodeURIComponent(space)+'/profiles';
     const binding=state.bindings.find(x=>x.id===id),profiles=(await api(base)).profiles;
+    // The shared HTTP guard rejects another workspace/login. A newer editor
+    // on the same page is a separate boundary: never replace its draft with
+    // this earlier lookup, even when both requests were authorized.
+    if(session!==S.session || page!==location.hash || space!==workspaceId || intent!==S.modalIntent) return;
     if(!profiles.length)throw new Error('先在这个工作空间建立 Profile。');
     const key='profile-mcp-'+uid();
     const d=form('配置 Profile 的外部 MCP 权限',

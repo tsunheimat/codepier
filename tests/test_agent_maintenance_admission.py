@@ -42,14 +42,15 @@ async def test_download_fences_new_work_before_yield_and_cancellation_does_not_r
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('activity',['job','process','transfer','cleanup','desktop'])
+@pytest.mark.parametrize('activity',['job','process','transfer','cleanup','desktop','session'])
 async def test_ack_rechecks_activity_and_retains_the_plan_without_launching(tmp_path,monkeypatch,activity):
     manager,base=managed_manager(tmp_path,monkeypatch)
     operation='maintenance'
     manager._write_plan(operation,{'action':'agent_restart','base':str(base),
         'helper':str(base/'helper.py'),'python':str(base/'python')})
     busy=asyncio.get_running_loop().create_future()
-    owner=SimpleNamespace(computer=SimpleNamespace(session=object() if activity=='desktop' else None),
+    owner=SimpleNamespace(execution_sessions=SimpleNamespace(active=lambda:activity=='session'),
+        computer=SimpleNamespace(session=object() if activity=='desktop' else None),
         jobs={operation:busy,**({'other':busy} if activity=='job' else {})},
         processes={'other':object()} if activity=='process' else {},
         transfer_tasks={busy} if activity=='transfer' else set(),
@@ -59,10 +60,11 @@ async def test_ack_rechecks_activity_and_retains_the_plan_without_launching(tmp_
     monkeypatch.setattr(manager,'_launch_helper',lambda *_args:launched.append(True))
     try:
         with pytest.raises(DevError) as error:await manager.acknowledge(operation)
-        assert error.value.code==('COMPUTER_BUSY' if activity=='desktop' else 'AGENT_BUSY')
+        assert error.value.code=={'desktop':'COMPUTER_BUSY','session':'SESSIONS_BUSY'}.get(activity,'AGENT_BUSY')
         assert manager.has_pending(operation) and manager.handoff_pending and not launched
         owner.jobs.pop('other',None);owner.processes.clear();owner.transfer_tasks.clear();owner.kill_tasks.clear()
         owner.computer.session=None
+        owner.execution_sessions.active=lambda:False
         assert await manager.acknowledge(operation)
         assert launched==[True] and not manager.has_pending(operation)
     finally:busy.cancel()

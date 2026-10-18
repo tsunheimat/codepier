@@ -12,18 +12,22 @@ from shared.contracts import TOOLS, tool_definitions
 from shared.crypto import token
 from shared.query_contracts import QUERY_TOOLS
 from shared.util import DevError
-from tests.legacy_iam_fixture import seed_owner, seed_grant
+from tests.current_model import CurrentModel
 
 
 @pytest.fixture
 def runtime(tmp_path):
     store = Store(tmp_path / 'hub')
-    seed_owner(store, 'owner', 'admin')
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')", (store.encrypt(token()), time.time()))
-    for identifier, alias in [('visible', 'Visible'), ('hidden', 'Hidden')]:
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,'dev','/tmp/fixture','','write',1,?,'legacy','owner')", (identifier, alias, alias.lower(), time.time()))
-    seed_grant(store, 'reader', 'owner', scopes=('read',), projects=('visible',))
-    principal = Principal('mcp:reader:test', 'owner', {'read'}, ['visible'], grant_id='reader', space_id='legacy')
+    model=CurrentModel(store);model.user('owner',username='admin')
+    model.workspace('query-space',owner='owner');model.device('dev',owner='owner',name='home')
+    model.bind_device('query-space','dev')
+    source=tmp_path/'source';source.mkdir()
+    folder=model.folder('query-folder',space='query-space',device='dev',path=source)
+    for identifier,alias in [('visible','Visible'),('hidden','Hidden')]:
+        model.project(identifier,space='query-space',folder=folder,owner='owner',alias=alias,subpath=identifier)
+    profile=model.profile(space='query-space',creator='owner',policy={
+        'project_rules':[{'projects':['visible'],'actions':['read']}]})
+    _,principal=model.connection(user='owner',space='query-space',profile=profile)
     instance = Runtime(store)
     instance.wait_seconds = 0
     yield instance, principal
@@ -72,7 +76,7 @@ async def test_project_query_filters_projects_and_revalidates_revoked_grants(run
     with pytest.raises(DevError):
         await instance.invoke('project_query', {'operation': 'open', 'project': 'Hidden'}, principal)
     assert not instance.store.all('SELECT id FROM operations')
-    instance.store.execute("UPDATE grants SET revoked=1 WHERE id='reader'")
+    instance.store.execute('UPDATE grants SET revoked=1 WHERE id=?',(principal.grant_id,))
     with pytest.raises(DevError):
         await instance.invoke('project_query', {}, principal)
 

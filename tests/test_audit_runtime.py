@@ -12,6 +12,9 @@ from fastapi import WebSocketDisconnect
 
 from hub.runtime import Connection, Principal, Runtime
 from hub.store import Store
+from hub import iam
+from hub.permissions import owner_policy
+from shared.tool_protocol import advertisement, catalog_digest
 from shared.crypto import SecureChannel, token
 from shared.util import DevError
 
@@ -19,16 +22,25 @@ from shared.util import DevError
 @pytest.fixture
 def runtime(tmp_path):
     store = Store(tmp_path / "hub")
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store,'owner','owner')
     secret = token()
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')",
-                  (store.encrypt(secret), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Project','project','dev','/tmp/project','','write',1,?,'legacy','owner')",
-                  (time.time(),))
+    root=tmp_path/'project'; root.mkdir()
+    now=time.time()
+    with store.transaction():
+        store.db.execute("INSERT INTO users VALUES('owner','owner','!fixture-only',?)",(now,))
+        iam.create_personal_space(store,'owner','Runtime account')
+        store.db.execute("INSERT INTO spaces(id,label,owner_user_id,created) VALUES('runtime-space','Runtime','owner',?)",(now,))
+        store.db.execute("INSERT INTO memberships(space_id,user_id,policy) VALUES('runtime-space','owner',?)",
+                         (owner_policy().model_dump_json(),))
+        store.db.execute("INSERT INTO devices(id,name,secret,created,owner_user_id,info) VALUES('dev','home',?,?,'owner',?)",
+            (store.encrypt(secret),now,json.dumps({'shell_enabled':True})))
+        store.db.execute("INSERT INTO space_devices(space_id,device_id) VALUES('runtime-space','dev')")
+        store.db.execute("""INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode,allow_tasks)
+            VALUES('runtime-folder','runtime-space','Runtime folder','device','dev',?,'write',1)""",(str(root),))
+        store.db.execute("""INSERT INTO projects(id,alias,alias_key,folder_id,subpath,description,created,space_id,owner_user_id)
+            VALUES('proj','Project','project','runtime-folder','.','',?,'runtime-space','owner')""",(now,))
     runtime = Runtime(store)
     runtime.wait_seconds = 0
-    principal = Principal("panel:owner", "owner", {"read", "write", "execute"}, ["*"], admin=True, space_id='legacy')
+    principal = Principal('panel:owner','owner',{'read','write','execute'},['proj'],admin=True,space_id='runtime-space')
     yield runtime, principal, secret
     store.close()
 
@@ -36,7 +48,9 @@ def runtime(tmp_path):
 class Socket:
     def __init__(self, secret, hello=None, before_hello=None, after_ready=None):
         self.secret = secret
-        self.hello = hello or {"type": "hello", "delivery_protocol": 2, "journal_id": "journal-one"}
+        self.hello = hello or {"type": "hello", "delivery_protocol": 2, "journal_id": "journal-one",
+            "workspace_protocol":1,"project_routing_protocol":1,"shell_enabled":True,
+            **advertisement(catalog_digest())}
         self.before_hello, self.after_ready = before_hello, after_ready
         self.incoming = asyncio.Queue()
         self.receiving = asyncio.Event()
@@ -138,8 +152,11 @@ async def test_credentials_revoked_during_handshake_cannot_register(runtime, pha
         elif change == "rotated":
             r.store.execute("UPDATE devices SET secret=? WHERE id='dev'", (r.store.encrypt(token()),))
         else:
-            r.store.execute("DELETE FROM projects")
-            r.store.execute("DELETE FROM devices")
+            with r.store.transaction():
+                r.store.db.execute('DELETE FROM projects')
+                r.store.db.execute('DELETE FROM space_folders')
+                r.store.db.execute('DELETE FROM space_devices')
+                r.store.db.execute('DELETE FROM devices')
     socket = Socket(secret, **{"before_hello" if phase == "hello" else "after_ready": revoke})
     await r.agent_socket(socket, "dev")
     assert socket.closed and not r.connections
@@ -205,7 +222,7 @@ async def test_authenticated_late_events_cannot_cross_key_rotation(runtime):
 
 def mark_builtin(runtime, revision=0):
     runtime.store.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('builtin_agent', json.dumps({
-        'version': 1, 'device_id': 'dev', 'owner_user_id': 'owner', 'space_id': 'legacy'})))
+        'version': 1, 'device_id': 'dev', 'owner_user_id': 'owner'})))
     runtime.store.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('builtin_agent_roots', json.dumps({
         'version': 1, 'revision': revision, 'roots': []})))
 
@@ -309,7 +326,12 @@ async def test_null_result_fields_remain_retrievable_on_idempotent_retry(runtime
     receipt = await r.invoke("fs_read", args, p)
     r.complete(r.store.one("SELECT * FROM operations WHERE id=?", (receipt["operation_id"],)), result)
     if result["ok"]:
-        assert await r.invoke("fs_read", args, p) == {"operation_id": receipt["operation_id"]}
+        replayed=await r.invoke('fs_read',args,p)
+        assert set(replayed)=={'operation_id','route'}
+        assert replayed['operation_id']==receipt['operation_id']
+        assert replayed['route']['device_id']=='dev' and replayed['route']['family']=='files'
+        assert replayed['route']['source_key']=='device:dev'
+        assert r.store.one('SELECT attempts FROM operations WHERE id=?',(receipt['operation_id'],))['attempts']==0
     else:
         with pytest.raises(DevError) as error:
             await r.invoke("fs_read", args, p)
@@ -368,9 +390,9 @@ async def test_invalid_durable_request_does_not_retry_forever(runtime, payload):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["reconnecting", "cancelling"])
-async def test_legacy_pending_without_request_is_reconciled_on_start(runtime, state):
+async def test_missing_durable_payload_is_not_guessed_or_replayed_on_start(runtime, state):
     r, p, _ = runtime
-    args = {"project": "Project", "path": "README.md", "idempotency_key": "legacy-receipt"}
+    args = {"project": "Project", "path": "README.md", "idempotency_key": "corrupted-receipt"}
     receipt = await r.invoke("fs_read", args, p)
     r.store.execute("UPDATE operations SET state=?,payload=NULL WHERE id=?", (state, receipt["operation_id"]))
     await r.start()

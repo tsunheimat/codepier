@@ -20,14 +20,16 @@ import pytest
 from agent.config import validate_config
 from agent.journal import Journal
 from agent.runner import Agent
-from hub.runtime import Runtime, Principal
-from hub.store import Store, SCHEMA
+from hub.runtime import Runtime
+from hub.store import Store
 from scripts.mcp_stdio_bridge import forward, prepare_request, REMOTE_TOOLS
 from shared.contracts import TOOLS
 from shared.crypto import digest, token
 from shared.util import atomic_json, DevError
 from tests.test_unit import engine
 from tests.support import wait_for
+from tests.current_model import CurrentModel
+from shared.tool_protocol import advertisement, catalog_digest, negotiate
 
 
 def key():
@@ -48,12 +50,16 @@ def local_agent(tmp_path):
 @pytest.fixture
 def runtime(tmp_path):
     store = Store(tmp_path/'hub')
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store,'owner','admin')
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')", (store.encrypt(token()),time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Imago','imago','dev','/tmp/fixture','','write',1,?,'legacy','owner')", (time.time(),))
+    model=CurrentModel(store)
+    model.user('owner',username='admin')
+    model.workspace('test-workspace',owner='owner')
+    model.device('dev',owner='owner',name='home')
+    model.bind_device('test-workspace','dev')
+    source=tmp_path/'source';source.mkdir()
+    model.folder('test-folder',space='test-workspace',device='dev',path=source)
+    model.project('proj',space='test-workspace',folder='test-folder',owner='owner',alias='Imago')
     r = Runtime(store); r.wait_seconds = 0
-    principal = Principal('panel:admin','owner',{'read','write','execute'},['*'],admin=True,space_id='legacy')
+    principal=model.panel('owner','test-workspace')
     yield r, principal
     store.close()
 
@@ -61,6 +67,8 @@ def runtime(tmp_path):
 class Peer:
     def __init__(self):
         self.last_seen = time.time(); self.journal_id = 'journal-one'; self.unusable = False
+        self.workspace_protocol=1;self.project_routing_protocol=1
+        self.tool_protocol=negotiate(advertisement(catalog_digest()))
         self.packets = []; self.gate = None
     async def send(self, packet):
         self.packets.append(packet)
@@ -177,7 +185,7 @@ async def test_queued_cancellation_does_not_touch_files(runtime):
 @pytest.mark.asyncio
 async def test_mapping_change_prevents_queued_execution(runtime):
     r,p=runtime;op=await r.invoke('fs_read',{'project':'Imago','path':'README.md'},p)
-    r.store.execute("UPDATE projects SET root='/tmp/different' WHERE id='proj'")
+    r.store.execute("UPDATE space_folders SET device_path='/tmp/different',version=version+1 WHERE id='test-folder'")
     peer=Peer();r.connections['dev']=peer;await r.deliver(op['operation_id'])
     assert r.operation(op['operation_id'],p)['result']['error']['code']=='AUTHORIZATION_CHANGED' and not peer.packets
 
@@ -307,7 +315,7 @@ async def test_utf8_split_output_and_local_task_environment(local_agent):
 @pytest.mark.asyncio
 async def test_deadline_expired_at_agent_before_start(local_agent):
     a,root=local_agent
-    await a.handle({'id':'expired','tool':'fs_write','project':{'root':str(root),'mode':'write','alias':'Imago'},'args':{'project':'Imago','path':'never.txt','content':'x','expected_sha256':'new','idempotency_key':key()},'not_after':time.time()-1})
+    await a.handle({'id':'expired','tool':'fs_write','tool_contract_version':1,'project':{'root':str(root),'mode':'write','alias':'Imago'},'args':{'project':'Imago','path':'never.txt','content':'x','expected_sha256':'new','idempotency_key':key()},'not_after':time.time()-1})
     assert not (root/'never.txt').exists()
     assert a.journal.status('expired')['result']['error']['code']=='QUEUE_EXPIRED'
 
@@ -315,7 +323,7 @@ async def test_deadline_expired_at_agent_before_start(local_agent):
 @pytest.mark.asyncio
 async def test_duplicate_agent_requests_execute_one_write(local_agent):
     a,root=local_agent
-    request={'id':'repeat','tool':'fs_write','project':{'root':str(root),'mode':'write','alias':'Imago'},'args':{'project':'Imago','path':'once.txt','content':'once','expected_sha256':'new','idempotency_key':key()},'not_after':time.time()+60}
+    request={'id':'repeat','tool':'fs_write','tool_contract_version':1,'project':{'root':str(root),'mode':'write','alias':'Imago'},'args':{'project':'Imago','path':'once.txt','content':'once','expected_sha256':'new','idempotency_key':key()},'not_after':time.time()+60}
     await asyncio.gather(*(a.handle(copy.deepcopy(request)) for _ in range(10)))
     assert (root/'once.txt').read_text()=='once'
     assert len(a.journal.history(str(root),'once.txt'))==1
@@ -328,9 +336,9 @@ async def test_project_queue_does_not_starve_other_projects(local_agent):
     tasks=[]
     try:
         for i in range(6):
-            tasks.append(asyncio.create_task(a.handle({'id':f'blocked-{i}','tool':'fs_read','project':{'root':str(root),'alias':'Imago'},'args':{'project':'Imago','path':'README.md'}})))
+            tasks.append(asyncio.create_task(a.handle({'id':f'blocked-{i}','tool':'fs_read','tool_contract_version':1,'project':{'root':str(root),'alias':'Imago'},'args':{'project':'Imago','path':'README.md'}})))
         await asyncio.sleep(.02)
-        await asyncio.wait_for(a.handle({'id':'free','tool':'fs_read','project':{'root':str(other),'alias':'Nexus'},'args':{'project':'Nexus','path':'README.md'}}),1)
+        await asyncio.wait_for(a.handle({'id':'free','tool':'fs_read','tool_contract_version':1,'project':{'root':str(other),'alias':'Nexus'},'args':{'project':'Nexus','path':'README.md'}}),1)
         assert a.journal.status('free')['result']['data']['content']=='other project'
     finally:
         first_lock.release();await asyncio.gather(*tasks)
@@ -357,17 +365,27 @@ def test_new_file_publish_does_not_overwrite_concurrent_creation(engine,monkeypa
     assert (root/'race.txt').read_text()=='local editor won'
 
 
-def test_v1_store_migration_retains_key_and_existing_records(tmp_path):
-    directory=tmp_path/'hub';directory.mkdir();db=sqlite3.connect(directory/'hub.sqlite3');db.executescript(SCHEMA)
-    db.execute("INSERT INTO meta VALUES ('schema','1')")
-    db.execute("INSERT INTO audit(at,actor,action,status,detail) VALUES (1,'owner','existing-audit','ok','{}')");db.commit();db.close()
-    store=Store(directory);secret=store.encrypt('persistent-key-test');keybytes=(directory/'master.key').read_bytes()
-    assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='10'
-    assert store.one('SELECT action FROM audit')['action']=='existing-audit'
-    assert {'payload','journal_id','accepted_at','cancel_requested','output_seq'}.issubset({r['name'] for r in store.all('PRAGMA table_info(operations)')})
+def test_current_store_restart_preserves_key_and_receipt_records(tmp_path):
+    directory=tmp_path/'hub';store=Store(directory)
+    store.execute("INSERT INTO audit(at,actor,action,status,detail) VALUES(1,'fixture','existing-audit','ok','{}')")
+    secret=store.encrypt('persistent-key-test');keybytes=(directory/'master.key').read_bytes()
     store.close();store=Store(directory)
-    try: assert store.decrypt(secret)=='persistent-key-test' and (directory/'master.key').read_bytes()==keybytes
-    finally: store.close()
+    try:
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one('SELECT action FROM audit')['action']=='existing-audit'
+        assert store.decrypt(secret)=='persistent-key-test'
+        assert (directory/'master.key').read_bytes()==keybytes
+    finally:store.close()
+
+
+def test_old_database_marker_is_refused_not_upgraded(tmp_path):
+    directory=tmp_path/'old-db';directory.mkdir()
+    with sqlite3.connect(directory/'hub.sqlite3') as db:
+        db.execute('CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT)')
+        db.execute("INSERT INTO meta VALUES('schema','1')")
+        db.commit();before=list(db.iterdump())
+    with pytest.raises(RuntimeError,match='WORKSPACE_DATABASE_REQUIRED'):Store(directory)
+    with sqlite3.connect(directory/'hub.sqlite3') as db:assert list(db.iterdump())==before
 
 
 def test_outbox_recovers_in_bounded_batches(tmp_path):

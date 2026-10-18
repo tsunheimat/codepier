@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import time
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from fastapi import Request
 
 from hub import iam
 from hub.oidc import ProviderInput
 from shared.crypto import digest
 from shared.util import DevError
-from tests.test_audit_api import rpc
-from tests.test_auth_continuity import form_for, PING
+from tests.identity_fixtures import must, make_profile
 from tests.test_oidc_integration import oidc as oidc, team as team, login
 from tests.test_oidc_review_regressions import seed_identity, run_sync
 
@@ -33,21 +33,49 @@ def expiry(app, identity, *, refresh=True):
                             (app.state.store.encrypt(json.dumps(secured)), identity['id']))
 
 
+PING = {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'}
+
+
+def rpc(user, token, payload):
+    return user.post('/mcp', json=payload, headers={'Authorization': 'Bearer '+token,
+        'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-11-25'})
+
+
+def form_for(client_id, tokens):
+    return {'grant_type':'refresh_token', 'client_id':client_id,
+            'refresh_token':tokens['refresh_token'], 'resource':'http://testserver/mcp'}
+
+
 def delegated_tokens(app, user):
-    request = Request({'type': 'http', 'scheme': 'http', 'server': ('testserver', 80),
-        'path': '/api/grants', 'query_string': b'',
-        'headers': [(b'cookie', ('rd_session=' + user.cookie).encode()),
-                    (b'x-codepier-space', user.space.encode())]})
-    principal = app.state.auth.panel(request)
-    client_id = 'isolated-renewal-client'
-    # Fixture creates consented records directly; the real token endpoint and
-    # MCP authorization checks exercise renewal and access below.
-    value = app.state.auth.issue_grant(principal, 'continuity', ['read'], ['*'], client_id=client_id)
-    issuer, store = app.state.runtime.oauth, app.state.store
-    with store.transaction():
-        store.db.execute('UPDATE grants SET resource=? WHERE id=?', (issuer.resource(), value['grant_id']))
-        tokens = issuer.new_tokens(value['grant_id'])
-    return client_id, tokens, value['grant_id']
+    # Establish the actual two-level consent and PKCE code exchange through
+    # HTTP, rather than inserting an old grant or rewriting workspace headers.
+    profile = make_profile(user, {}, space=user.space)
+    redirect = 'http://127.0.0.1/callback'
+    client = must(user.post('/oauth/register', json={'client_name':'Continuity fixture',
+        'redirect_uris':[redirect], 'grant_types':['authorization_code','refresh_token'],
+        'response_types':['code'], 'token_endpoint_auth_method':'none'}))
+    verifier = 'c'*64
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    response = user.get('/oauth/authorize', params={'client_id':client['client_id'],
+        'response_type':'code', 'redirect_uri':redirect, 'scope':'codepier.workspace',
+        'resource':'http://testserver/mcp', 'code_challenge':challenge, 'code_challenge_method':'S256',
+        'state':'continuity-fixture-state'}, follow_redirects=False)
+    assert response.status_code == 303, response.text
+    identifier = parse_qs(urlsplit(response.headers['location']).query)['authorize'][0]
+    path = '/api/oauth/requests/'+identifier
+    pending = must(user.get(path))
+    chosen = must(user.post(path+'/select-space',json={
+        'space_id':user.space, 'selection_version':pending['selection_version']}))
+    consent = must(user.post(path+'/decide',json={'allow':True,'space_id':user.space,
+        'selection_version':chosen['selection_version'],'profile_id':profile['id'],
+        'profile_version':profile['version']}))
+    code = parse_qs(urlsplit(consent['redirect']).query)['code'][0]
+    tokens = must(user.post('/oauth/token', data={'grant_type':'authorization_code',
+        'client_id':client['client_id'],'redirect_uri':redirect,'code':code,
+        'code_verifier':verifier,'resource':'http://testserver/mcp'}))
+    grant = app.state.store.one('SELECT id,space_id,profile_id FROM grants WHERE client_id=?',(client['client_id'],))
+    assert grant['space_id'] == user.space and grant['profile_id'] == profile['id']
+    return client['client_id'], tokens, grant['id']
 
 
 def test_new_provider_requests_offline_access_with_explicit_consent(oidc):

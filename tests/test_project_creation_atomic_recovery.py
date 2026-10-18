@@ -1,205 +1,190 @@
-"""Project saves retain authority and reusable receipts across failed commits."""
+"""Folder-bound creation commits atomically after original validation.
+
+There is no device/root mapping API, Role-created-project selector or compatibility
+upgrade. Faults below are injected only into disposable fixtures after real
+membership/Profile authorization; original validation keys are not regenerated.
+"""
+from __future__ import annotations
+
 import json
+import uuid
 
 import pytest
 
+from hub import iam
 from shared.util import DevError
-from tests.test_access_profiles import call
-from tests.test_iam_integration import assign, team  # noqa: F401
-from tests.test_roles import credential, must, profile, role
+from tests.current_model import CurrentModel
+from tests.identity_fixtures import (team, must, call, data, set_member, make_profile,
+    make_connection)  # noqa: F401
 
 
-def mapping(**changes):
-    return {
-        "alias": "MemberCreated",
-        "device_id": "device-team",
-        "root": "/tmp/fixture-member-created",
-        "mode": "read",
-        "allow_tasks": False,
-        "idempotency_key": "fixture-member-create",
-        **changes,
-    }
+def body(**changes):
+    return {'alias':'NewProject','folder_id':'folder-team','subpath':'sub',
+        'idempotency_key':uuid.uuid4().hex,**changes}
 
 
-def prepared(store):
-    return json.loads(store.one("SELECT value FROM meta WHERE key LIKE 'project_save:team:%'")["value"])
+def caller(b, kind, *, project_access=True):
+    policy={'folder_rules':[{'folders':['folder-team'],'actions':['read','projects.create']}]}
+    if project_access:policy['project_rules']=[{'all_projects':True,'actions':['read','write']}]
+    if kind=='panel':
+        set_member(b['owner'],'alice',{**policy,'manage':['resources']})
+        return lambda values:b['alice'].post('/api/spaces/team/projects',json=values)
+    set_member(b['owner'],'alice',policy)
+    profile=make_profile(b['owner'],policy)
+    connection=make_connection(b['alice'],profile,live=True)
+    return lambda values:call(b['alice'],connection['token'],'projects_create',values)
 
 
-def test_unreadable_panel_mapping_rolls_back_and_same_receipt_can_recover(team, monkeypatch):
-    app, browsers = team
-    store = app.state.store
-    store.execute("UPDATE devices SET owner_user_id='alice' WHERE id='device-team'")
-    body = mapping()
-    events = []
-
-    async def validate(*_args, **_kwargs):
-        return {"root": body["root"], "writable": True, "allow_tasks": False}
-
-    monkeypatch.setattr(app.state.runtime, "dispatch", validate)
-    monkeypatch.setattr(app.state.runtime, "publish", lambda *args: events.append(args))
-    target = validation_key = None
-    for _ in range(2):
-        response = browsers["alice"].post("/api/projects", json=body)
-        assert response.status_code == 404
-        assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
-        assert not store.one("SELECT id FROM projects WHERE alias=?", (body["alias"],))
-        plan = prepared(store)
-        assert not plan.get("committed")
-        target = target or plan["target"]
-        validation_key = validation_key or plan["validation_key"]
-        assert (plan["target"], plan["validation_key"]) == (target, validation_key)
-        assert not store.one("SELECT id FROM audit WHERE action='project.created' AND target=?", (body["alias"],))
-        assert not [event for event in events if event[0] == "project"]
-
-    # Only explicit authorization unblocks the receipt; creation grants no rights.
-    authorized = role(browsers["owner"], project_rules=[{"actions": ["read"], "all_projects": True}])
-    assign(browsers["owner"], authorized, "alice")
-    result = must(browsers["alice"].post("/api/projects", json=body))
-    assert result["id"] == target
-    assert must(browsers["alice"].post("/api/projects", json=body))["id"] == target
-    assert store.one("SELECT count(*) AS n FROM projects WHERE alias=?", (body["alias"],))["n"] == 1
-    assert len([event for event in events if event[0] == "project"]) == 1
-    assert store.one("SELECT count(*) AS n FROM audit WHERE action='project.created' AND target=?", (body["alias"],))["n"] == 1
+def response_value(response, kind):
+    return data(response) if kind=='mcp' else must(response,201)
 
 
-@pytest.mark.parametrize("caller", ["panel", "role"])
-@pytest.mark.parametrize("conflict", ["canonical", "concurrent"])
-def test_nonadmin_creation_rechecks_canonical_and_concurrent_overlap(team, monkeypatch, caller, conflict):
-    app, browsers = team
-    store = app.state.store
-    store.execute("UPDATE devices SET owner_user_id='alice' WHERE id='device-team'")
-    store.execute("UPDATE projects SET mode='read',allow_tasks=0 WHERE id='project-team'")
-    policy = role(
-        browsers["owner"],
-        project_rules=[{"actions": ["read", "write"], "all_projects": True}],
-        device_rules=[{
-            "actions": ["devices.read", "projects.create"],
-            "devices": ["device-team"],
-            "max_project_mode": "write",
-        }],
-    )
-    assign(browsers["owner"], policy, "alice")
-    connection = None
-    if caller == "role":
-        identity = profile(browsers["alice"], policy)
-        connection = must(credential(browsers["alice"], policy, identity))["token"]
-    body = mapping(alias="NoOverlap", mode="write")
-    existing = store.one("SELECT root FROM projects WHERE id='project-team'")["root"]
-
-    async def validate(*_args, **_kwargs):
-        root = existing
-        if conflict == "concurrent":
-            root = body["root"]
-            store.execute(
-                "INSERT INTO projects(id,alias,alias_key,device_id,root,mode,space_id,owner_user_id,created) "
-                "VALUES('concurrent','Concurrent','concurrent','device-team',?,'read','team','owner',1)",
-                (root,),
-            )
-        return {"root": root, "writable": True, "allow_tasks": False}
-
-    monkeypatch.setattr(app.state.runtime, "dispatch", validate)
-    if caller == "panel":
-        response = browsers["alice"].post("/api/projects", json=body)
-        assert response.status_code == 403
-        assert response.json()["error"]["code"] == "PROJECT_ROOT_OVERLAP"
-    else:
-        result = call(browsers["alice"], connection, "projects_create", body).json()["result"]
-        assert result["isError"]
-        error = result.get("structuredContent") or json.loads(result["content"][0]["text"])
-        assert error["error"]["code"] == "PROJECT_ROOT_OVERLAP"
-    assert not store.one("SELECT id FROM projects WHERE alias=?", (body["alias"],))
-    assert not store.one("SELECT id FROM audit WHERE action='project.created' AND target=?", (body["alias"],))
-    assert not prepared(store).get("committed")
+def response_error(response, kind):
+    if kind=='mcp':
+        result=response.json()['result'];assert result['isError'],result
+        return result['structuredContent']['error']
+    assert response.status_code>=400,response.text
+    return response.json()['error']
 
 
-def test_admin_can_intentionally_create_overlapping_mapping(team, monkeypatch):
-    app, browsers = team
-    root = app.state.store.one("SELECT root FROM projects WHERE id='project-team'")["root"]
-
-    async def validate(*_args, **_kwargs):
-        return {"root": root, "writable": True, "allow_tasks": False}
-
-    monkeypatch.setattr(app.state.runtime, "dispatch", validate)
-    body = mapping(root=root)
-    result = must(browsers["owner"].post("/api/projects", json=body))
-    assert result["root"] == root
-    assert must(browsers["owner"].post("/api/projects", json=body))["id"] == result["id"]
+def validate_ok(calls, effect=None):
+    async def validate(name,args,project,principal,**kwargs):
+        assert name=='system_validate'
+        assert '_validation_context' in project and '_source_boundary' in project
+        calls.append((args['idempotency_key'],project['root'],principal.grant_id))
+        if effect:effect()
+        return {'root':project['root'],'writable':True,'allow_tasks':True}
+    return validate
 
 
-@pytest.mark.parametrize("failure", ["visibility", "serialization"])
-def test_role_final_check_rolls_back_association_and_receipt(team, monkeypatch, failure):
-    app, browsers = team
-    runtime, store = app.state.runtime, app.state.store
-    policy = role(browsers["owner"], project_rules=[{"actions": ["read"], "all_projects": True}],
-                  device_rules=[{"actions": ["devices.read", "projects.create"],
-                                 "devices": ["device-team"], "max_project_mode": "read"}])
-    assign(browsers["owner"], policy, "alice")
-    identity = profile(browsers["alice"], policy)
-    token = must(credential(browsers["alice"], policy, identity))["token"]
-    body = mapping()
-    events = []
-    original = runtime.project if failure == "visibility" else runtime.project_public
-
-    async def validate(*_args, **_kwargs):
-        return {"root": body["root"], "writable": True, "allow_tasks": False}
-
-    def deny(*args, **kwargs):
-        row = store.one("SELECT * FROM projects WHERE alias=?", (body["alias"],))
-        if row and (args[0] == row["id"] if failure == "visibility" else args[0]["id"] == row["id"]):
-            assert store.one("SELECT project_id FROM role_created_projects WHERE project_id=?", (row["id"],))
-            raise DevError("PROJECT_NOT_FOUND", "Final visibility denied", 404)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(runtime, "dispatch", validate)
-    monkeypatch.setattr(runtime, "publish", lambda *args: events.append(args))
-    attribute = "project" if failure == "visibility" else "project_public"
-    monkeypatch.setattr(runtime, attribute, deny)
-    result = call(browsers["alice"], token, "projects_create", body).json()["result"]
-    assert result["isError"]
-    assert result["structuredContent"]["error"]["code"] == "PROJECT_NOT_FOUND"
-    plan = prepared(store)
-    assert not plan.get("committed")
-    assert not store.one("SELECT id FROM projects WHERE id=?", (plan["target"],))
-    assert not store.one("SELECT project_id FROM role_created_projects WHERE project_id=?", (plan["target"],))
-    assert not store.one("SELECT id FROM audit WHERE action='project.created' AND target=?", (body["alias"],))
-    assert not [event for event in events if event[0] == "project"]
-
-    monkeypatch.setattr(runtime, attribute, original)
-    for _ in range(2):
-        result = call(browsers["alice"], token, "projects_create", body).json()["result"]
-        assert not result.get("isError"), result
-    assert prepared(store)["target"] == plan["target"]
-    assert prepared(store)["validation_key"] == plan["validation_key"]
-    assert store.one("SELECT count(*) AS n FROM role_created_projects WHERE project_id=?", (plan["target"],))["n"] == 1
-    assert len([event for event in events if event[0] == "project"]) == 1
+def intents(store):
+    return store.all("SELECT key,value FROM meta WHERE key LIKE 'workspace-validation:%' ORDER BY key")
 
 
-@pytest.mark.parametrize("failure", ["visibility", "serialization"])
-def test_update_final_check_restores_original_mapping(team, monkeypatch, failure):
-    app, browsers = team
-    runtime, store = app.state.runtime, app.state.store
-    before = store.one("SELECT * FROM projects WHERE id='project-team'")
-    body = mapping(alias="RenamedProject", root=before["root"])
-    original = runtime.project if failure == "visibility" else runtime.project_public
-    events = []
+@pytest.mark.parametrize('kind',['panel','mcp'])
+@pytest.mark.parametrize('failure',['commit','receipt','audit'])
+def test_transaction_failure_rolls_back_and_reuses_original_validation(team, monkeypatch, kind, failure):
+    app,b=team;store=app.state.store;runtime=app.state.runtime
+    submit=caller(b,kind);values=body();validations=[];events=[]
+    monkeypatch.setattr(runtime,'dispatch',validate_ok(validations))
+    monkeypatch.setattr(runtime,'publish',lambda *args:events.append(args))
+    resources=runtime.workspace_resources
+    original=resources._commit_validated
+    def fail_commit(*args,**kwargs):
+        row=original(*args,**kwargs)
+        assert store.one('SELECT id FROM projects WHERE id=?',(row['id'],))
+        if failure=='receipt':return {**row,'non_json':object()}
+        raise DevError('COMMIT_FIXTURE_FAILURE','rollback this isolated transaction',409)
+    original_audit=iam.audit
+    def fail_audit(store_,principal,action,*args,**kwargs):
+        if action=='project.save:new':
+            raise DevError('COMMIT_FIXTURE_FAILURE','rollback this isolated audit/receipt',409)
+        return original_audit(store_,principal,action,*args,**kwargs)
+    if failure=='audit':monkeypatch.setattr(iam,'audit',fail_audit)
+    else:monkeypatch.setattr(resources,'_commit_validated',fail_commit)
+    if failure=='receipt':
+        with pytest.raises(TypeError):submit(values)
+    else:assert response_error(submit(values),kind)['code']=='COMMIT_FIXTURE_FAILURE'
+    assert not store.one('SELECT id FROM projects WHERE alias=?',(values['alias'],))
+    assert not store.one("SELECT receipt FROM workspace_requests WHERE operation='project.save:new' AND request_key=?",(values['idempotency_key'],))
+    assert not store.one("SELECT id FROM audit WHERE action='project.save:new'")
+    assert not [event for event in events if event[0]=='project']
+    before=intents(store);assert before
+    monkeypatch.setattr(resources,'_commit_validated',original)
+    monkeypatch.setattr(iam,'audit',original_audit)
+    created=response_value(submit(values),kind)
+    assert response_value(submit(values),kind)['id']==created['id']
+    assert len({key for key,_,_ in validations})==1 and len(validations)==2
+    assert intents(store)==before
+    assert store.one('SELECT count(*) AS n FROM projects WHERE alias=?',(values['alias'],))['n']==1
+    assert store.one("SELECT count(*) AS n FROM audit WHERE action='project.save:new'")['n']==1
+    assert len([event for event in events if event[0]=='project'])==1
 
-    async def validate(*_args, **_kwargs):
-        return {"root": body["root"], "writable": True, "allow_tasks": False}
 
-    def deny(*args, **kwargs):
-        if store.one("SELECT alias FROM projects WHERE id='project-team'")["alias"] == body["alias"]:
-            raise DevError("PROJECT_NOT_FOUND", "Final visibility denied", 404)
-        return original(*args, **kwargs)
+@pytest.mark.parametrize('kind',['panel','mcp'])
+@pytest.mark.parametrize('change',['folder','membership','collision'])
+def test_validation_wait_rechecks_live_source_and_authority_before_commit(team, monkeypatch, kind, change):
+    app,b=team;store=app.state.store;submit=caller(b,kind);values=body()
+    def changed():
+        if change=='folder':store.execute("UPDATE space_folders SET device_path=device_path||'/changed',version=version+1 WHERE id='folder-team'")
+        elif change=='membership':store.execute("UPDATE memberships SET active=0 WHERE user_id='alice' AND space_id='team'")
+        else:CurrentModel(store).project('competing',space='team',folder='folder-team',owner='owner',alias=values['alias'],subpath='elsewhere')
+    monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok([],changed))
+    error=response_error(submit(values),kind)
+    assert error['code']=={'folder':'VALIDATION_CHANGED','membership':'SPACE_FORBIDDEN','collision':'ALIAS_EXISTS'}[change]
+    assert not store.one("SELECT id FROM projects WHERE alias=? AND owner_user_id='alice'",(values['alias'],))
+    assert not store.one("SELECT receipt FROM workspace_requests WHERE operation='project.save:new'")
+    assert not store.one("SELECT id FROM audit WHERE action='project.save:new'")
 
-    monkeypatch.setattr(runtime, "dispatch", validate)
-    monkeypatch.setattr(runtime, "publish", lambda *args: events.append(args))
-    attribute = "project" if failure == "visibility" else "project_public"
-    monkeypatch.setattr(runtime, attribute, deny)
-    response = browsers["owner"].put("/api/projects/project-team", json=body)
-    assert response.status_code == 404
-    assert store.one("SELECT * FROM projects WHERE id='project-team'") == before
-    assert not prepared(store).get("committed")
-    assert not store.one("SELECT id FROM audit WHERE action='project.updated' AND target=?", (body["alias"],))
-    assert not [event for event in events if event[0] == "project"]
-    monkeypatch.setattr(runtime, attribute, original)
-    assert must(browsers["owner"].put("/api/projects/project-team", json=body))["alias"] == body["alias"]
+
+@pytest.mark.parametrize('kind',['panel','mcp'])
+@pytest.mark.parametrize('invalid',['canonical','readonly','tasks'])
+def test_device_validation_must_confirm_exact_source_capabilities(team, monkeypatch, kind, invalid):
+    app,b=team;submit=caller(b,kind)
+    async def invalid_result(name,args,project,principal,**kwargs):
+        return {'root':project['root']+'/elsewhere' if invalid=='canonical' else project['root'],
+            'writable':invalid!='readonly','allow_tasks':invalid!='tasks'}
+    monkeypatch.setattr(app.state.runtime,'dispatch',invalid_result)
+    error=response_error(submit(body()),kind)
+    assert error['code']==('VALIDATION_PATH_CHANGED' if invalid=='canonical' else 'LOCAL_CAPABILITY_DENIED')
+    assert not app.state.store.one("SELECT id FROM projects WHERE alias='NewProject'")
+
+
+@pytest.mark.parametrize('kind',['panel','mcp'])
+def test_pending_validation_keeps_key_and_never_double_commits(team, monkeypatch, kind):
+    app,b=team;submit=caller(b,kind);values=body();calls=[]
+    async def pending(name,args,project,principal,**kwargs):
+        calls.append(args['idempotency_key'])
+        return {'pending':True,'operation_id':'fixture-validation'}
+    monkeypatch.setattr(app.state.runtime,'dispatch',pending)
+    assert response_error(submit(values),kind)['code']=='VALIDATION_PENDING'
+    before=intents(app.state.store)
+    assert response_error(submit(values),kind)['operation_id']=='fixture-validation'
+    successful=[]
+    monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok(successful))
+    result=response_value(submit(values),kind)
+    assert calls==[successful[0][0]]*2 and before==intents(app.state.store)
+    assert response_value(submit(values),kind)['id']==result['id']
+    conflict=response_error(submit({**values,'subpath':'another'}),kind)
+    assert conflict['code']=='IDEMPOTENCY_CONFLICT'
+    assert len(successful)==1
+
+
+@pytest.mark.parametrize('kind',['panel','mcp'])
+def test_explicit_root_folder_reference_can_overlap_without_escaping_source(team, monkeypatch, kind):
+    app,b=team;submit=caller(b,kind)
+    monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok([]))
+    result=response_value(submit(body(subpath='.')),kind)
+    row=app.state.store.one('SELECT * FROM projects WHERE id=?',(result['id'],))
+    assert row['folder_id']=='folder-team' and row['subpath']=='.'
+    assert not {'root','device_id','role_id'}&row.keys()
+
+
+def test_folder_create_permission_alone_does_not_grant_access_to_created_project(team, monkeypatch):
+    app,b=team;submit=caller(b,'mcp',project_access=False)
+    monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok([]))
+    result=response_value(submit(body()),'mcp')
+    assert result['accessible'] is False
+    assert app.state.store.one('SELECT folder_id FROM projects WHERE id=?',(result['id'],))['folder_id']=='folder-team'
+    assert all('all_projects' not in row['policy'] or not json.loads(row['policy'])['project_rules']
+        for row in app.state.store.all("SELECT policy FROM access_profiles"))
+
+
+def test_update_failure_restores_prior_folder_reference_and_version(team, monkeypatch):
+    app,b=team;store=app.state.store;runtime=app.state.runtime;resources=runtime.workspace_resources
+    before=store.one("SELECT * FROM projects WHERE id='project-team'")
+    original=resources._commit_validated;events=[]
+    monkeypatch.setattr(runtime,'dispatch',validate_ok([]))
+    monkeypatch.setattr(runtime,'publish',lambda *args:events.append(args))
+    def fail(*args,**kwargs):
+        original(*args,**kwargs)
+        raise DevError('COMMIT_FIXTURE_FAILURE','retain original mapping',409)
+    monkeypatch.setattr(resources,'_commit_validated',fail)
+    values=body(alias='Updated',expected_version=before['version'])
+    response=b['owner'].put('/api/projects/project-team',json=values)
+    assert response.status_code==409 and response.json()['error']['code']=='COMMIT_FIXTURE_FAILURE'
+    assert store.one("SELECT * FROM projects WHERE id='project-team'")==before
+    assert not [event for event in events if event[0]=='project']
+    monkeypatch.setattr(resources,'_commit_validated',original)
+    updated=must(b['owner'].put('/api/projects/project-team',json=values))
+    assert updated['id']==before['id'] and updated['version']==before['version']+1

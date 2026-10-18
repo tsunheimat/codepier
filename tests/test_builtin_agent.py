@@ -12,6 +12,7 @@ from hub.builtin_agent import (BuiltinAgent, META_KEY, builtin_device_id, ensure
                                is_builtin_device, listener_url, require_external_device)
 from hub.config import HubConfig
 from hub.store import Store
+from tests.current_model import CurrentModel
 from shared.util import DevError
 
 
@@ -37,9 +38,10 @@ def store(tmp_path):
 
 
 def admin(store, identifier="admin", created=1, *, active=True, instance_admin=True):
-    store.execute("INSERT INTO users VALUES(?,?,?,?)", (identifier, identifier, "!oidc-only", created))
-    store.execute("UPDATE iam_users SET instance_admin=?,active=? WHERE user_id=?", (int(instance_admin), int(active), identifier))
-    return store.one("SELECT personal_space_id FROM iam_users WHERE user_id=?", (identifier,))["personal_space_id"]
+    CurrentModel(store).user(identifier,password_hash='!oidc-only',instance_admin=instance_admin)
+    store.execute('UPDATE users SET created=? WHERE id=?',(created,identifier))
+    store.execute('UPDATE iam_users SET active=? WHERE user_id=?',(int(active),identifier))
+    return store.one("SELECT id FROM spaces WHERE owner_user_id=? AND kind='personal'",(identifier,))['id']
 
 
 def config(**kwargs):
@@ -58,7 +60,9 @@ def test_empty_then_late_admin_and_stable_identity(store):
     space = admin(store)
     marker = ensure_identity(store)
     device = store.one("SELECT * FROM devices WHERE id=?", (marker["device_id"],))
-    assert marker["owner_user_id"] == "admin" and marker["space_id"] == space
+    assert marker['owner_user_id']=='admin' and 'space_id' not in marker
+    assert not store.all('SELECT * FROM space_devices')
+    assert store.one('SELECT id FROM spaces WHERE id=?',(space,))
     assert device["name"] == "CodePier Hub" and len(store.decrypt(device["secret"])) >= 40
     assert ensure_identity(store) == marker
     assert store.one("SELECT * FROM devices WHERE id=?", (marker["device_id"],)) == device
@@ -74,19 +78,25 @@ def test_earliest_eligible_admin_and_stable_tie_break(store):
     expected_space = admin(store, "a", 1)
     admin(store, "later", 2)
     marker = ensure_identity(store)
-    assert marker["owner_user_id"] == "a" and marker["space_id"] == expected_space
+    # Inventory enrollment is based on active instance-admin ownership, not
+    # a personal workspace's separate membership block.
+    assert marker['owner_user_id']=='blocked' and 'space_id' not in marker
+    assert store.one('SELECT id FROM spaces WHERE id=?',(expected_space,))
+    assert not store.all('SELECT * FROM space_devices')
 
 
 @pytest.mark.parametrize("revocation", ["space", "membership", "expired"])
-def test_initial_enrollment_requires_active_owner_membership(store, revocation):
+def test_initial_inventory_enrollment_does_not_depend_on_ambient_workspace(store, revocation):
     space = admin(store)
     if revocation == "space":
         store.execute("UPDATE spaces SET active=0 WHERE id=?", (space,))
     elif revocation == "membership":
-        store.execute("UPDATE memberships SET level='member' WHERE space_id=?", (space,))
+        store.execute("UPDATE memberships SET policy='{}' WHERE space_id=?",(space,))
     else:
         store.execute("UPDATE memberships SET expires=1 WHERE space_id=?", (space,))
-    assert ensure_identity(store) is None
+    marker=ensure_identity(store)
+    assert marker['owner_user_id']=='admin' and 'space_id' not in marker
+    assert not store.all('SELECT * FROM space_devices')
 
 
 def test_atomic_rollback(store):
@@ -297,13 +307,19 @@ async def test_authorization_revocation_stops_without_reassignment(store, revoca
         else:
             admin(store, "other")
             store.execute("UPDATE devices SET owner_user_id='other' WHERE id=?", (identifier,))
-        supervisor.wake()
-        for _ in range(200):
-            if factory.children[0].terminated:
-                break
-            await asyncio.sleep(.005)
-        assert factory.children[0].terminated == 1
-        assert len(factory.children) == 1 and builtin_device_id(store) == identifier
+        if revocation in {'space','membership','block'}:
+            # Revoking one workspace never reassigns or terminates the global
+            # inventory device potentially serving another explicit binding.
+            await supervisor.reconcile()
+            assert factory.children[0].terminated==0
+            assert supervisor.process is factory.children[0]
+        else:
+            supervisor.wake()
+            for _ in range(200):
+                if factory.children[0].terminated:break
+                await asyncio.sleep(.005)
+            assert factory.children[0].terminated==1
+        assert len(factory.children)==1 and builtin_device_id(store)==identifier
     finally:
         await supervisor.stop()
 

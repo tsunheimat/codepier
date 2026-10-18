@@ -1,141 +1,122 @@
-"""Regression for the real-provider acceptance client, using the real MCP router.
+"""Real MCP router contract for the isolated Authentik acceptance client.
 
-No Docker or external identity provider is needed for transport contract checks.
-The full Authentik job separately runs browser login, consent and offboarding.
+No external provider/credentials here; the separate script starts its own real
+loopback Authentik instance, performs browser consent and verifies offboarding.
 """
 import json
-import time
 
 import httpx
 import pytest
 
 from scripts.check_oidc_authentik import (
-    MCP_ACCEPTANCE_VERSION, initialize_mcp, mcp_request, required, select_personal_space,
+    MCP_ACCEPTANCE_VERSION, initialize_mcp, mcp_request, required, verify_bootstrap_workspace,
 )
-from tests.test_access_profiles import data
-from tests.test_iam_integration import team as team, shared_role
-from tests.test_roles import credential, must, profile, update_role
+from tests.identity_fixtures import (team, data, set_member, make_profile,
+    make_connection, update_profile, project_policy)  # noqa: F401
+from tests.current_model import CurrentModel
 
 
-def test_acceptance_bootstrap_selects_actual_personal_and_keeps_invalid_space_denial(tmp_path,monkeypatch):
+def credentials(b, *, live=False):
+    set_member(b['owner'],'alice',project_policy('read','write','execute'))
+    profile=make_profile(b['owner'],project_policy('read'))
+    return profile,make_connection(b['alice'],profile,live=live)
+
+
+def test_bootstrap_has_explicit_workspace_urls_without_header_state(tmp_path,monkeypatch):
     from fastapi.testclient import TestClient
     from hub.app import create_app
-    from tests.legacy_iam_fixture import seed_personal_owner
-    monkeypatch.setenv('HUB_PUBLIC_URL','http://testserver')
-    monkeypatch.setenv('MCP_PUBLIC_URL','')
+    monkeypatch.setenv('HUB_PUBLIC_URL','http://testserver');monkeypatch.setenv('MCP_PUBLIC_URL','')
     app=create_app(str(tmp_path/'hub'))
-    personal=seed_personal_owner(app.state.store,'owner','admin')
-    with app.state.store.transaction():
-        session=app.state.auth.new_session('owner')
+    model=CurrentModel(app.state.store);model.user('owner',username='admin')
+    personal=app.state.store.one("SELECT id FROM spaces WHERE owner_user_id='owner' AND kind='personal'")['id']
+    with app.state.store.transaction():session=app.state.auth.new_session('owner')
     with TestClient(app) as client:
-        client.cookies.set('rd_session',session['cookie'])
-        client.headers.update({'X-RD-CSRF':session['csrf'],'X-CodePier-Space':'legacy'})
+        client.cookies.set('rd_session',session['cookie']);client.headers['X-RD-CSRF']=session['csrf']
         body={'label':'Acceptance team','idempotency_key':'fixture-bootstrap-space'}
         assert client.post('/api/iam/spaces',json=body).status_code==404
-        assert select_personal_space(client)==personal
-        space=required(client.post('/api/iam/spaces',json=body),201)
-        assert space['kind']=='team' and space['id']!=personal
+        assert client.post('/api/spaces',json=body,headers={'X-CodePier-Space':'removed'}).status_code==400
+        before=dict(client.headers)
+        assert verify_bootstrap_workspace(client)==personal
+        assert dict(client.headers)==before
+        space=required(client.post('/api/spaces',json=body),201)
+        assert space['kind']=='workspace' and space['id']!=personal
         assert not app.state.store.one("SELECT 1 FROM spaces WHERE kind='legacy'")
 
 
 def test_acceptance_client_sends_required_headers_and_initialization():
-    requests = []
-
+    requests=[]
     def handle(request):
-        requests.append(request)
-        body = json.loads(request.content)
-        if body['method'] == 'notifications/initialized':
+        requests.append(request);body=json.loads(request.content)
+        if body['method']=='notifications/initialized':
             assert 'id' not in body
             return httpx.Response(202)
-        return httpx.Response(200, json={'jsonrpc': '2.0', 'id': body['id'],
-            'result': {'protocolVersion': MCP_ACCEPTANCE_VERSION}})
-
-    with httpx.Client(base_url='http://fixture.test', transport=httpx.MockTransport(handle)) as client:
-        initialize_mcp(client, 'fixture-token')
-        mcp_request(client, 'fixture-token', 'tools/call', {'name': 'get_profile', 'arguments': {}})
-    assert len(requests) == 3
+        return httpx.Response(200,json={'jsonrpc':'2.0','id':body['id'],
+            'result':{'protocolVersion':MCP_ACCEPTANCE_VERSION}})
+    with httpx.Client(base_url='http://fixture.test',transport=httpx.MockTransport(handle)) as client:
+        initialize_mcp(client,'fixture-token')
+        mcp_request(client,'fixture-token','tools/call',{'name':'get_profile','arguments':{}})
+    assert len(requests)==3
     for request in requests:
-        assert request.method == 'POST' and request.url.path == '/mcp'
-        assert request.headers['authorization'] == 'Bearer fixture-token'
-        assert set(request.headers['accept'].split(', ')) == {'application/json', 'text/event-stream'}
-        assert request.headers['mcp-protocol-version'] == MCP_ACCEPTANCE_VERSION
-        assert request.headers['content-type'] == 'application/json'
+        assert request.method=='POST' and request.url.path=='/mcp'
+        assert request.headers['authorization']=='Bearer fixture-token'
+        assert set(request.headers['accept'].split(', '))=={'application/json','text/event-stream'}
+        assert request.headers['mcp-protocol-version']==MCP_ACCEPTANCE_VERSION
+        assert request.headers['content-type']=='application/json'
         assert 'cookie' not in request.headers and 'x-codepier-space' not in request.headers
-    assert json.loads(requests[0].content)['id'] != json.loads(requests[2].content)['id']
+    assert json.loads(requests[0].content)['id']!=json.loads(requests[2].content)['id']
 
 
-@pytest.mark.parametrize('status', [400, 401, 403, 406, 500])
-def test_acceptance_client_does_not_retry_mask_or_echo_failure_bodies(status):
-    requests = []
-
+@pytest.mark.parametrize('status',[400,401,403,406,500])
+def test_acceptance_client_never_retries_masks_or_echoes_failure_bodies(status):
+    requests=[]
     def handle(request):
-        requests.append(request)
-        return httpx.Response(status, json={'secret': 'do-not-echo-provider-data'})
-
-    with httpx.Client(base_url='http://fixture.test', transport=httpx.MockTransport(handle)) as client:
-        with pytest.raises(AssertionError, match=f'expected 200, got {status}') as caught:
-            initialize_mcp(client, 'private-fixture-token')
-    assert len(requests) == 1
+        requests.append(request);return httpx.Response(status,json={'secret':'do-not-echo-provider-data'})
+    with httpx.Client(base_url='http://fixture.test',transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(AssertionError,match=f'expected 200, got {status}') as caught:
+            initialize_mcp(client,'private-fixture-token')
+    assert len(requests)==1
     assert 'private-fixture-token' not in str(caught.value)
     assert 'do-not-echo-provider-data' not in str(caught.value)
 
 
-def test_acceptance_helper_roundtrips_real_mcp_without_panel_credentials(team):
-    app, browsers = team
-    role = shared_role(app, browsers)
-    identity = profile(browsers['alice'], role)
-    token = must(credential(browsers['alice'], role, identity))['token']
-    client = browsers['alice'].client  # Bare TestClient, not the cookie/Space wrapper.
-    assert not client.cookies
-    initialize_mcp(client, token)
-    result = data(mcp_request(client, token, 'tools/call', {'name': 'get_profile', 'arguments': {}}))
-    assert result['id'] == identity['id']
-    catalog = required(mcp_request(client, token, 'tools/list'))['result']['tools']
-    assert any(tool['name'] == 'get_access_context' for tool in catalog)
+def test_helper_roundtrips_real_mcp_with_no_panel_credentials(team):
+    app,b=team;profile,created=credentials(b)
+    client=b['alice'].client;assert not client.cookies
+    initialize_mcp(client,created['token'])
+    identity=data(mcp_request(client,created['token'],'tools/call',{'name':'get_profile','arguments':{}}))
+    assert identity['id']==created['connection_id'] and identity['id']!=profile['id']
+    catalog=required(mcp_request(client,created['token'],'tools/list'))['result']['tools']
+    assert any(tool['name']=='get_access_context' for tool in catalog)
     assert not client.cookies
 
 
-@pytest.mark.parametrize('accept', ['*/*', 'application/json', 'text/event-stream'])
-def test_server_keeps_rejecting_incomplete_media_types(team, accept):
-    app, browsers = team
-    role = shared_role(app, browsers)
-    token = must(credential(browsers['alice'], role, profile(browsers['alice'], role)))['token']
-    response = browsers['alice'].client.post('/mcp', headers={
-        'Authorization': 'Bearer ' + token, 'Accept': accept,
-        'MCP-Protocol-Version': MCP_ACCEPTANCE_VERSION,
-    }, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
-    assert response.status_code == 406
-    assert response.json()['error']['code'] == -32600
+@pytest.mark.parametrize('accept',['*/*','application/json','text/event-stream'])
+def test_server_rejects_incomplete_media_types(team,accept):
+    app,b=team;_,created=credentials(b)
+    response=b['alice'].client.post('/mcp',headers={'Authorization':'Bearer '+created['token'],
+        'Accept':accept,'MCP-Protocol-Version':MCP_ACCEPTANCE_VERSION},
+        json={'jsonrpc':'2.0','id':1,'method':'tools/list'})
+    assert response.status_code==406 and response.json()['error']['code']==-32600
 
 
-def test_transport_fix_preserves_live_role_expansion_and_revocation(team):
-    app, browsers = team
-    role = shared_role(app, browsers)
-    identity = profile(browsers['alice'], role)
-    grant = must(credential(browsers['alice'], role, identity))
-    client, token = browsers['alice'].client, grant['token']
-    initialize_mcp(client, token)
-    with app.state.store.transaction():
-        app.state.store.db.execute('''INSERT INTO projects
-            (id,alias,alias_key,device_id,root,space_id,owner_user_id,created)
-            VALUES('fixture-new','fixture-new','fixture-new','device-team','/tmp/fixture-new','team','owner',?)''', (time.time(),))
-    role = must(update_role(browsers['owner'], role,
-        project_rules=[{'actions': ['read', 'write', 'execute'], 'all_projects': True}]))
-    context = data(mcp_request(client, token, 'tools/call', {'name': 'get_access_context', 'arguments': {}}))
-    assert {project['id'] for project in context['projects']} == {'project-team', 'fixture-new'}
-    assert all('execute' in project['actions'] for project in context['project_permissions'])
+def test_transport_preserves_explicit_live_profile_expansion_and_revocation(team):
+    app,b=team;profile,grant=credentials(b,live=True)
+    client,token=b['alice'].client,grant['token'];initialize_mcp(client,token)
+    CurrentModel(app.state.store).project('fixture-new',space='team',folder='folder-team',owner='owner',subpath='new')
+    policy={'project_rules':[{'actions':['read','write','execute'],'all_projects':True}]}
+    set_member(b['owner'],'alice',policy);update_profile(b['owner'],profile,policy)
+    context=data(mcp_request(client,token,'tools/call',{'name':'get_access_context','arguments':{}}))
+    assert {p['id'] for p in context['projects']}=={'project-team','fixture-new'}
+    assert set(context['scopes'])=={'read','write','execute'}
+    assert context['profile']['id']==profile['id'] and context['connection']['id']==grant['connection_id']
     app.state.store.execute("UPDATE memberships SET active=0 WHERE user_id='alice' AND space_id='team'")
-    response = mcp_request(client, token, 'tools/call', {'name': 'projects_list', 'arguments': {}})
-    assert response.status_code == 403
-    assert app.state.store.one('SELECT id FROM grants WHERE id=?', (grant['grant_id'],))['id'] == grant['grant_id']
+    response=mcp_request(client,token,'tools/call',{'name':'project_query','arguments':{'operation':'list'}})
+    assert response.status_code==403
+    assert app.state.store.one('SELECT id FROM grants WHERE id=?',(grant['connection_id'],))['id']==grant['connection_id']
 
 
-def test_mcp_credential_not_overridden_by_another_users_panel_session(team):
-    app, browsers = team
-    role = shared_role(app, browsers)
-    identity = profile(browsers['alice'], role)
-    token = must(credential(browsers['alice'], role, identity))['token']
-    result = data(mcp_request(browsers['bob'], token, 'tools/call', {'name': 'get_profile', 'arguments': {}}))
-    assert result['id'] == identity['id']
-    response = mcp_request(browsers['bob'], 'invalid-token', 'tools/list')
-    assert response.status_code == 401
+def test_mcp_credential_is_not_overridden_by_another_panel_account(team):
+    app,b=team;profile,created=credentials(b)
+    identity=data(mcp_request(b['bob'],created['token'],'tools/call',{'name':'get_profile','arguments':{}}))
+    assert identity['id']==created['connection_id'] and identity['id']!=profile['id']
+    assert mcp_request(b['bob'],'invalid-token','tools/list').status_code==401

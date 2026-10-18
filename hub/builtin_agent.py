@@ -34,7 +34,8 @@ def _marker(store):
         return None
     try:
         marker = json.loads(row["value"])
-        if not isinstance(marker, dict) or type(marker.get("version")) is not int or marker["version"] != 1:
+        if (not isinstance(marker,dict) or set(marker)!={'version','device_id','owner_user_id'}
+                or type(marker.get('version')) is not int or marker['version']!=1):
             raise ValueError
         for key in ("device_id", "owner_user_id"):
             if not isinstance(marker.get(key), str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", marker[key]):

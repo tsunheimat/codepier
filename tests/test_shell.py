@@ -47,7 +47,7 @@ def shell_agent(tmp_path):
 
 
 def shell_request(root, command="printf ok", **overrides):
-    return {"id": uuid.uuid4().hex, "tool": "shell_exec",
+    return {"id": uuid.uuid4().hex, "tool": "shell_exec","tool_contract_version":1,
             "project": {"root": str(root), "alias": "fixture", "mode": "write", "allow_tasks": True},
             "args": {"project": "fixture", "command": command, "idempotency_key": uuid.uuid4().hex, **overrides}}
 

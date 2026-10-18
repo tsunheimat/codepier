@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import contextlib
 import json
 import os
@@ -301,9 +302,20 @@ class Runtime:
         return result
 
     @iam.read_decision
-    def operation_row(self,identifier,principal,*,status_only=True):
+    def operation_row(self,identifier,principal,*,status_only=False):
         principal=refresh_principal(self.store,principal)
-        op=self.store.one('SELECT * FROM operations WHERE id=?',(identifier,))
+        # Waiting and disclosure checks need the persisted authorization
+        # envelope, not large command output, result or encrypted payloads.
+        # All the same current identity/resource checks run for both views.
+        columns=('id,device_id,project_id,actor,grant_id,tool,args_summary,state,created,updated,'
+            'space_id,owner_user_id,visibility,route_context,authorization_context,output_seq,'
+            'attempts,cancel_requested,accepted_at') if status_only else '*'
+        op=self.store.one('SELECT '+columns+' FROM operations WHERE id=?',(identifier,))
+        if op and principal.space_id is None and not principal.grant_id:
+            # Global panel lists have no mutable active workspace. The stored
+            # receipt selects its workspace, then normal live membership and
+            # private-owner/connection checks still decide whether it is visible.
+            principal=iam.live_principal(self.store,replace(principal,space_id=op['space_id']))
         if not op or op.get('space_id')!=principal.space_id:
             raise DevError('NOT_FOUND','Operation not found',404)
         if principal.grant_id:

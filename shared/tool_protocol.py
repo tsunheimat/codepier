@@ -1,4 +1,4 @@
-"""Additive Hub/Agent tool-contract negotiation, independent of transport crypto.
+"""Explicit current Hub/Runner tool contracts, independent of transport crypto.
 
 A catalog digest identifies a catalog, not semantic compatibility or authenticity.
 Increment an individual wire epoch and its minimum release for a breaking tool
@@ -15,8 +15,7 @@ from shared.util import DevError, VERSION
 CONTRACT_PROTOCOL = 1
 # Explicit overrides live here when a tool's *meaning*, not just optional schema,
 # changes. Existing backend contracts default to epoch 1 and the original release floor.
-# Epoch 2 prevents legacy peers (which assume epoch 1 for every name)
-# from accepting primitives that they do not implement.
+# Tool names have explicit wire epochs; no epoch is inferred from absent metadata.
 TOOL_WIRE_VERSIONS: dict[str, int] = {name: 2 for name in ("read", "write", "edit", "exec")}
 TOOL_WIRE_VERSIONS.update(routed_exec=2, routed_job_control=2)
 TOOL_MINIMUM_RELEASES: dict[str, tuple[int, int, int]] = {}
@@ -47,17 +46,15 @@ def advertisement(catalog_sha256):
 
 @dataclass(frozen=True)
 class PeerContract:
-    release: tuple[int, int, int] | None
-    legacy: bool
-    catalog_sha256: str | None
-    tools: dict[str, int] | None
+    release: tuple[int, int, int]
+    catalog_sha256: str
+    tools: dict[str, int]
 
     def public(self, local_catalog):
-        return {'version': '.'.join(map(str, self.release)) if self.release else None,
-                'contract_protocol': 0 if self.legacy else CONTRACT_PROTOCOL,
+        return {'version': '.'.join(map(str, self.release)),
+                'contract_protocol': CONTRACT_PROTOCOL,
                 'catalog_sha256': self.catalog_sha256,
-                'catalog_matches': self.catalog_sha256 == local_catalog if self.catalog_sha256 else None,
-                'legacy_compatibility': self.legacy,
+                'catalog_matches': self.catalog_sha256 == local_catalog,
                 'note': 'Catalog mismatch can be additive; admission checks the requested tool epoch and minimum release. Receipts remain recoverable.'}
 
 
@@ -65,9 +62,7 @@ def negotiate(frame):
     if not isinstance(frame, dict):
         raise ValueError('Invalid peer protocol frame')
     release = semantic_version(frame.get('version'))
-    if 'contract_protocol' not in frame:
-        return PeerContract(release, True, None, None)
-    if type(frame['contract_protocol']) is not int or frame['contract_protocol'] != CONTRACT_PROTOCOL:
+    if type(frame.get('contract_protocol')) is not int or frame['contract_protocol'] != CONTRACT_PROTOCOL:
         raise ValueError('Unsupported tool contract protocol')
     catalog, tools = frame.get('catalog_sha256'), frame.get('tool_contracts')
     if (release is None or release < MINIMUM_RELEASE or not isinstance(catalog, str)
@@ -77,22 +72,17 @@ def negotiate(frame):
     if any(not isinstance(name, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,99}', name)
            or type(epoch) is not int or not 1 <= epoch <= 65535 for name, epoch in tools.items()):
         raise ValueError('Invalid tool contract entry')
-    return PeerContract(release, False, catalog, dict(tools))
+    return PeerContract(release,catalog,dict(tools))
 
 
 def require_compatible(peer, name):
-    if peer is None:  # Existing in-process adapters without a transport handshake.
-        return
     required = TOOL_MINIMUM_RELEASES.get(name, MINIMUM_RELEASE)
-    release_ok = peer.release is None and peer.legacy and required == MINIMUM_RELEASE or peer.release is not None and peer.release >= required
-    epoch_ok = wire_version(name) == (1 if peer.legacy else peer.tools.get(name))
-    if not release_ok or not epoch_ok:
+    if (not isinstance(peer,PeerContract) or peer.release<required
+            or peer.tools.get(name)!=wire_version(name)):
         raise DevError('AGENT_UPGRADE_REQUIRED', 'Hub/Agent 工具语义版本不兼容；请核对版本并更新。未开始新操作，旧操作仍可按原编号查询。', 409)
 
 
 def validate_call_epoch(name, epoch):
-    if epoch is None:
-        epoch = 1  # Legacy delivery-v2 frames are frozen at wire epoch 1.
     if type(epoch) is not int or epoch != wire_version(name):
         raise DevError('TOOL_PROTOCOL_MISMATCH', '收到的工具语义版本与本机实现不一致；未执行工具，请更新 Hub/Agent', 409)
 

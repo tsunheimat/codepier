@@ -63,9 +63,9 @@ def test_first_sso_login_becomes_instance_admin_then_the_window_closes(tmp_path,
         assert not store.one('SELECT 1 AS ok FROM iam_users WHERE instance_admin=1')
         admin,admin_secret=session_of(client,sso_login(client,fake,'external-alice'))
         assert admin['instance_admin'] and not admin['local_login']
-        levels={s['id']:s['level'] for s in admin['spaces']}
-        assert 'legacy' not in levels and len(admin['spaces']) == 1
-        assert admin['spaces'][0]['kind'] == 'personal' and admin['spaces'][0]['level'] == 'owner'
+        management={s['id']:s['management'] for s in admin['spaces']}
+        assert 'legacy' not in management and len(admin['spaces']) == 1
+        assert admin['spaces'][0]['kind'] == 'personal' and 'workspace' in admin['spaces'][0]['management']
         assert not store.one("SELECT 1 FROM spaces WHERE id='legacy'")
         assert client.get('/api/iam/users',headers={'Cookie':'rd_session='+admin_secret}).status_code==200
         second,second_secret=session_of(client,sso_login(client,fake,'external-bob'))
@@ -86,7 +86,8 @@ def test_builtin_device_uses_committed_first_sso_personal_space(tmp_path,monkeyp
         admin,_=session_of(client,sso_login(client,fake,'builtin-first-admin'))
         marker=ensure_identity(store)
         assert marker['owner_user_id']==admin['id']
-        assert marker['space_id']==admin['default_space_id']
+        assert 'space_id' not in marker and 'default_space_id' not in admin
+        assert not store.all('SELECT device_id FROM space_devices WHERE device_id=?',(marker['device_id'],))
         assert BuiltinAgent(store,app.state.runtime,app.state.config)._snapshot()['device_id']==marker['device_id']
         sso_login(client,fake,'builtin-second-member')
         assert ensure_identity(store)==marker
@@ -206,8 +207,9 @@ def test_local_recovery_administrator_can_be_added_after_sso_bootstrap(tmp_path,
         monkeypatch.setenv('CODEPIER_ADMIN_PASSWORD','recovery-password-123')
         monkeypatch.setattr(sys,'argv',['hub','--data-dir',str(tmp_path/'hub'),'init','--username','recovery'])
         cli.main()
-        row=app.state.store.one("SELECT s.instance_admin,s.local_login,m.level FROM users u JOIN iam_users s ON s.user_id=u.id JOIN memberships m ON m.user_id=u.id AND m.space_id=s.personal_space_id JOIN spaces p ON p.id=m.space_id AND p.kind='personal' WHERE u.username='recovery'")
-        assert row=={'instance_admin':1,'local_login':1,'level':'owner'}
+        row=app.state.store.one("SELECT s.instance_admin,s.local_login,m.policy FROM users u JOIN iam_users s ON s.user_id=u.id JOIN memberships m ON m.user_id=u.id AND m.space_id=s.personal_space_id JOIN spaces p ON p.id=m.space_id AND p.kind='personal' WHERE u.username='recovery'")
+        assert row['instance_admin']==1 and row['local_login']==1
+        assert 'workspace' in __import__('json').loads(row['policy'])['manage']
         client.cookies.clear()
         login=client.post('/api/login',json={'username':'recovery','password':'recovery-password-123'})
         assert login.status_code==200,login.text

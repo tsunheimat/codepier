@@ -1,4 +1,4 @@
-"""Disposable scoped receipts for operation and dashboard contracts."""
+"""Disposable current-workspace receipts; no in-memory permission shortcuts."""
 import asyncio
 import json
 import time
@@ -7,51 +7,62 @@ import uuid
 import pytest
 from jsonschema import Draft202012Validator
 
-from hub.runtime import Principal, Runtime
+from hub import iam
+from hub.runtime import Runtime
 from hub.store import Store
 from shared.contracts import OUTPUT_SCHEMAS
+from tests.current_model import CurrentModel
 
 
 @pytest.fixture
 def env(tmp_path):
-    store = Store(tmp_path / "hub")
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store,'u','fixture')
-    seed_owner(store,'viewer','other')
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('d','fixture','fixture',?,'legacy','u')", (time.time(),))
-    for id in ("p", "p2"):
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,'d',?,1,?,'legacy','u')",
-                      (id, id.upper(), id, str(tmp_path / id), time.time()))
-    from tests.legacy_iam_fixture import seed_grant
-    seed_grant(store,'g')
-    seed_grant(store,'other')
-    seed_grant(store,'g2')
-    runtime = Runtime(store)
-    principal = Principal("mcp:g:fixture", "u", {"read", "write", "execute"}, ["p", "p2"], "g", space_id='legacy')
-    yield runtime, principal
-    store.close()
+    store=Store(tmp_path/'hub');model=CurrentModel(store)
+    model.user('u',username='fixture')
+    model.user('viewer',username='other')
+    model.workspace('operation-space',owner='u')
+    model.device('d',owner='u',name='Fixture')
+    model.bind_device('operation-space','d')
+    for identifier in ('p','p2'):
+        path=tmp_path/identifier;path.mkdir()
+        folder=model.folder('folder-'+identifier,space='operation-space',device='d',path=path)
+        model.project(identifier,space='operation-space',folder=folder,owner='u',alias=identifier.upper())
+    policy={'project_rules':[{'projects':['p','p2'],'actions':['read','write','execute']}]}
+    profile=model.profile(space='operation-space',creator='u',policy=policy)
+    _,principal=model.connection(user='u',space='operation-space',profile=profile,live=True)
+    runtime=Runtime(store);runtime.wait_seconds=0
+    try:yield runtime,principal
+    finally:store.close()
+
+
+def restrict(env, *, projects=('p','p2'), actions=('read',)):
+    """Explicit policy edit, not a rewrite inferred from model arguments."""
+    runtime,principal=env
+    policy={'project_rules':[{'projects':list(projects),'actions':list(actions)}]} if projects else {}
+    runtime.store.execute('UPDATE access_profiles SET policy=?,version=version+1 WHERE id=?',
+        (json.dumps(policy),principal.profile_id))
+    return runtime,iam.live_principal(runtime.store,principal)
+
+
+def other_connection(env):
+    runtime,original=env;model=CurrentModel(runtime.store)
+    profile=runtime.store.one('SELECT * FROM access_profiles WHERE id=?',(original.profile_id,))
+    _,principal=model.connection(user=original.user_id,space=original.space_id,profile=profile,live=True)
+    return runtime,principal
 
 
 def call(env, name, **args):
-    # Persist the fixture's intended credential policy: runtime now deliberately
-    # re-reads grants instead of trusting a modified in-memory Principal.
-    store,principal=env[0].store,env[1]
-    original=store.one('SELECT scopes,projects FROM grants WHERE id=?',(principal.grant_id,)) if principal.grant_id else None
-    if original:store.execute('UPDATE grants SET scopes=?,projects=? WHERE id=?',(json.dumps(sorted(principal.scopes)),json.dumps(principal.projects),principal.grant_id))
-    try:
-        result = asyncio.run(env[0].invoke(name, args, principal))
-        Draft202012Validator(OUTPUT_SCHEMAS[name]).validate(result)
-        return result
-    finally:
-        if original:store.execute('UPDATE grants SET scopes=?,projects=? WHERE id=?',(original['scopes'],original['projects'],principal.grant_id))
+    result=asyncio.run(env[0].invoke(name,args,env[1]))
+    Draft202012Validator(OUTPUT_SCHEMAS[name]).validate(result)
+    return result
 
 
-def operation(env, *, project="p", grant="g", created=None, exit_code=0, output="passed", finish=True, **data):
-    runtime, principal = env
-    identifier = uuid.uuid4().hex
-    now = time.time() if created is None else created
-    runtime.store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,state,created,updated,space_id,owner_user_id) VALUES (?,'d',?,?,?,'tasks_run','{}','fixture','running',?,?,'legacy',?)",
-                          (identifier, project, principal.actor, grant, now, now, principal.user_id))
-    if finish:
-        runtime.complete({"id": identifier}, {"ok": True, "data": {"exit_code": exit_code, "output": output, **data}})
+def operation(env, *, project='p', grant=None, created=None, exit_code=0, output='passed', finish=True, **data):
+    runtime,principal=env;identifier=uuid.uuid4().hex
+    now=time.time() if created is None else created
+    runtime.store.execute('''INSERT INTO operations
+        (id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,state,created,updated,space_id,owner_user_id)
+        VALUES(?,'d',?,?,?,'tasks_run','{}','fixture','running',?,?,?,?)''',
+        (identifier,project,principal.actor,principal.grant_id if grant is None else grant,
+         now,now,principal.space_id,principal.user_id))
+    if finish:runtime.complete({'id':identifier},{'ok':True,'data':{'exit_code':exit_code,'output':output,**data}})
     return identifier
