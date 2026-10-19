@@ -2324,7 +2324,13 @@ function bindAudit() {
   );
 }
 async function operationDetail(id) {
+  const login = S.session,
+    page = location.hash,
+    intent = S.modalIntent || 0;
   const r = await api('/api/operations/' + id);
+  // Observation never acquires permission to reopen a dismissed reader or
+  // replace a newer editor while the original receipt request was in flight.
+  if (login !== S.session || page !== location.hash || intent !== (S.modalIntent || 0)) return;
   modal(
     '操作详情 · ' + r.tool,
     `<dl class="kv"><dt>操作编号</dt><dd><code>${esc(r.id)}</code></dd><dt>状态</dt><dd>${badge(r.state)}</dd><dt>调用者</dt><dd>${esc(r.actor)}</dd><dt>投递次数</dt><dd>${r.attempts || 0}（重投不会创建新操作）</dd><dt>首次执行期限</dt><dd>${esc(timeText(r.deadline))}</dd><dt>恢复状态</dt><dd>${esc(r.transport_error || '无网络异常')}${r.cancel_requested ? ' · 已保存取消请求' : ''}</dd><dt>开始 / 更新</dt><dd>${esc(timeText(r.created))}<br>${esc(timeText(r.updated))}</dd></dl>${r.error ? notice(esc(r.error)) : ''}<div class="audit-detail-title">参数摘要</div><div class="code-box"><pre>${esc(json(r.args_summary))}</pre></div>${r.result?.data?.diff !== undefined ? `<div class="audit-detail-title">文件差异</div>${diffHTML(r.result.data)}` : ''}${r.output ? `<div class="audit-detail-title">任务输出（保留尾部）</div><div class="code-box"><pre>${esc(r.output)}</pre></div>` : ''}<div class="audit-detail-title">实际返回结果</div><div class="code-box"><pre>${esc(json(r.result))}</pre></div>`,

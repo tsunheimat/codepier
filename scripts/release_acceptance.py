@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.check_release import check_archive, check_source
 from scripts.regression_plan import fingerprint, merge_summaries
+from scripts.regression_platform import read_native_proof
 
 
 def write_json(path, value):
@@ -109,7 +110,7 @@ def finish(root, archive, proof):
     return record
 
 
-def verify_reports(reports, commit):
+def verify_reports(reports, commit, *, native_windows=None):
     if len(reports) != 4:
         raise ValueError('All four public-archive shards are required')
     summaries, proofs = [], []
@@ -128,13 +129,15 @@ def verify_reports(reports, commit):
             raise ValueError('Regression did not use the verified public source')
         summaries.append(summary)
         proofs.append(proof)
-    merge_summaries(summaries)
+    merged = merge_summaries(summaries, native_windows=native_windows)
     first = proofs[0]
     if any(proof != first for proof in proofs[1:]):
         raise ValueError('Shards tested different public archives')
     return {'verified': True, 'commit': commit, 'archive_sha256': first['archive_sha256'],
             'source_inventory_sha256': first['source_inventory_sha256'],
-            'public_files': len(first['files']), 'shards': 4}
+            'public_files': len(first['files']), 'shards': 4,
+            'native_windows_verified': merged['native_windows_verified'],
+            'counts': merged['counts'], 'platform': merged['platform']}
 
 
 def main():
@@ -151,6 +154,7 @@ def main():
     command = commands.add_parser('verify')
     command.add_argument('--commit', required=True)
     command.add_argument('--output', type=Path, required=True)
+    command.add_argument('--native-windows', type=Path)
     command.add_argument('reports', nargs='+', type=Path)
     args = parser.parse_args()
     if args.command == 'prepare':
@@ -158,7 +162,7 @@ def main():
     elif args.command == 'finish':
         result = finish(args.root, args.archive, args.proof)
     else:
-        result = verify_reports(args.reports, args.commit)
+        result = verify_reports(args.reports, args.commit, native_windows=read_native_proof(args.native_windows))
         write_json(args.output, result)
     print(json.dumps({key: value for key, value in result.items() if key != 'files'}, sort_keys=True))
 

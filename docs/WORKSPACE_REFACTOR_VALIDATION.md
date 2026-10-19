@@ -33,6 +33,36 @@ commit, and its retained JSON/JUnit/coverage receipts, are the status authority.
 This document does not encode a test total or describe an in-progress run as
 passed. Historical checkpoint totals in PR comments are not cumulative coverage.
 
+## Native-platform evidence is not a skipped-test pass
+
+All test modules stay in the complete collection. The ten cases in
+`tests/test_execution_windows.py` require the native Windows process/console API.
+On Linux/macOS only their exact setup guard, exact reviewed node ID and clean
+teardown can produce `not_applicable`, never `passed`. Missing runtime libraries,
+other skips, xfails, failed teardown, missing phases or unknown native cases still
+fail the verifier. A local all-module POSIX run with these cases is labelled
+`platform`, not complete cross-platform acceptance.
+
+The main Windows job separately runs all ten real cases through
+`scripts/check_native_execution.py`; it refuses non-Windows execution, skipped or
+missing cases and a changed source inventory. Both Linux and macOS aggregate jobs
+require this exact Windows evidence for the identical source fingerprint before
+complete verification. The native evidence is counted separately rather than
+silently added to the POSIX pass count. The code-path tests for these rules also
+reject missing/foreign/partial native evidence and prove that a normal skip cannot
+be renamed into a pass by setting a report's `verified` field.
+
+The dedicated native command, from the same committed source on Windows, is:
+
+```powershell
+.venv/Scripts/python scripts/check_native_execution.py --output dist/windows-native
+```
+
+Complete aggregation supplies `--native-windows <native-proof.json>` to both
+`scripts/merge_regression.py` and `scripts/release_acceptance.py verify`. The source
+archive and before/after inventories must still match; the native proof does not
+replace any Linux/macOS test, browser case, coverage measurement or archive gate.
+
 ## Reproduce from an isolated checkout
 
 ```sh

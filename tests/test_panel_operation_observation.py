@@ -70,3 +70,36 @@ def test_observation_deadline_preserves_recovery_identity_and_uncertainty():
     assert result['error']['uncertain'] is True
     assert result['error']['code']=='OPERATION_OBSERVATION_INCOMPLETE'
     assert result['calls']==result['pauses']==[]
+
+
+@pytest.mark.parametrize('change',['unchanged','closed','new_editor','navigation','login'])
+def test_slow_original_receipt_cannot_reopen_or_replace_a_changed_view(change):
+    script=r"""import fs from 'node:fs';import vm from 'node:vm';
+const source=fs.readFileSync('web/app.js','utf8');
+const start=source.indexOf('async function operationDetail('),end=source.indexOf('\nasync function consentModal(',start);
+if(start<0||end<start)throw Error('Receipt reader source boundary missing');
+const calls=[],shown=[];let resolve;
+const env={S:{session:{user_id:'fixture'},modalIntent:1},location:{hash:'#spaces/fixture/vps'},
+ api:path=>{calls.push(path);return new Promise(done=>resolve=done);},
+ modal:(...args)=>shown.push(args),$:()=>({}),
+ esc:value=>String(value),badge:value=>String(value),timeText:value=>String(value),
+ json:value=>JSON.stringify(value),icon:()=>'',notice:value=>value};
+vm.runInNewContext(source.slice(start,end)+'\nthis.reader=operationDetail;',env);
+const pending=env.reader('original-operation');
+if(CHANGE==='closed'||CHANGE==='new_editor')env.S.modalIntent++;
+if(CHANGE==='navigation')env.location.hash='#spaces/another/profiles';
+if(CHANGE==='login')env.S.session={user_id:'another'};
+resolve({id:'original-operation',tool:'exec',actor:'private-fixture',state:'failed',
+ result:{ok:false,data:{exit_code:7}},output:'ORIGINAL_PRIVATE_RESULT'});
+await pending;console.log(JSON.stringify({calls,shown}));
+"""
+    completed=subprocess.run(['node','--input-type=module','-e',script.replace('CHANGE',json.dumps(change))],
+        cwd=ROOT,text=True,capture_output=True,timeout=15)
+    assert completed.returncode==0,completed.stdout+completed.stderr
+    result=json.loads(completed.stdout)
+    assert result['calls']==['/api/operations/original-operation']
+    if change=='unchanged':
+        assert len(result['shown'])==1 and result['shown'][0][0]=='操作详情 · exec'
+        assert 'ORIGINAL_PRIVATE_RESULT' in result['shown'][0][1]
+    else:
+        assert result['shown']==[] and 'ORIGINAL_PRIVATE_RESULT' not in completed.stdout

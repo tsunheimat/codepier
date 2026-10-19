@@ -339,8 +339,12 @@ class SessionManager:
             script = (
                 f"eval {shlex.quote(args['command'])} </dev/null >\"$__cp_dir/{identifier}.out\" 2>\"$__cp_dir/{identifier}.err\"\n"
                 "__cp_status=$?\n"
-                f'__cp_out=$(wc -c <"$__cp_dir/{identifier}.out"); __cp_err=$(wc -c <"$__cp_dir/{identifier}.err")\n'
-                f"printf 'CP1 {identifier} %s %s %s\\n' \"$__cp_status\" \"$__cp_out\" \"$__cp_err\"\n"
+                f'__cp_out=$(wc -c <"$__cp_dir/{identifier}.out") && __cp_out=$(printf "%d" "$__cp_out") || exit 70\n'
+                f'__cp_err=$(wc -c <"$__cp_dir/{identifier}.err") && __cp_err=$(printf "%d" "$__cp_err") || exit 70\n'
+                # wc on supported POSIX platforms may pad its numeric output.
+                # Emit canonical decimal fields; never relax the receive parser
+                # or reinterpret user stdout as a control message.
+                f"printf 'CP1 {identifier} %d %d %d\\n' \"$__cp_status\" \"$__cp_out\" \"$__cp_err\"\n"
                 f'__cp_n=$__cp_out; [ "$__cp_n" -le {OUTPUT_LIMIT} ] || __cp_n={OUTPUT_LIMIT}; head -c "$__cp_n" "$__cp_dir/{identifier}.out"\n'
                 f'__cp_n=$__cp_err; [ "$__cp_n" -le {OUTPUT_LIMIT} ] || __cp_n={OUTPUT_LIMIT}; head -c "$__cp_n" "$__cp_dir/{identifier}.err"\n'
                 f'rm -f -- "$__cp_dir/{identifier}.out" "$__cp_dir/{identifier}.err"\n')

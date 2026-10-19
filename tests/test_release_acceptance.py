@@ -112,7 +112,7 @@ def reports(tmp_path):
     for i in range(4):
         directory = tmp_path / str(i)
         directory.mkdir()
-        summary = {'verified': True, 'shard': {'index': i, 'count': 4}, 'full_collection': nodes,
+        summary = {'verified': True, 'platform': 'linux', 'shard': {'index': i, 'count': 4}, 'full_collection': nodes,
                    'collection_sha256': fingerprint(nodes), 'source_inventory_sha256': fingerprint(source),
                    'outcomes': {nodes[i]: 'passed'}}
         path = directory / 'summary.json'
@@ -158,11 +158,35 @@ def test_aggregate_rejects_missing_stale_or_mixed_evidence(tmp_path, change):
         acceptance.verify_reports(paths, commit)
 
 
+def test_windows_style_checkout_keeps_exact_source_and_lockfile_bytes(tmp_path):
+    import subprocess
+    root=tmp_path/'checkout';root.mkdir()
+    attributes=Path(__file__).resolve().parents[1]/'.gitattributes'
+    (root/'.gitattributes').write_bytes(attributes.read_bytes())
+    originals={'requirements-dev.txt':b'package==1\n--hash=sha256:fixture\n',
+        'hub/schema.sql':b'CREATE TABLE fixture(id TEXT);\n',
+        'pyproject.toml':b'[fixture]\nvalue = true\n',
+        'Dockerfile':b'FROM scratch\n',
+        'fixture.png':b'\x00binary\r\nimage\n'}
+    # Actual Git conversion under the Windows checkout setting, not a source
+    # text assertion or normalization while computing the evidence digest.
+    for name,value in originals.items():
+        path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(value)
+    def git(*args):
+        return subprocess.run(['git',*args],cwd=root,check=True,capture_output=True,timeout=30)
+    git('init','-q');git('config','core.autocrlf','true');git('add','.')
+    git('-c','user.name=Fixture','-c','user.email=fixture@invalid','-c','commit.gpgsign=false','commit','-qm','fixture')
+    for name in originals:(root/name).unlink()
+    git('checkout','--',*originals)
+    assert {name:(root/name).read_bytes() for name in originals}==originals
+
+
 def test_workflow_preserves_matrix_and_runs_extracted_source():
     workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/ci.yml').read_text()
     for fragment in ['os: [ubuntu-24.04, macos-15]', 'shard: [0, 1, 2, 3]',
                      'windows-core:', 'oidc-authentik:', 'release_acceptance.py prepare',
                      'release_acceptance.py finish', 'release_acceptance.py verify',
                      'cd "$ACCEPTANCE"', 'MCP_COMPAT_PYTHON:', '--coverage',
-                     'dist/ci-results/archive-proof.json']:
+                     'dist/ci-results/archive-proof.json', 'check_native_execution.py',
+                     'needs: [verify, windows-core]', '--native-windows .work/native-windows/native-proof.json']:
         assert fragment in workflow

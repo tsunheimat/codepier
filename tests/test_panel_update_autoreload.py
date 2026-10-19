@@ -57,7 +57,7 @@ def test_no_early_reload_and_monitor_survives_navigation_and_service_recovery(up
         assert '_codepier_updated=' not in page.url
         page.evaluate("navigate('resources/devices')")
         expect(page.locator('#page h1')).to_have_text('资源库')
-        expect(page.locator('[data-nav="resources/devices"]')).to_have_attribute('aria-pressed','true')
+        expect(page.get_by_role('navigation',name='资源类别').locator('[data-nav="resources/devices"]')).to_have_attribute('aria-pressed','true')
         # A successful HTTP response with unavailable updater is not an update failure.
         state.update(enabled=False, code='UPDATER_UNAVAILABLE')
         page.wait_for_timeout(2400)
@@ -65,7 +65,7 @@ def test_no_early_reload_and_monitor_survives_navigation_and_service_recovery(up
         complete(state)
         expect(page).to_have_url(re.compile(r'_codepier_updated=.*#resources/devices$'), timeout=12000)
         expect(page.locator('#page h1')).to_have_text('资源库')
-        expect(page.locator('[data-nav="resources/devices"]')).to_have_attribute('aria-pressed','true')
+        expect(page.get_by_role('navigation',name='资源类别').locator('[data-nav="resources/devices"]')).to_have_attribute('aria-pressed','true')
         assert not calls and not errors, errors
     finally:
         page.close()
@@ -129,7 +129,12 @@ def test_already_current_document_does_not_reload_for_historic_success(update_br
 
 def test_auto_refresh_keeps_an_unsaved_workspace_profile_until_explicit_discard(update_browser,stack):
     browser,_=update_browser;state=ready()
+    # Start from an actual observed update in flight. An idle settings visit
+    # does not grant authority to monitor/reload every future unrelated view.
+    state.update(busy=True,request_found=True,operation={'id':'f'*32,'kind':'apply',
+        'state':'running','target_version':'1.11.0','message':'正在构建','events':[]})
     page,calls,errors=open_settings(browser,stack,state)
+    expect(page.locator('#panel-update-state')).to_contain_text('正在构建')
     path='/api/spaces/'+stack.space_id+'/profiles'
     before=stack.must(stack.client.get(path))['profiles']
     try:

@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 
+from scripts.regression_platform import WINDOWS_NODES, not_applicable, validate_native_windows
+
 
 def fingerprint(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -65,7 +67,7 @@ def pytest_command(prefix, directory, selectors, *, coverage=False):
     return command + list(selectors)
 
 
-def classify_events(expected, records):
+def classify_events(expected, records, *, platform=None):
     outcomes, duplicate_phases = {}, []
     for nodeid in expected:
         events = records.get(nodeid, [])
@@ -74,6 +76,8 @@ def classify_events(expected, records):
             duplicate_phases.append(nodeid)
         if any(event["outcome"] == "failed" for event in events):
             state = "failed"
+        elif not_applicable(nodeid, events, platform):
+            state = 'not_applicable'
         elif any(event["outcome"] == "skipped" or event.get("xfail") for event in events):
             state = "skipped"
         elif all(any(event["when"] == phase and event["outcome"] == "passed" for event in events)
@@ -85,7 +89,7 @@ def classify_events(expected, records):
     return outcomes, duplicate_phases
 
 
-def merge_summaries(summaries):
+def merge_summaries(summaries, *, native_windows=None):
     """Reject missing/duplicate shards, stale sources, omissions and extra tests."""
     if not summaries:
         raise ValueError("No shard reports supplied")
@@ -93,12 +97,15 @@ def merge_summaries(summaries):
     count = first["shard"]["count"]
     if len(summaries) != count or {s["shard"]["index"] for s in summaries} != set(range(count)):
         raise ValueError("Missing or duplicate shard reports")
+    platform = first.get('platform')
+    if platform not in {'linux', 'darwin', 'win32'}:
+        raise ValueError('Explicit regression platform is required')
     expected = first["full_collection"]
     if len(expected) != len(set(expected)) or not expected:
         raise ValueError("Invalid full collection")
     outcomes: dict[str, str] = {}
     for summary in summaries:
-        if (summary["shard"]["count"] != count or summary["full_collection"] != expected or
+        if (summary.get('platform') != platform or summary["shard"]["count"] != count or summary["full_collection"] != expected or
                 summary["collection_sha256"] != fingerprint(expected) or
                 summary["source_inventory_sha256"] != first["source_inventory_sha256"]):
             raise ValueError("Shard source or collection fingerprints differ")
@@ -109,9 +116,21 @@ def merge_summaries(summaries):
         if set(outcomes) & summary["outcomes"].keys():
             raise ValueError("A test was executed in more than one shard")
         outcomes.update(summary["outcomes"])
-    if set(outcomes) != set(expected) or any(value != "passed" for value in outcomes.values()):
+    deferred = {node for node, state in outcomes.items() if state == 'not_applicable'}
+    native_cases = set(expected) & WINDOWS_NODES
+    if (set(outcomes) != set(expected) or any(value not in {'passed', 'not_applicable'} for value in outcomes.values())
+            or deferred and (platform not in {'linux', 'darwin'} or deferred != WINDOWS_NODES)
+            or platform in {'linux', 'darwin'} and native_cases and
+                (native_cases != WINDOWS_NODES or deferred != WINDOWS_NODES)):
         raise ValueError("Merged test outcomes are missing, unexpected or not passing")
-    return {"verified": True, "scope": "complete", "shards": count, "collected": len(expected),
-            "counts": {"passed": len(expected), "failed": 0, "skipped": 0, "missing": 0},
+    if deferred:
+        # A Linux/macOS skip is not a Windows pass. The full proof needs that
+        # actual platform's exact cases and identical source inventory too.
+        validate_native_windows(native_windows, first['source_inventory_sha256'], deferred)
+    return {"verified": True, "scope": "complete", "platform": platform, "shards": count, "collected": len(expected),
+            "counts": {"passed": len(expected)-len(deferred), "not_applicable": len(deferred),
+                       "failed": 0, "skipped": 0, "missing": 0},
+            "native_windows_verified": bool(deferred),
+            "native_windows_tests": len(deferred),
             "collection_sha256": fingerprint(expected),
             "source_inventory_sha256": first["source_inventory_sha256"]}

@@ -38,6 +38,19 @@ jobs:
           $CoreTests = .venv/Scripts/python -c "from tests.classification import WINDOWS_CORE; print('\n'.join('tests/' + name for name in sorted(WINDOWS_CORE)))"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .venv/Scripts/python -m pytest -q @CoreTests -m windows_core --strict-markers --junitxml=dist/windows/core.xml --tb=short
+      - name: All native Windows Session cases, no skips or substituted platform
+        shell: pwsh
+        run: .venv/Scripts/python scripts/check_native_execution.py --output dist/windows-native
+      - name: Retain same-source native execution proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-windows-${{ github.run_id }}
+          path: |
+            dist/windows-native/native-proof.json
+            dist/windows-native/native-sessions.xml
+          if-no-files-found: error
+          retention-days: 14
       - name: Real PowerShell argument and error behavior
         shell: pwsh
         run: .venv/Scripts/python scripts/check_windows_bootstrap.py --output dist/windows/bootstrap.json
@@ -196,7 +209,7 @@ jobs:
 
   complete:
     name: Complete evidence ${{ matrix.os }}
-    needs: verify
+    needs: [verify, windows-core]
     if: always() && !cancelled()
     strategy:
       fail-fast: false
@@ -222,13 +235,17 @@ jobs:
           pattern: regression-${{ matrix.os }}-*
           path: .work/shards
           merge-multiple: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-windows-${{ github.run_id }}
+          path: .work/native-windows
       - name: Require all shards, exactly-once tests, matching sources and coverage
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
           mapfile -t REPORTS < <(find .work/shards -name summary.json -type f | sort)
-          .venv/bin/python scripts/merge_regression.py "${REPORTS[@]}" --coverage --output dist/complete/summary.json
-          .venv/bin/python scripts/release_acceptance.py verify --commit "$GITHUB_SHA" --output dist/complete/archive-proof.json "${REPORTS[@]}"
+          .venv/bin/python scripts/merge_regression.py "${REPORTS[@]}" --coverage --native-windows .work/native-windows/native-proof.json --output dist/complete/summary.json
+          .venv/bin/python scripts/release_acceptance.py verify --commit "$GITHUB_SHA" --native-windows .work/native-windows/native-proof.json --output dist/complete/archive-proof.json "${REPORTS[@]}"
       - name: Changed-statement coverage observation (no legacy global threshold)
         env:
           DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

@@ -81,7 +81,7 @@ async def test_persistent_commands_keep_state_and_frame_arbitrary_output(tmp_pat
         assert result['state'] == 'active'
         first = await manager.execute('b'*32, project, args('exec', session_id=sid,
             command="cd sub && export HELLO='hello world'; printf 'CP1 fake 0 0 0\\n'; printf 'oops' >&2"))
-        assert first['stdout'] == 'CP1 fake 0 0 0\n' and first['stderr'] == 'oops'
+        assert first.get('stdout') == 'CP1 fake 0 0 0\n' and first.get('stderr') == 'oops', first
         second = await manager.execute('c'*32, project, args('exec', session_id=sid, command='printf "%s\\n%s" "$HELLO" "$PWD"'))
         assert second['exit_code'] == 0
         assert second['stdout'] == 'hello world\n'+str(tmp_path/'sub')
@@ -91,6 +91,30 @@ async def test_persistent_commands_keep_state_and_frame_arbitrary_output(tmp_pat
         assert fourth['stdout'] == 'still-alive'
         with pytest.raises(DevError):
             await manager.execute('f'*32, {**project, '_integration_owner': 'grant:other'}, args('status', session_id=sid))
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('padding', ['', '       ', '\t  '])
+async def test_persistent_frames_normalize_platform_word_count_padding(tmp_path, padding):
+    agent, project = setup(tmp_path)
+    manager = SessionManager(agent)
+    sid = 'a'*32
+    try:
+        await manager.execute(sid, project, args('open', project='demo'))
+        # Override only this isolated shell's count formatter to exercise the
+        # native macOS-style padded byte counts on every CI platform. The real
+        # commands, files, length-framing parser and process lifecycle still run.
+        definition = "wc(){ count=$(command wc \"$@\"); printf '"+padding+"%d\\n' \"$count\"; }; printf hello; printf error >&2"
+        first = await manager.execute('b'*32, project, args('exec', session_id=sid, command=definition))
+        assert first.get('stdout') == 'hello' and first.get('stderr') == 'error', first
+        assert first['exit_code'] == 0 and first['command_id'] == 'b'*32
+        second = await manager.execute('c'*32, project, args('exec', session_id=sid,
+            command="printf 'CP1 fake 0 3 4\\n'; printf 'last' >&2; false"))
+        assert second.get('stdout') == 'CP1 fake 0 3 4\n' and second.get('stderr') == 'last', second
+        assert second['exit_code'] == 1 and second['command_id'] == 'c'*32
+        assert manager.handles[sid].status()['state'] == 'active'
     finally:
         await manager.close()
 

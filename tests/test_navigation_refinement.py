@@ -246,7 +246,21 @@ def test_tools_refresh_after_real_project_unmapping_keeps_context_and_draft(stac
         page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
         expect(page.locator('#i-project')).to_have_value(stack.project['id'])
         page.locator('[name=command]').fill('printf keep-original-project-draft')
-        assert stack.client.delete('/api/projects/'+stack.project['id'],params={'expected_version':stack.project['version']}).status_code==200
+        # The tools page may still be observing read-only Runner operations
+        # after the editor becomes visible. Respect the real deletion guard:
+        # wait for those original receipts, then issue one versioned deletion.
+        # Do not force-remove a busy project or retry a mutation on an unknown
+        # response just to make the slower macOS test finish.
+        from tests.support import wait_for
+        active={'queued','running','reconnecting','cancelling','needs_review'}
+        def reads_finished():
+            value=stack.must(stack.client.get('/api/operations',params={'project':stack.project['id'],'limit':100}))
+            assert value['next_offset'] is None
+            return not any(row['state'] in active for row in value['operations'])
+        wait_for(reads_finished,timeout=30)
+        current=stack.must(stack.client.get('/api/projects/'+stack.project['id']))
+        removed=stack.client.delete('/api/projects/'+stack.project['id'],params={'expected_version':current['version']})
+        assert removed.status_code==200,removed.text
         page.locator('.topbar [data-action=refresh]').click()
         expect(page.locator('#page')).to_contain_text('无权访问')
         expect(page.locator('#integration-center')).to_have_count(0)

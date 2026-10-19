@@ -130,6 +130,18 @@ window.CodePierSpaces = (() => {
               submitted = null;
               key = newKey();
             }
+            if (error.operation_id) {
+              // A command's terminal failure is still an original operation,
+              // not a missing submission. Keep an explicit observation entry;
+              // viewing it never resubmits the command or changes its target.
+              const receipt = document.createElement('button');
+              receipt.type = 'button';
+              receipt.className = 'btn small';
+              receipt.dataset.wsErrorReceipt = error.operation_id;
+              receipt.textContent = '查看原操作结果';
+              receipt.onclick = () => operationDetail(error.operation_id);
+              status.append(' ', receipt);
+            }
           }
         } finally {
           delete f.dataset.saving;
@@ -911,7 +923,7 @@ window.CodePierSpaces = (() => {
           (r) => r.all_projects || r.all_vps || r.excluded_projects?.length,
         ),
       ) +
-      '<div data-policy-pairs></div><details><summary>高级策略（外部 MCP / 插件 / 精确选择器）</summary>' +
+      '<div data-policy-pairs></div><details aria-label="高级策略配置"><summary>高级策略（外部 MCP / 插件 / 精确选择器）</summary>' +
       textArea(
         'policy_extra',
         '完整策略 JSON',

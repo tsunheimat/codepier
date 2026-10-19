@@ -68,7 +68,7 @@ def test_failed_vps_receipt_is_observed_before_an_explicit_new_command(workspace
     button.click();form=page.locator('#workspace-form')
     form.locator('[name="command"]').fill('sleep 2; printf failed >> '+shlex.quote(str(marker))+'; exit 7')
     page.get_by_role('button',name='保存',exact=True).click()
-    expect(form.locator('[data-validation-result]')).to_be_visible(timeout=30000)
+    expect(form.locator('[data-ws-error-receipt]')).to_be_visible(timeout=30000)
     submitted=[call for call in calls if call['tool']=='exec']
     observed=[call for call in calls if call['tool']=='operations_wait']
     assert len(submitted)==1 and observed
@@ -77,10 +77,16 @@ def test_failed_vps_receipt_is_observed_before_an_explicit_new_command(workspace
     assert marker.read_text()=='failed'
     receipt=server.must(server.client.get('/api/operations/'+original))
     assert receipt['state']=='failed' and receipt['result']['data']['exit_code']==7
-    form.locator('[data-validation-result]').click()
+    assert form.locator('[data-ws-error-receipt]').get_attribute('data-ws-error-receipt')==original
+    form.locator('[data-ws-error-receipt]').click()
+    # The form status already contains the operation ID. Require the actual
+    # authorized reader, not that pre-existing text, before dismissing it.
+    expect(page.locator('#modal-title')).to_have_text('操作详情 · exec')
+    expect(form).to_have_count(0)
     expect(page.locator('.modal-body')).to_contain_text(original)
     assert len([call for call in calls if call['tool']=='exec'])==1
     page.keyboard.press('Escape')
+    expect(page.locator('.modal')).to_have_count(0)
     button.click()
     form.locator('[name="command"]').fill('printf success >> '+shlex.quote(str(marker))+'; printf fresh-result')
     page.get_by_role('button',name='保存',exact=True).click()
