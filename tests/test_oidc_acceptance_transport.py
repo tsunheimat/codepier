@@ -120,3 +120,35 @@ def test_mcp_credential_is_not_overridden_by_another_panel_account(team):
     identity=data(mcp_request(b['bob'],created['token'],'tools/call',{'name':'get_profile','arguments':{}}))
     assert identity['id']==created['connection_id'] and identity['id']!=profile['id']
     assert mcp_request(b['bob'],'invalid-token','tools/list').status_code==401
+
+
+@pytest.mark.parametrize("live",[False,True])
+def test_admin_publication_follows_live_consent_without_wildcard_delegation(team,live):
+    import uuid
+    app,b=team
+    policy={"project_rules":[{"actions":["read"],"all_projects":True}]}
+    set_member(b["owner"],"alice",{**policy,"manage":["profiles"]})
+    before=app.state.store.all("SELECT id FROM access_profiles")
+    denied=b["alice"].post("/api/spaces/team/profiles",json={"label":"Forbidden wildcard",
+        "policy":policy,"idempotency_key":uuid.uuid4().hex})
+    assert denied.status_code==403 and denied.json()["error"]["code"]=="DELEGATION_EXCEEDED"
+    assert app.state.store.all("SELECT id FROM access_profiles")==before
+    profile=make_profile(b["alice"],{})
+    connection=make_connection(b["alice"],profile,live=live)
+    token=connection["token"]
+    def current():
+        return data(mcp_request(b["alice"].client,token,"tools/call",{
+            "name":"get_access_context","arguments":{}}))
+    initial=current()
+    assert initial["projects"]==[]
+    updated=update_profile(b["owner"],profile,policy)
+    assert updated["id"]==profile["id"] and updated["version"]==profile["version"]+1
+    CurrentModel(app.state.store).project("future-reviewed",space="team",folder="folder-team",
+        owner="owner",subpath="future-reviewed")
+    active=current()
+    assert {p["id"] for p in active["projects"]}==({"project-team","future-reviewed"} if live else set())
+    assert active["connection"]==initial["connection"]
+    assert active["profile"]["id"]==profile["id"]
+    app.state.store.execute("UPDATE memberships SET active=0 WHERE user_id=? AND space_id=?",("alice","team"))
+    rejected=mcp_request(b["alice"].client,token,"tools/call",{"name":"get_access_context","arguments":{}})
+    assert rejected.status_code==403

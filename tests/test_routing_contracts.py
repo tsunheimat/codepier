@@ -127,3 +127,24 @@ def test_direct_runner_claims_remain_independent_but_shared_and_test_holds_survi
     assert routing.source_blocker(current)==expected
     current['tool']='session';current['args_summary']=json.dumps({'operation':'close'})
     assert routing.source_blocker(current) is None
+
+
+@pytest.mark.parametrize("family",["computer","browser"])
+@pytest.mark.parametrize("source",["device:node","pool:shared"])
+def test_ui_lease_coordination_does_not_claim_source_bytes(family,source):
+    from types import SimpleNamespace
+    from hub.project_routing import ProjectRouting, family_for
+    # Families come from reviewed Hub tool contracts, never model-supplied labels.
+    tool="computer_session_close" if family=="computer" else "browser_session_close"
+    assert family_for(tool,{})==family
+    context={"source_key":source,"subpath":"app","family":family}
+    previous={"id":"prior","tool":tool,"state":"needs_review","route_context":json.dumps(context)}
+    routing=ProjectRouting(SimpleNamespace(store=SimpleNamespace(all=lambda *args:[previous])))
+    current={"id":"next","created":2,"attempts":0,"tool":tool,"route_context":json.dumps(context)}
+    assert routing.source_blocker(current) is None
+    current.update(tool="routed_exec",route_context=json.dumps({**context,"family":"test"}))
+    assert routing.source_blocker(current) is None
+    # The same uncertain outcome from a source-dependent command still holds
+    # its bytes. This is not a fallback to another source or an implicit release.
+    previous.update(tool="routed_exec",route_context=json.dumps({**context,"family":"shell"}))
+    assert routing.source_blocker(current)=="prior"

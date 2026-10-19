@@ -185,7 +185,12 @@ class ProjectRouting:
             # its command holds a source claim. They never select a new target.
             return None
         context=json.loads(op['route_context'])
-        if not context.get('source_key'):
+        if not context.get('source_key') or context.get('family') in {'computer','browser'}:
+            # Desktop/browser commands address a private UI lease, not source
+            # bytes. Their provider/observation/session gates coordinate input.
+            # Applying a source hold here can prevent closing the very lease
+            # needed to recover an uncertain UI action. These families are
+            # selected by the Hub from the tool, never by a caller route label.
             return None
         # Shared bytes can be bound by multiple workspaces. Coordinate by source
         # identity, not workspace ownership; never disclose the other private receipt.
@@ -199,6 +204,8 @@ class ProjectRouting:
             if row['tool']=='routed_job_control' or (row['tool']=='session' and json.loads(row.get('args_summary') or '{}').get('operation') in {'read','status','close','signal'}):
                 continue
             other=json.loads(row['route_context'])
+            if other.get('family') in {'computer','browser'}:
+                continue
             if context['source_key']!=other.get('source_key'):
                 continue
             path_type=PureWindowsPath if ':' in context['subpath'] or context['subpath'].startswith('\\\\') else PurePosixPath

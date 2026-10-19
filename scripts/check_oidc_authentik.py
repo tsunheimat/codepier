@@ -305,8 +305,15 @@ def acceptance(output):
                     assert {s['kind'] for s in me['spaces']} == {'personal', 'workspace'}
                     assert all(s['id'] != 'legacy' for s in me['spaces'])
                     assert client.get('/api/iam/users').status_code == 403
+                    # A non-admin Profile manager may configure only explicit
+                    # resources, never delegate a future-resource wildcard.
+                    # Exercise that real denial instead of weakening it for CI.
+                    denied=client.post('/api/spaces/'+sid+'/profiles',json={
+                        'label':user['name']+' denied wildcard','policy':resource_policy,
+                        'idempotency_key':uuid.uuid4().hex})
+                    assert denied.status_code==403 and denied.json()['error']['code']=='DELEGATION_EXCEEDED'
                     p=required(client.post('/api/spaces/'+sid+'/profiles',json={
-                        'label':user['name']+' read profile','policy':resource_policy,
+                        'label':user['name']+' read profile','policy':{},
                         'idempotency_key':uuid.uuid4().hex}))
                     human_clients.append(client); identities.append(me); profiles.append(p)
                     context.close()
@@ -361,6 +368,15 @@ def acceptance(output):
                     assert peer['connection_id'] not in json.dumps(required(alice.get('/api/spaces/'+sid+'/connections')))
                     passed('separate_oauth_issuer_two_stage_consent_and_private_connections')
                     phase = 'dynamic-resource-and-refresh'
+                    # The workspace administrator explicitly publishes future
+                    # read access after the human approved a live Profile.
+                    # Both the current group membership and that consent still
+                    # constrain the existing Connection; identity never changes.
+                    reviewed=required(owner.put('/api/spaces/'+sid+'/profiles/'+profiles[0]['id'],json={
+                        'label':profiles[0]['label'],'policy':resource_policy,
+                        'expected_version':profiles[0]['version'],'idempotency_key':uuid.uuid4().hex}))
+                    assert reviewed['id']==profiles[0]['id'] and reviewed['version']==profiles[0]['version']+1
+                    passed('non_admin_wildcard_denial_and_explicit_admin_profile_publication')
                     # Seed only an isolated offline resource binding; never an
                     # old device/root Project or an executable credential.
                     db=sqlite3.connect(hub_dir/'hub.sqlite3',timeout=30)
