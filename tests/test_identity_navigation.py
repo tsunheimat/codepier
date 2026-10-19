@@ -184,9 +184,17 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
             shot('group-mapping')
             page.locator('button[form=iam-form]').click()
             expect(page.locator('#iam-form')).to_have_count(0)
+            # Modal removal precedes the save's history/identity refresh. Wait
+            # for that actual completion before starting a different mutation.
+            expect(page.locator('.toast').filter(has_text='已保存')).to_be_visible()
+            expect(page).to_have_url(origin + '/#identity/sso')
             assert app.state.store.one('SELECT group_name,space_id FROM group_mappings') == {'group_name': 'developers', 'space_id': 'team'}
-            page.locator('[data-iam=sync]').click()
-            expect(page.locator('.toast').last).to_contain_text('权限同步已完成')
+            before_sync=requests.count(('POST','/api/iam/oidc/reconcile'))
+            with page.expect_response('**/api/iam/oidc/reconcile') as sync:
+                page.locator('[data-iam=sync]').click()
+            assert sync.value.status==200
+            expect(page.locator('.toast').filter(has_text='权限同步已完成')).to_be_visible()
+            assert requests.count(('POST','/api/iam/oidc/reconcile'))==before_sync+1
             page.goto(origin + '/#identity/sso')
             expect(page.locator('[data-identity-tab=sso]')).to_have_attribute('aria-pressed', 'true')
             expect(page).to_have_url(origin + '/#identity/sso')

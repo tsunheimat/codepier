@@ -48,7 +48,7 @@ def test_workspace_templates_use_real_explicit_http_projection(web, route):
     client,_=web
     endpoints=['/api/spaces','/api/spaces/alice','/api/iam/me','/api/projects','/api/devices','/api/vps','/api/storage-pools',
         '/api/spaces/alice/mcp-gateway','/api/spaces/alice/external-integrations','/api/external-plugins']
-    endpoints += ['/api/spaces/alice/'+tab for tab in ['projects','folders','storage','devices','shell','vps','profiles','connections','members']]
+    endpoints += ['/api/spaces/alice/'+tab for tab in ['projects','folders','storage','devices','shell','vps','profiles','connections','members','invites']]
     responses={}
     for url in endpoints:
         response=client.get(url)

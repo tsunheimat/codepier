@@ -141,6 +141,17 @@ def test_explicit_workspace_navigation_does_not_reopen_an_inventory_draft(worksp
     page.locator('[data-ws-action="inventory-edit"]').first.click()
     form = page.locator('#workspace-form')
     form.locator('[name="notes"]').fill('In-memory unsaved draft')
+    prompts=[]
+    def keep_draft(dialog):
+        prompts.append(dialog.message)
+        dialog.dismiss()
+    page.once('dialog',keep_draft)
+    page.evaluate('navigate("spaces/alice/vps")')
+    assert len(prompts)==1 and '未保存' in prompts[0]
+    expect(form).to_be_visible()
+    expect(form.locator('[name="notes"]')).to_have_value('In-memory unsaved draft')
+    expect(page).to_have_url(re.compile(r'#resources/vps$'))
+    page.once('dialog',lambda dialog:dialog.accept())
     page.evaluate('navigate("spaces/alice/vps")')
     expect(page).to_have_url(re.compile(r'#spaces/alice/vps$'), timeout=15000)
     expect(form).to_have_count(0)

@@ -111,7 +111,8 @@ window.CodePierIdentity = (() => {
         try {
           const result = await save(form);
           if (S.session !== login || location.hash !== space || !dialog.isConnected) return;
-          closeModal(dialog);
+          await closeModal(dialog);
+          if (S.session !== login || location.hash !== space || $('.modal')) return;
           if (options.done) await options.done(result);
           else {
             await refresh();
