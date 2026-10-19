@@ -49,6 +49,38 @@ def open_workspace(context, server, path):
     return page
 
 
+@pytest.mark.parametrize('lookup',['/api/session','/api/iam/me'])
+def test_initial_account_lookup_survives_workspace_navigation_without_replaying_writes(workspace_server,workspace_browser,lookup):
+    server=workspace_server;context,errors=workspace_browser
+    held=[];writes=[]
+    page=context.new_page()
+    def hold(route):
+        held.append(route)
+        page.evaluate('document.documentElement.dataset.bootLookupHeld="true"')
+    context.route(server.url+lookup,hold,times=1)
+    page.on('request',lambda request:writes.append(request.url)
+        if request.method not in {'GET','HEAD','OPTIONS'} else None)
+    try:
+        with page.expect_request(server.url+lookup):
+            page.goto(server.url+'/#spaces',wait_until='domcontentloaded')
+        page.wait_for_function('document.documentElement.dataset.bootLookupHeld==="true"')
+        assert len(held)==1
+        # Fetch authentic fixture account data, then change only the view before
+        # delivery. Neither login identity nor credentials are substituted.
+        response=held[0].fetch()
+        assert response.status==200
+        page.evaluate('location.hash="#spaces/alice/profiles"')
+        held.pop().fulfill(response=response)
+        expect(page.locator('#workspace-page h2')).to_have_text('Profiles',timeout=15000)
+        expect(page).to_have_url(re.compile(r'#spaces/alice/profiles$'))
+        expect(page.locator('#retry-boot')).to_have_count(0)
+        assert page.evaluate('S.session.user_id')=='alice'
+        assert writes==[] and errors==[]
+    finally:
+        for route in held:route.abort()
+        context.unroute(server.url+lookup)
+
+
 def test_two_tabs_do_not_share_current_workspace(workspace_server, workspace_browser):
     server = workspace_server
     context, errors = workspace_browser

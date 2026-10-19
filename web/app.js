@@ -325,6 +325,12 @@ async function api(path, options = {}) {
     space = location.hash,
     method = (request.method || 'GET').toUpperCase();
   const safe = method === 'GET' || retrySafe;
+  // These two exact read-only endpoints describe the authenticated account,
+  // not a workspace or view. A hash navigation must not abort initial login.
+  // Session replacement still rejects them; every resource read and mutation
+  // remains bound to the captured view, with no write retry on navigation.
+  const accountRead = method === 'GET' && ['/api/session', '/api/iam/me'].includes(path);
+  const currentRequest = () => session === S.session && (accountRead || space === location.hash);
   const headers = {
     ...(request.body ? { 'Content-Type': 'application/json' } : {}),
     ...(session?.csrf ? { 'X-RD-CSRF': session.csrf } : {}),
@@ -332,7 +338,7 @@ async function api(path, options = {}) {
   };
   const delays = retryDelays;
   for (let attempt = 0; ; attempt++) {
-    if (session !== S.session || space !== location.hash) throw sessionChanged();
+    if (!currentRequest()) throw sessionChanged();
     let res, body;
     if (externalSignal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
     const controller = new AbortController();
@@ -358,7 +364,7 @@ async function api(path, options = {}) {
       externalSignal?.removeEventListener('abort', abort);
     }
     if (externalSignal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
-    if (session !== S.session || space !== location.hash) throw sessionChanged();
+    if (!currentRequest()) throw sessionChanged();
     if (res) {
       if (res.status === 401 && session && !['/api/login', '/api/session'].includes(path))
         await verifyPanelSession(session, space, discardOnAuthFailure);
@@ -749,6 +755,10 @@ async function bootAuthenticated() {
   S.suspendedMappings = null;
   S.work.operation = S.work.operation || sessionValue('codepier-operation');
   restoreTaskSubmission();
+  // Account reads can finish after an explicit navigation during cold boot.
+  // Render that latest URL, never the initially captured workspace or tab.
+  const requestedPage = canonicalPage(location.hash.slice(1));
+  if (nav.some((item) => item[0] === requestedPage)) S.page = requestedPage;
   renderShell();
   if (typeof startComputerApprovals === 'function') startComputerApprovals();
   connectEvents();
@@ -1283,11 +1293,11 @@ function pairingModal(pairing, rePair = false) {
 }
 function builtinRootsHTML(device) {
   if (!device.builtin || device.can_configure_roots !== true) return '';
-  return `<section class="node-manage-section" id="builtin-roots"><div class="node-section-head"><h3>内置节点授权目录</h3><p>先挂载 → 再授权 → 映射项目。填写 Hub 运行环境内已存在的绝对路径；容器部署使用容器内路径，例如 <code>/workspace</code>，不是宿主机路径。</p></div><p class="form-note">保存不会创建目录或挂载。仅授权文件访问，不开启 Shell 或任务；不可开放 Hub 数据库、密钥、配置与状态目录或其上级目录。移除授权保留项目映射和文件，但后续访问会被拒绝；已开始的修改不会撤销。</p><form id="builtin-roots-form" novalidate><fieldset id="builtin-roots-fields" disabled><div id="builtin-root-rows"></div><button type="button" class="btn ghost small" id="add-builtin-root">${icon(
+  return `<section class="node-manage-section" id="builtin-roots"><div class="node-section-head"><h3>内置节点授权目录</h3><p>先挂载 → 再授权 → 在工作空间绑定 Folder → 建立 Project。填写 Hub 运行环境内已存在的绝对路径；容器部署使用容器内路径，例如 <code>/workspace</code>，不是宿主机路径。</p></div><p class="form-note">保存不会创建目录或挂载。仅授权文件访问，不开启 Shell 或任务；不可开放 Hub 数据库、密钥、配置与状态目录或其上级目录。移除授权保留项目映射和文件，但后续访问会被拒绝；已开始的修改不会撤销。</p><form id="builtin-roots-form" novalidate><fieldset id="builtin-roots-fields" disabled><div id="builtin-root-rows"></div><button type="button" class="btn ghost small" id="add-builtin-root">${icon(
     'plus',
   )}添加授权目录</button></fieldset><p id="builtin-roots-status" class="form-note" role="status" aria-live="polite">正在读取已保存的授权…</p><p id="builtin-roots-error" class="field-error" role="alert" hidden></p><div class="actions"><button type="submit" class="btn primary small" id="save-builtin-roots" disabled>保存目录授权</button><button type="button" class="btn ghost small" id="refresh-builtin-roots">重新读取</button><button type="button" class="btn ghost small" id="map-builtin-project" data-action="add-project" data-device="${esc(
     device.id,
-  )}" disabled>映射项目</button></div></form><p class="form-note">需要实例管理员身份及当前 Space 的节点管理权限。目录授权保存在 Hub 数据库中，请勿编辑自动生成的 Agent 配置。保存与生效是两个状态，生效后仍需单独映射项目。</p></section>`;
+  )}" disabled>映射项目</button></div></form><p class="form-note">需要实例管理员身份及此设备的资源管理权限。目录授权保存在 Hub 数据库中，请勿编辑自动生成的 Agent 配置。保存与生效是两个状态；生效后仍需明确选择工作空间，并使用该工作空间已绑定的 Folder 建立 Project。</p></section>`;
 }
 async function setupBuiltinRoots(dialog, device) {
   const form = $('#builtin-roots-form', dialog);

@@ -185,7 +185,7 @@ class Stack:
     def call(self,name,args=None,raw=False):
         r=self.client.post('/api/tools/call',json={'tool':name,'arguments':args or {}})
         return r if raw else self.must(r)
-    def fs(self,name,**args): return self.call(name,{'project':'Imago',**args})
+    def fs(self,name,**args): return self.call(name,{'project':self.project['id'],**args})
     def rpc(self,method,params=None,token_value=None,id=1,headers=None):
         h={'Accept':'application/json, text/event-stream','Content-Type':'application/json','Authorization':'Bearer '+(token_value or self.pat),'MCP-Protocol-Version':'2025-11-25',**(headers or {})}
         return self.client.post('/mcp',headers=h,json={'jsonrpc':'2.0','id':id,'method':method,'params':params or {}})

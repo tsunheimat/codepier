@@ -70,7 +70,7 @@ def test_plugin_setup_bind_authorize_consent_and_detach(plugin_env, plugin_brows
         page.fill('#ext-form [name="project-config-0"]', '321')
         save(page)
         page.click(f'[data-ext-action="role"][data-ext-id="{row["id"]}"]')
-        page.select_option('#ext-form [name="role"]', value['role']['id'])
+        page.select_option('#ext-form [name="role"]', value['profile']['id'])
         page.select_option('#ext-form [name="target"]', 'project-a')
         page.check('#ext-form [name="action"][value="pipeline.get"]')
         save(page)
@@ -81,7 +81,7 @@ def test_plugin_setup_bind_authorize_consent_and_detach(plugin_env, plugin_brows
 
         viewer_context, viewer, viewer_errors = open_page(plugin_browser, value, 'viewer', width)
         viewer.goto('http://127.0.0.1:8765/#access/connections')
-        viewer.click(f'[data-ext-action="consent"][data-ext-id="{value["grant"]["grant_id"]}"]')
+        viewer.click(f'[data-ext-action="consent"][data-ext-id="{value["grant"]["connection_id"]}"]')
         expect(viewer.locator('#ext-form')).to_contain_text('321')
         expect(viewer.locator('#ext-form')).to_contain_text('backend_pipeline')
         viewer.check('#ext-form input[type="checkbox"]')
@@ -89,7 +89,7 @@ def test_plugin_setup_bind_authorize_consent_and_detach(plugin_env, plugin_brows
         expect(viewer.locator('.connection-permissions')).to_contain_text('Plugin ui-main')
         assert invoke(value, name='ext.ui-main.pipeline.get')['structuredContent']['arguments']['project_id'] == 321
         assert not value['app'].state.store.one('SELECT policy FROM access_roles WHERE id=?',
-            (value['role']['id'],))['policy'].count('"binding_id"')
+            (value['profile']['id'],))['policy'].count('"binding_id"')
 
         page.click(f'[data-ext-action="projects"][data-ext-id="{row["id"]}"]')
         page.select_option('#ext-form [name="project"]', 'project-a')

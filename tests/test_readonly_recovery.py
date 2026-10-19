@@ -66,8 +66,7 @@ def test_mutations_keep_their_permission_boundary():
 @pytest.mark.integration
 def test_readonly_discovery_and_recovery_over_real_http(tmp_path):
     with running_stack(tmp_path / 'readonly-stack') as s:
-        grant = s.must(s.client.post('/api/grants', json={'label': 'readonly-recovery',
-            'scopes': ['read'], 'projects': [s.project['id']], 'days': 1}))
+        grant = s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read']}]}))
         catalog = {t['name']: t for t in tool_definitions()}
         def call(name, args):
             reply = s.mcp(name, args, token_value=grant['token'])

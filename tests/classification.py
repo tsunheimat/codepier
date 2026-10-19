@@ -16,7 +16,7 @@ WINDOWS_CORE = {
 # the contract under test, so the exhaustive runner gives each one the machine.
 REGRESSION_EXCLUSIVE = {
     'test_audit_agent.py', 'test_audit_bridge_deploy.py', 'test_computer_lifecycle.py',
-    'test_continuous_access_ui.py', 'test_native_cli.py', 'test_native_browser_hardening.py',
+    'test_native_cli.py', 'test_native_browser_hardening.py',
     'test_panel_update_autoreload.py', 'test_panel_update_ui.py', 'test_parser_recovery_integration.py',
     'test_reliability.py', 'test_symbol_parser_stability.py',
     'test_chat_backend_stability.py', 'test_background_browser.py', 'test_bridge.py',

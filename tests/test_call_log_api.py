@@ -1,7 +1,5 @@
 """Read-only call-log routes against isolated SQLite evidence."""
 import json
-import sqlite3
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -9,98 +7,78 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from hub.call_log import operation_summary, register_call_log
-from hub.conversations import ConversationRegistry
-from hub.session_activity import SessionActivity
+from hub.runtime import Runtime as ActualRuntime
+from hub.store import Store
+from tests.current_model import CurrentModel
 from shared.util import DevError
 
 
-class EvidenceStore:
-    def __init__(self):
-        self.db = sqlite3.connect(':memory:', check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
-        self.queries = []
-        self.db.executescript('''
-            CREATE TABLE operations (id TEXT PRIMARY KEY, project_id TEXT, device_id TEXT,
-                tool TEXT, actor TEXT, state TEXT, created REAL, updated REAL,
-                args_summary TEXT, error TEXT, attempts INTEGER DEFAULT 1,
-                result TEXT, output TEXT, payload TEXT, space_id TEXT DEFAULT 'legacy',
-                owner_user_id TEXT DEFAULT 'owner', visibility TEXT DEFAULT 'private', grant_id TEXT);
-            CREATE TABLE projects (id TEXT PRIMARY KEY, alias TEXT);
-            CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT);
-            CREATE TABLE vps_connections (id TEXT PRIMARY KEY);
-            CREATE TABLE grants (id TEXT PRIMARY KEY);
-            CREATE TABLE meta (key TEXT PRIMARY KEY,value TEXT);
-            CREATE TABLE gateway_bindings (id TEXT PRIMARY KEY);
-            CREATE TABLE gateway_calls (id TEXT PRIMARY KEY,space_id TEXT,user_id TEXT,grant_id TEXT,
-                binding_id TEXT,tool TEXT,state TEXT,created REAL,updated REAL,error_code TEXT);
-            INSERT INTO projects VALUES ('p1', 'MCP'), ('p2', 'Other');
-            INSERT INTO devices VALUES ('d1', 'Test Agent');
-        ''')
-        from hub.resource_schema import migrate
-        migrate(self.db)
+class EvidenceStore(Store):
+    def __init__(self,directory):
+        self.queries=[]
+        super().__init__(directory)
+        self.model=CurrentModel(self)
+        self.model.user('owner',username='test')
+        self.model.workspace('log-space',owner='owner')
+        self.model.device('d1',owner='owner',name='Test Agent')
+        self.model.bind_device('log-space','d1')
+        source=directory/'source';source.mkdir()
+        self.model.folder('log-folder',space='log-space',device='d1',path=source)
+        self.model.project('p1',space='log-space',folder='log-folder',owner='owner',alias='MCP')
+        self.model.project('p2',space='log-space',folder='log-folder',owner='owner',alias='Other',subpath='other')
 
-    def execute(self, sql, args=()):
-        return self.db.execute(sql, args)
-
-    def one(self, sql, args=()):
-        rows = self.all(sql, args)
-        return rows[0] if rows else None
-
-    def all(self, sql, args=()):
+    def one(self,sql,args=()):
         self.queries.append(sql)
-        return [dict(r) for r in self.db.execute(sql, args)]
+        return super().one(sql,args)
 
-    def add(self, identifier, *, created=10, state='succeeded', tool='fs_read', actor='mcp:g:test', project='p1', args=None, output='', result=None):
-        self.db.execute('INSERT INTO operations(id,project_id,device_id,tool,actor,state,created,updated,args_summary,error,result,output,payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                        (identifier,project,'d1',tool,actor,state,created,created+5,json.dumps(args or {'path':'README.md'}),None,json.dumps(result),output,'private-encrypted-payload'))
-        self.db.commit()
+    def all(self,sql,args=()):
+        self.queries.append(sql)
+        return super().all(sql,args)
+
+    def add(self,identifier,*,created=10,state='succeeded',tool='fs_read',actor='mcp:g:test',
+            project='p1',args=None,output='',result=None):
+        arguments=args or {'path':'README.md'}
+        principal=self.model.panel('owner','log-space')
+        payload={'project':self.runtime.project(project,principal),'args':arguments,
+            'principal_context':{'user_id':'owner','space_id':'log-space','user_epoch':1}}
+        self.execute("""INSERT INTO operations
+            (id,project_id,device_id,tool,actor,state,created,updated,args_summary,error,result,output,
+             payload,fingerprint,space_id,owner_user_id)
+            VALUES(?,?,'d1',?,?,?,?,?,?,NULL,?,?,?,'fixture','log-space','owner')""",
+            (identifier,project,tool,actor,state,created,created+5,json.dumps(arguments),json.dumps(result),
+                output,self.encrypt(json.dumps(payload))))
+        self.queries.clear()
 
 
 @pytest.fixture
-def log_api():
-    store = EvidenceStore()
-    calls = []
+def log_api(tmp_path):
+    store=EvidenceStore(tmp_path/'hub');calls=[]
     class Admin:
-        def panel(self, request):
-            if request.headers.get('X-Test-Admin') != 'yes':
-                raise DevError('UNAUTHORIZED', '需要管理员登录', 401)
-            return SimpleNamespace(admin=True, instance_admin=True, actor='panel:test',
-                space_id='legacy', user_id='owner', user_epoch=1,grant_id=None)
-    class Runtime:
-        def project(self, identifier, principal):
-            return store.one('SELECT * FROM projects WHERE id=?', (identifier,))
-        def list_projects(self, principal):
-            return store.all('SELECT * FROM projects')
-        def operation(self, identifier, principal):
-            rows=store.all('SELECT * FROM operations WHERE id=?',(identifier,))
-            if not rows:
-                raise DevError('NOT_FOUND','操作不存在',404)
-            row=rows[0]
-            row['args_summary']=json.loads(row['args_summary'])
-            row['result']=json.loads(row['result'])
-            return row
-        def trace(self, args, principal):
+        def panel(self,request):
+            if request.headers.get('X-Test-Admin')!='yes':
+                raise DevError('UNAUTHORIZED','需要管理员登录',401)
+            return store.model.panel('owner','log-space')
+    class Runtime(ActualRuntime):
+        def trace(self,args,principal):
             calls.append('trace-read')
-            assert args['after_event_id'] == 0
+            assert args['after_event_id']==0
             return {'current':{'reason':'操作已结束'},'events':[
                 {'source':'agent','stage':'accepted','seq':1,'elapsed_ms':0,'at':10},
                 {'source':'agent','stage':'executing','seq':2,'elapsed_ms':100,'at':11},
                 {'source':'agent','stage':'persisting','seq':3,'elapsed_ms':350,'at':12}]}
-        def invoke(self, *args):
-            raise AssertionError('Reading call details must not invoke tools or add audit calls')
-    runtime=Runtime()
-    runtime.store=store
-    runtime.conversations=ConversationRegistry(runtime)
-    runtime.session_activity=SessionActivity(runtime)
-    runtime.diagnostics=runtime
+        def invoke(self,*args):
+            raise AssertionError('Reading details must not invoke tools or add audit calls')
+    runtime=Runtime(store);store.runtime=runtime;runtime.diagnostics=runtime
     app=FastAPI()
     @app.exception_handler(DevError)
-    async def error_handler(request, exc):
-        return JSONResponse({'error':{'code':exc.code,'message':str(exc)}}, status_code=exc.status)
+    async def error_handler(request,exc):
+        return JSONResponse({'error':{'code':exc.code,'message':str(exc)}},status_code=exc.status)
     register_call_log(app,runtime,Admin())
-    with TestClient(app) as client:
-        yield client,store,calls
-    store.db.close()
+    try:
+        with TestClient(app) as client:
+            store.queries.clear()
+            yield client,store,calls
+    finally:store.close()
 
 
 AUTH={'X-Test-Admin':'yes'}
@@ -159,7 +137,7 @@ def test_detail_keeps_failure_exit_code_and_never_reexecutes(log_api):
     assert data['timing']=={'wait_ms':1000,'execution_ms':250}
     assert 'hidden-' not in response.text and 'hidden command' not in response.text and 'private-encrypted-payload' not in response.text
     assert calls==['trace-read']
-    assert store.db.execute('SELECT count(*) FROM operations').fetchone()[0]==1
+    assert store.one('SELECT count(*) AS n FROM operations')['n']==1
 
 
 def test_watch_updates_rows_that_no_longer_match_status(log_api):

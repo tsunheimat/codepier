@@ -52,12 +52,30 @@ def builtin_page(request, roots_api):
                     payload = copy.deepcopy(roots_api['settings'])
             elif path.endswith('/rotate'):
                 payload = {'ok': True, 'builtin': True}
+            elif path == '/api/spaces':
+                payload = {'spaces': [{'id': 'workspace-one', 'label': 'Explicit workspace'}]}
+            elif path == '/api/spaces/workspace-one/folders':
+                # Separate, previously reviewed workspace bindings, not grants
+                # created implicitly by saving the device's allowed roots.
+                payload = {'folders': [
+                    {'id': 'builtin-read', 'name': 'Hub read-only', 'enabled': True,
+                     'mode': 'read', 'allow_tasks': False,
+                     'views': [{'name': 'CodePier Hub', 'root': '/workspace/readonly'}]},
+                    {'id': 'remote-folder', 'name': 'Remote source', 'enabled': True,
+                     'mode': 'write', 'allow_tasks': True,
+                     'views': [{'name': 'Remote', 'root': '/srv/project'}]},
+                ]}
+            elif path == '/api/spaces/workspace-one/projects' and req.method == 'POST':
+                assert set(data) == {'alias', 'description', 'folder_id', 'subpath',
+                                     'expected_version', 'idempotency_key'}
+                assert data['folder_id'] in {'builtin-read', 'remote-folder'}
+                payload = {'id': 'fixture-project', **data}
             route.fulfill(status=status, content_type='application/json', body=json.dumps(payload))
 
         page.route('https://codepier.test/**', serve)
         page.goto('https://codepier.test/')
         page.add_script_tag(content="""
-          const S={devices:[],projects:[],session:{csrf:'csrf-fixture'},space_id:'personal',page:'devices'};
+          const S={devices:[],projects:[],session:{csrf:'csrf-fixture'},page:'resources'};
           const $=(q,root=document)=>root.querySelector(q);
           const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
           const icon=()=>'',onlineBadge=v=>v?'在线':'离线',shortTime=()=>'',timeText=()=>'',json=JSON.stringify;
@@ -88,6 +106,7 @@ def builtin_page(request, roots_api):
         start = source.index('function devicesHTML()')
         end = source.index('function resetWork(', start)
         page.add_script_tag(content=source[start:end])
+        page.add_script_tag(path=str(root / 'web' / 'spaces.js'))
         page.evaluate("""() => {
           pairingModal=()=>pairings++;
           S.devices=[{id:'builtin',name:'CodePier Hub',builtin:true,can_configure_roots:true,
@@ -211,26 +230,30 @@ def test_roots_save_explicit_modes_apply_and_map(builtin_page, roots_api):
         'revision': 0,
     })
     assert req[3]['x-rd-csrf'] == 'csrf-fixture'
-    assert req[3]['x-codepier-space'] == 'personal'
+    assert 'x-codepier-space' not in req[3]
     expect(page.locator('#builtin-roots-status')).to_contain_text('已保存版本 1 · 已应用版本 0')
     expect(page.locator('#map-builtin-project')).to_be_disabled()
     roots_api['settings'].update(applied_revision=1, status='applied')
     expect(page.locator('#builtin-roots-status')).to_contain_text('已生效', timeout=6000)
     page.click('#map-builtin-project')
-    expect(page.locator('#project-form')).to_be_visible()
-    expect(page.locator('#project-form [name="device_id"]')).to_have_value('builtin')
-    expect(page.locator('#project-form [name="root"]')).to_have_value('')
-    expect(page.locator('#project-form [name="allow_tasks"]')).not_to_be_checked()
-    expect(page.locator('#project-form [name="allow_tasks"]')).to_be_disabled()
-    expect(page.locator('#project-form [name="mode"]')).to_have_value('read')
-    assert len(writes(roots_api)) == 1  # Mapping is explicit, not created by saving roots.
-    page.locator('#project-form [name="alias"]').fill('demo')
-    page.locator('#project-form [name="root"]').fill('/workspace/readonly')
-    page.click('#save-project')
+    expect(page.locator('.modal [name="space"]')).to_have_value('')
+    assert len(writes(roots_api)) == 1
+    page.select_option('.modal [name="space"]', 'workspace-one')
+    page.click('#workspace-next')
+    form = page.locator('#workspace-form')
+    expect(form).to_be_visible()
+    expect(form.locator('[name="device_id"], [name="root"], [name="mode"], [name="allow_tasks"]')).to_have_count(0)
+    expect(form.locator('[name="folder_id"]')).to_have_value('builtin-read')
+    expect(form.locator('[name="subpath"]')).to_have_value('.')
+    expect(form.locator('[data-folder-preview]')).to_contain_text('/workspace/readonly')
+    assert len(writes(roots_api)) == 1  # Device roots do not create a Project or a workspace binding.
+    form.locator('[name="alias"]').fill('demo')
+    page.get_by_role('button', name='保存', exact=True).click()
     expect(page.locator('.modal')).to_have_count(0)
-    assert writes(roots_api)[1][:2] == ('POST', '/api/projects')
-    assert writes(roots_api)[1][2]['allow_tasks'] is False
-    assert writes(roots_api)[1][2]['mode'] == 'read'
+    assert writes(roots_api)[1][:2] == ('POST', '/api/spaces/workspace-one/projects')
+    assert writes(roots_api)[1][2]['folder_id'] == 'builtin-read'
+    assert writes(roots_api)[1][2]['subpath'] == '.'
+    assert not {'device_id', 'root', 'mode', 'allow_tasks', 'space_id'} & writes(roots_api)[1][2].keys()
 
 
 def test_roots_remove_save_empty_and_increment_revision(builtin_page, roots_api):
@@ -332,25 +355,23 @@ def test_roots_conflict_does_not_overwrite_newer_settings(builtin_page, roots_ap
     assert roots_api['settings']['revision'] == 4
 
 
-def test_project_device_switch_keeps_remote_execution_controls(builtin_page):
+def test_project_folder_switch_uses_only_explicit_workspace_sources(builtin_page, roots_api):
     page = builtin_page
-    page.evaluate("""() => {
-      S.devices.push({id:'remote',name:'Remote',builtin:false,online:true});
-      return projectModal(null,'remote');
-    }""")
-    tasks = page.locator('#project-form [name="allow_tasks"]')
-    mode = page.locator('#project-form [name="mode"]')
-    expect(tasks).to_be_enabled()
-    expect(mode).to_have_value('write')
-    tasks.check()
-    mode.select_option('read')
-    page.locator('#project-form [name="device_id"]').select_option('builtin')
-    expect(tasks).not_to_be_checked()
-    expect(tasks).to_be_disabled()
-    expect(mode).to_have_value('read')
-    page.locator('#project-form [name="device_id"]').select_option('remote')
-    expect(tasks).to_be_enabled()
-    expect(mode).to_have_value('read')  # Keep the user's remote mode, never widen it.
+    page.evaluate('projectModal()')
+    expect(page.locator('.modal [name="space"]')).to_have_value('')
+    page.select_option('.modal [name="space"]', 'workspace-one')
+    page.click('#workspace-next')
+    form = page.locator('#workspace-form')
+    expect(form).to_be_visible()
+    expect(form.locator('[name="root"], [name="device_id"], [name="mode"], [name="allow_tasks"]')).to_have_count(0)
+    assert form.locator('[name="folder_id"] option').evaluate_all('(items)=>items.map(x=>x.value)') == ['builtin-read', 'remote-folder']
+    form.locator('[name="folder_id"]').select_option('remote-folder')
+    expect(form.locator('[data-folder-preview]')).to_contain_text('/srv/project')
+    form.locator('[name="subpath"]').fill('subproject')
+    form.locator('[name="folder_id"]').select_option('builtin-read')
+    expect(form.locator('[data-folder-preview]')).to_contain_text('/workspace/readonly')
+    expect(form.locator('[name="subpath"]')).to_have_value('subproject')
+    assert writes(roots_api) == []  # A form selection neither grants nor mutates device capabilities.
 
 
 def test_roots_poll_stops_when_dialog_closes(builtin_page, roots_api):

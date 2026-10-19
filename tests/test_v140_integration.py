@@ -13,7 +13,7 @@ from tests.support import wait_for
 
 
 def resolved(stack,tool_name,**args):
-    result=stack.call(tool_name,{"project":"Imago",**args})
+    result=stack.call(tool_name,{"project":stack.project['id'],**args})
     if result.get('pending'):
         op=stack.poll(result['operation_id'],timeout=20)
         assert op['state']=='succeeded',op
@@ -39,7 +39,7 @@ def test_actual_artifact_snapshot_and_range_downloads(stack,tmp_path):
     assert stack.client.get(path,headers={'Range':'bytes=1-3','If-Range':'"old"'}).content==content
     (stack.imago/filename).write_bytes(b'changed-source')
     assert stack.client.get(path).content==content
-    rows=stack.call('artifacts_list',{'project':'Imago'})['artifacts']
+    rows=stack.call('artifacts_list',{'project':stack.project['id']})['artifacts']
     assert any(a['artifact_id']==identifier for a in rows)
     from scripts.download_artifact import download
     token_file=tmp_path/'token.txt';token_file.write_text(stack.pat);token_file.chmod(0o600)
@@ -80,7 +80,7 @@ def test_true_agent_search_sessions_diagnostics_and_restart(stack):
     (stack.imago/filename).write_text('export const changed = 1;')
     stale=resolved(stack,'searches_get',search_id=search['search_id'])
     assert stale['results'][0]['stale']
-    info=stack.call('diagnostics_get',{'project':'Imago'})
+    info=stack.call('diagnostics_get',{'project':stack.project['id']})
     assert info['hub']['runtime']['version']==VERSION
     assert info['devices'][0]['reported_version']==VERSION
     assert info['devices'][0]['missing_tools']==[]
@@ -94,7 +94,7 @@ def test_true_agent_search_sessions_diagnostics_and_restart(stack):
 
 def test_search_and_artifact_do_not_cross_grants(stack):
     name='scope-'+uuid.uuid4().hex+'.txt';(stack.imago/name).write_text('needle')
-    issued=stack.client.post('/api/grants',json={'label':'isolated-v140','scopes':['read','write'],'projects':[stack.project['id']],'days':1}).json()
+    issued=stack.create_connection(stack.create_profile({'project_rules':[{'projects':[stack.project['id']],'actions':['read','write']}]}))
     search=stack.mcp('process',{'project': 'Imago', 'operation': 'search_start', 'options': {'query': 'needle', 'file_glob': name}})['structuredContent']
     if search.get('pending'):
         op=stack.poll(search['operation_id']);search=op['result']['data']
@@ -105,7 +105,7 @@ def test_search_and_artifact_do_not_cross_grants(stack):
     with httpx.Client() as client:
         rejected=client.get(stack.url+artifact['download_path'],headers={'Authorization':'Bearer '+issued['token']})
         assert rejected.status_code==404
-    stack.client.delete('/api/grants/'+issued['grant_id'])
+    stack.client.post(f'/api/spaces/{stack.space_id}/connections/' + issued['connection_id'] + '/revoke')
 
 
 def test_cli_resumes_partial_and_rejects_corrupt_prefix(stack,tmp_path):

@@ -133,6 +133,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .venv/Scripts/python.exe -c "import xml.etree.ElementTree as E; r=E.parse('dist/workspace-windows/native.xml').getroot(); cases=r.findall('.//testcase'); assert len(cases)>=20 and not r.findall('.//skipped'), 'Native acceptance must execute, not silently skip'"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native stdio startup, cancellation and optional Runner defaults
+        shell: pwsh
+        run: |
+          & .venv/Scripts/python.exe -m pytest -q tests/test_local_transport.py tests/test_agent_local_transport.py tests/test_rch_runner_defaults.py --junitxml=dist/workspace-windows/stdio.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain Windows acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

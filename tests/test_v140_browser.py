@@ -58,7 +58,7 @@ def test_browser_diagnostics_search_symbols_and_download(stack,tmp_path):
             page.screenshot(path=str(directory/'search-mobile.png'),full_page=True)
             page.locator('.modal [data-action="close-modal"]').first.click()
             page.set_viewport_size({'width':1440,'height':1000})
-            operations=stack.call('operations_list',{'project':'Imago','tool':'code_symbols'})['operations']
+            operations=stack.call('operations_list',{'project':stack.project['id'],'tool':'code_symbols'})['operations']
             identifier=operations[0]['id']
             page.click('[data-nav="diagnostics"]');page.fill('#trace-form input',identifier);page.click('#trace-form button')
             expect(page.locator('#modal-title')).to_contain_text('执行链路')

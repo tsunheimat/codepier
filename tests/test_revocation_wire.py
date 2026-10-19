@@ -6,6 +6,7 @@ import pytest
 
 from shared.util import atomic_json
 from tests.support import running_stack, wait_for
+from tests.test_recovery_integration import private_fixture_receipt
 
 
 @pytest.mark.integration
@@ -38,15 +39,18 @@ def test_revocation_wire_fences_accepted_read_but_preserves_running_command(tmp_
             read_id = queued['operation_id']
             assert queued['pending']
             wait_for(lambda: stack.client.get('/api/operations/' + read_id).json().get('accepted_at'))
-            stack.must(stack.client.delete('/api/grants/' + stack.grant))
-            read_result = stack.poll(read_id, timeout=25)
+            stack.must(stack.client.post(f'/api/spaces/{stack.space_id}/connections/' + stack.grant + '/revoke'))
+            for identifier in (read_id,hold_id):
+                denied=stack.client.get('/api/operations/'+identifier)
+                assert denied.status_code==403 and denied.json()['error']['code']=='ACCESS_DENIED'
+            read_result=private_fixture_receipt(stack,read_id,timeout=25)
             assert read_result['state'] == 'cancelled'
             assert read_result['result']['error']['code'] == 'CANCELLED'
-            current = stack.client.get('/api/operations/' + hold_id).json()
-            assert current['pending'] and not current['cancel_requested']
+            current=private_fixture_receipt(stack,hold_id,terminal=False)
+            assert current['state'] in {'running','reconnecting'} and not current['cancel_requested']
         finally:
             release.write_text('release only the owned fixture process')
-        completed = stack.poll(hold_id, timeout=10)
+        completed=private_fixture_receipt(stack,hold_id,timeout=10)
         assert completed['state'] == 'succeeded'
         assert completed['result']['data']['exit_code'] == 0
         assert 'RELEASED' in completed['output']

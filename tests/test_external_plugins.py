@@ -3,10 +3,10 @@ import json
 
 import pytest
 
-from tests.external_plugin_support import plugin_env, setup, approve, invoke, call, code, must, rpc, update_role
+from tests.external_plugin_support import plugin_env, setup, approve, invoke, call, code, must, rpc, update_policy, create_connection
 
 
-@pytest.mark.parametrize('mode', ['role', 'fixed'])
+@pytest.mark.parametrize('mode', ['live', 'fixed'])
 def test_project_mapping_executes_without_raw_backend_permission(plugin_env, mode):
     v = setup(plugin_env, mode=mode)
     result = invoke(v)
@@ -42,7 +42,7 @@ def test_client_cannot_override_trusted_mapping(plugin_env, extra):
 def test_other_project_and_unbound_project_never_inherit_access(plugin_env):
     v = setup(plugin_env)
     assert code(invoke(v, {'project': 'project-b', 'pipeline_id': 7})) == 'PLUGIN_POLICY_DENIED'
-    path = f"/api/external-integrations/{v['integration']['id']}/projects/project-a"
+    path = f"/api/spaces/team/external-integrations/{v['integration']['id']}/projects/project-a"
     must(v['b']['owner'].delete(path + '?expected_version=1'))
     assert code(invoke(v)) == 'UNKNOWN_TOOL'
     assert not v['backend'].calls
@@ -53,7 +53,7 @@ def test_other_project_and_unbound_project_never_inherit_access(plugin_env):
 
 def test_target_changes_require_new_preview_and_consent(plugin_env):
     v = setup(plugin_env)
-    path = f"/api/external-integrations/{v['integration']['id']}/projects/project-a"
+    path = f"/api/spaces/team/external-integrations/{v['integration']['id']}/projects/project-a"
     must(v['b']['owner'].put(path, json={'expected_version': 1, 'config': {'remote_project_id': 789}}))
     assert code(invoke(v)) == 'UNKNOWN_TOOL'
     approve(v)
@@ -62,11 +62,11 @@ def test_target_changes_require_new_preview_and_consent(plugin_env):
 
 def test_stale_configuration_and_cross_account_consent_are_rejected(plugin_env):
     v = setup(plugin_env)
-    assert v['b']['owner'].put('/api/external-integrations/main', json=v['integration_body']).status_code == 409
-    assert v['b']['viewer'].put('/api/external-integrations/other', json=v['integration_body']).status_code == 403
-    path = '/api/external-integrations/grants/' + v['grant']['grant_id'] + '/consent'
+    assert v['b']['owner'].put('/api/spaces/team/external-integrations/main', json=v['integration_body']).status_code == 409
+    assert v['b']['viewer'].put('/api/spaces/team/external-integrations/other', json=v['integration_body']).status_code == 403
+    path = '/api/spaces/team/external-integrations/grants/' + v['grant']['connection_id'] + '/consent'
     assert v['b']['other'].get(path).status_code == 404
-    assert v['b']['viewer'].post(path, json={'confirmed': True, 'expected_role_version': v['role']['version'], 'review_hash': '0' * 64}).status_code == 409
+    assert v['b']['viewer'].post(path, json={'confirmed': True, 'expected_profile_version': v['profile']['version'], 'review_hash': '0' * 64}).status_code == 409
 
 
 def test_same_request_key_observes_receipt_and_conflicts_do_not_dispatch(plugin_env):
@@ -103,26 +103,25 @@ def test_disabling_integration_during_transport_setup_blocks_send(plugin_env):
 def test_revocation_after_dispatch_does_not_publish_result(plugin_env):
     v = setup(plugin_env)
     store = v['app'].state.store
-    v['backend'].on_call = lambda: store.execute('DELETE FROM external_plugin_consents WHERE grant_id=?', (v['grant']['grant_id'],))
+    v['backend'].on_call = lambda: store.execute('DELETE FROM external_plugin_consents WHERE grant_id=?', (v['grant']['connection_id'],))
     assert code(invoke(v)) == 'PLUGIN_CONSENT_REQUIRED'
     assert len(v['backend'].calls) == 1
     assert store.one('SELECT state FROM gateway_calls ORDER BY created DESC LIMIT 1')['state'] == 'unknown'
 
 
-def test_plugin_role_removal_is_live_and_old_editors_preserve_rules(plugin_env):
-    v = setup(plugin_env)
-    r = v['role']
-    body = {k: r[k] for k in ('label', 'enabled', 'project_rules', 'device_rules')}
-    saved = must(v['b']['owner'].put('/api/access-roles/' + r['id'], json={**body, 'expected_version': r['version']}))
-    assert saved['plugin_rules'] == r['plugin_rules']
-    update_role(v, plugin_rules=[])
-    assert code(invoke(v)) == 'UNKNOWN_TOOL'
+def test_profile_policy_removal_is_live_without_any_old_role_editor(plugin_env):
+    v=setup(plugin_env);profile=v['profile']
+    old=v['b']['owner'].put('/api/access-roles/'+profile['id'],json={'label':'Removed role editor'})
+    assert old.status_code==404
+    assert must(v['b']['owner'].get('/api/spaces/team/profiles/'+profile['id']))['policy']==profile['policy']
+    update_policy(v,plugin_rules=[])
+    assert code(invoke(v))=='UNKNOWN_TOOL'
     assert not v['backend'].calls
 
 
 def test_fixed_connection_cannot_gain_new_plugin_actions(plugin_env):
     v = setup(plugin_env, mode='fixed')
-    update_role(v, plugin_rules=[{'integration_id': v['integration']['id'], 'projects': ['project-a', 'project-b'],
+    update_policy(v, plugin_rules=[{'integration_id': v['integration']['id'], 'projects': ['project-a', 'project-b'],
         'actions': ['pipeline.get', 'pipeline.list']}])
     preview = approve(v)
     assert {(r['project_id'], r['action']) for r in preview['routes']} == {('project-a', 'pipeline.get')}
@@ -156,8 +155,5 @@ def test_backend_schema_drift_and_private_account_change_fail_closed(plugin_env)
 def test_receipt_cannot_be_read_by_a_different_grant(plugin_env):
     v = setup(plugin_env)
     result = invoke(v)
-    role = v['role']
-    new = must(v['b']['viewer'].post('/api/client-connections', json={'name': 'Second client', 'role_id': role['id'],
-        'expected_role_version': role['version'], 'authorization_mode': 'role', 'confirm_dynamic_role': True,
-        'confirm_external_mcp': True, 'idempotency_key': 'another-plugin-client'}), 201)
+    new=create_connection(v['b']['viewer'],v['profile'])
     assert code(call(v['b']['viewer'], new['token'], 'gateway_call_get', {'call_id': result['_meta']['codepier/callId']})) == 'GATEWAY_CALL_NOT_FOUND'

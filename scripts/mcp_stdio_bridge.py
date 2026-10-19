@@ -119,15 +119,13 @@ def prepare_request(request):
     return prepared
 
 
-def forward(client, base, request, headers, *, retry_seconds=30, sleep=time.sleep, clock=time.monotonic, profile="core"):
+def forward(client, base, request, headers, *, retry_seconds=30, sleep=time.sleep, clock=time.monotonic):
     """Retry only transport failures, never a tool's SHA/permission/test error.
 
     request must already be prepared; generating keys inside this loop would
     duplicate writes/tests after a lost response.
     """
-    if profile not in {"core", "full", "coding"}:
-        raise ValueError("MCP profile must be core, full or coding")
-    endpoint = base + "/mcp" + ("?profile=" + profile if profile != "core" else "")
+    endpoint = base + "/mcp"
     deadline = clock() + retry_seconds
     attempt = 0
     while True:
@@ -183,14 +181,11 @@ def forward(client, base, request, headers, *, retry_seconds=30, sleep=time.slee
 
 
 def main():
-    for suffix in ('HUB_URL','TOKEN_FILE','MCP_PROFILE','RETRY_SECONDS'):
-        new, old = 'CODEPIER_'+suffix, 'REMOTE_DEV_'+suffix
-        if new not in os.environ and old in os.environ: os.environ[new] = os.environ[old]
     try:
         base = normalize_url(os.environ.get("CODEPIER_HUB_URL", "http://127.0.0.1:8765"))
-        profile = os.environ.get("CODEPIER_MCP_PROFILE", "core")
-        if profile not in {"core", "full", "coding"}:
-            raise ValueError("CODEPIER_MCP_PROFILE must be core, full or coding")
+        if ('CODEPIER_MCP_PROFILE' in os.environ or any(
+                'REMOTE_DEV_'+suffix in os.environ for suffix in ('HUB_URL','TOKEN_FILE','MCP_PROFILE','RETRY_SECONDS'))):
+            raise ValueError('Removed bridge configuration: use the Connection credential and canonical MCP endpoint')
         token_file = Path(os.environ["CODEPIER_TOKEN_FILE"]).expanduser()
         token_from_file(token_file)
         retry_seconds = float(os.environ.get("CODEPIER_RETRY_SECONDS", "30"))
@@ -241,7 +236,7 @@ def main():
                 request = prepare_request(request)
                 headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
                            "Authorization": "Bearer " + token, "MCP-Protocol-Version": version}
-                payload = forward(client, base, request, headers, retry_seconds=retry_seconds, profile=profile)
+                payload = forward(client, base, request, headers, retry_seconds=retry_seconds)
                 if payload is None:
                     continue
                 if request["method"] == "initialize" and "result" in payload:

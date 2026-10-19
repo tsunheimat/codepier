@@ -69,7 +69,7 @@ def test_scope_catalog_and_status_never_expand_existing_grants(desktop):
     assert status['capabilities_verified'] and len(status['native_tools'])==10
     assert status['screen_permissions_verified'] is False
     out=s.rpc('tools/list').json()['result']['tools']
-    assert_task_catalog(out, 14)
+    assert_task_catalog(out)
     assert not {'integration_control','validations_accept'} & {t['name'] for t in out}
     definition=next(t for t in out if t['name']=='computer')
     assert set(definition['_meta']['securitySchemes'][0]['scopes'])=={'read'}
@@ -160,7 +160,7 @@ def test_panel_emergency_close_interrupts_an_inflight_action(desktop):
             future=pool.submit(rpc,s,'computer_action',{'session_id':session,'observation_id':view['observation_id'],'action':{'type':'type_text','text':'fixture only'}},allow_error=True)
             wait_for(lambda:any(json.loads(line)['name']=='type_text' and json.loads(line)['args'].get('text')=='fixture only' for line in (s.provider/'calls.jsonl').read_text().splitlines()))
             start=time.monotonic()
-            result=s.call('computer_session_close',{'project':'Imago','force':True,'idempotency_key':'force-'+uuid.uuid4().hex})
+            result=s.call('computer_session_close',{'project':s.project['id'],'force':True,'idempotency_key':'force-'+uuid.uuid4().hex})
             if result.get('pending'):result=s.poll(result['operation_id'])['result']['data']
             assert result['closed'] and time.monotonic()-start<4
             assert future.result(timeout=10)[1]['isError']

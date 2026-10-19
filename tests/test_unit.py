@@ -61,7 +61,10 @@ def test_contracts():
         assert tool['inputSchema']['type']=='object'
         assert tool['inputSchema']['additionalProperties'] is False
         assert tool['outputSchema']['type']=='object'
-        assert tool['outputSchema']['additionalProperties'] is (tool['name'] != 'get_profile')
+        from jsonschema import Draft202012Validator
+        Draft202012Validator.check_schema(tool['outputSchema'])
+        # Omitted additionalProperties is true under JSON Schema, not invalid.
+        assert tool['outputSchema'].get('additionalProperties',True) is (tool['name'] != 'get_profile')
         assert tool['annotations']['readOnlyHint']==(tool['name'] in {'read','vps','get_profile','get_access_context','get_execution_options','folders_list'} | QUERY_TOOLS)
 
 def test_read_pagination_and_search(engine):

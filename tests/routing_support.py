@@ -69,25 +69,28 @@ class RoutingFixture:
             'roots': [{'path': str(stack.root), 'writable': True}]})
         wait_for(lambda: self.get(f'/api/devices/{self.builtin}/roots')['status'] == 'applied', timeout=45)
         assert saved
-        self.source = self.put('/api/source-roots/shared', {'expected_version': 0})
-        self.mounts = {}
-        for device, tasks in ((self.builtin, False), (stack.device, True)):
-            self.mounts[device] = self.put(f'/api/source-roots/{self.source["id"]}/mounts/{device}',
-                {'path': str(stack.root), 'mode': 'write', 'allow_tasks': tasks,
-                 'expected_version': 0, 'confirmed_same_storage': True})
-        self.routes = {}
-        for family, device, provider in (('files', self.builtin, 'device'), ('git', stack.device, 'device'),
-                                         ('shell', stack.device, 'device'), ('test', stack.device, 'rch'), ('ssh', stack.device, 'device')):
-            route = self.put('/api/action-routes/' + family, {'family': family, 'device_id': device,
-                'settings': {'provider': provider}, 'expected_version': 0})
-            self.routes[family] = route
-            self.put('/api/project-routing/defaults/' + family, {'route_id': route['id'], 'expected_version': 0})
-        self.batch = {'source_root_id': self.source['id'], 'validation_device_id': self.builtin,
-            'projects': [{'alias': 'Routed', 'subpath': 'Imago', 'mode': 'write', 'allow_tasks': True},
-                         {'alias': 'Routed-Nexus', 'subpath': 'Nexus', 'mode': 'write', 'allow_tasks': True}],
-            'idempotency_key': uuid.uuid4().hex}
-        self.projects = self.post('/api/project-routing/projects', self.batch)['projects']
-        self.project = self.projects[0]
+        self.space_path='/api/spaces/'+stack.space_id
+        self.put(self.space_path+'/devices/'+self.builtin,{'expected_version':0,'idempotency_key':uuid.uuid4().hex})
+        self.pool=self.post('/api/storage-pools',{'name':'Shared test storage','abstract_base':'/storage/shared-test',
+            'expected_version':0,'idempotency_key':uuid.uuid4().hex})
+        self.mappings={}
+        for device in (self.builtin,stack.device):
+            self.mappings[device]=self.post('/api/storage-pools/'+self.pool['id']+'/mappings',{
+                'device_id':device,'path':str(stack.root),'confirmed_same_storage':True,
+                'expected_version':0,'idempotency_key':uuid.uuid4().hex})
+        self.binding=self.post(self.space_path+'/storage',{'pool_id':self.pool['id'],'name':'Workspace shared sources',
+            'mapping_ids':[m['id'] for m in self.mappings.values()],'default_device_id':stack.device,
+            'files_device_id':self.builtin,'allowed_device_ids':[],
+            'expected_version':0,'idempotency_key':uuid.uuid4().hex})
+        self.folder=self.post(self.space_path+'/folders',{'name':'Shared project folder','source_kind':'storage',
+            'storage_binding_id':self.binding['id'],'subpath':'.','mode':'write','allow_tasks':True,
+            'expected_version':0,'idempotency_key':uuid.uuid4().hex})
+        self.execution=self.put(self.space_path+'/execution',{'expected_version':0,'idempotency_key':uuid.uuid4().hex,
+            'settings':{'hooks':[{'name':'remote-tests','actions':['test'],'handler':'require_rch'}]}})
+        self.project_requests=[{'alias':alias,'folder_id':self.folder['id'],'subpath':subpath,
+            'idempotency_key':uuid.uuid4().hex} for alias,subpath in [('Routed','Imago'),('Routed-Nexus','Nexus')]]
+        self.projects=[self.post(self.space_path+'/projects',body) for body in self.project_requests]
+        self.project=self.projects[0]
 
     def request(self, method, path, body=None):
         response = self.client.request(method, path, **({'json': body} if body is not None else {}))

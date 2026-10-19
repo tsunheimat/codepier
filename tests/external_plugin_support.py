@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 from hub import iam
 from hub.app import create_app
 from hub.gateway.remote import RemotePool
-from shared.crypto import password_hash
+from tests.current_model import CurrentModel
+from tests.identity_fixtures import set_member
 from shared.mcp_protocol import MODERN
 
 
@@ -23,10 +24,9 @@ class Browser:
     client: TestClient
     cookie: str
     csrf: str
-    space: str = 'team'
 
     def request(self, method, path, **kwargs):
-        headers = {'Cookie': 'rd_session=' + self.cookie, 'X-RD-CSRF': self.csrf, 'X-CodePier-Space': self.space}
+        headers = {'Cookie': 'rd_session=' + self.cookie, 'X-RD-CSRF': self.csrf}
         headers.update(kwargs.pop('headers', {}))
         return self.client.request(method, path, headers=headers, **kwargs)
 
@@ -44,7 +44,7 @@ def must(response, status=200):
 
 def rpc(browser, token, method, params):
     response = browser.post('/mcp', json={'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params},
-        headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json, text/event-stream'})
+        headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json, text/event-stream','MCP-Protocol-Version':'2025-11-25'})
     return must(response)['result']
 
 
@@ -116,20 +116,17 @@ def plugin_env(tmp_path, monkeypatch):
     monkeypatch.delenv('CODEPIER_EXTERNAL_PLUGIN_DIR', raising=False)
     app = create_app(str(tmp_path / 'hub'))
     store = app.state.store
-    hashed, sessions = password_hash('fixture-password-only'), {}
-    with store.transaction():
-        for user in ('owner', 'viewer', 'other'):
-            store.db.execute('INSERT INTO users VALUES(?,?,?,?)', (user, user, hashed, time.time()))
-            iam.create_personal_space(store, user, user + ' personal')
-            sessions[user] = app.state.auth.new_session(user)
-        store.db.execute("INSERT INTO spaces(id,label,kind,created) VALUES('team','Plugin tests','team',?)", (time.time(),))
-        for user in sessions:
-            store.db.execute('INSERT INTO memberships(space_id,user_id,level) VALUES(?,?,?)', ('team', user, 'owner' if user == 'owner' else 'member'))
-        store.db.execute('INSERT INTO devices(id,name,secret,space_id,owner_user_id,created) VALUES(?,?,?,?,?,?)',
-            ('device', 'fixture', store.encrypt('x' * 43), 'team', 'owner', time.time()))
-        for project in ('project-a', 'project-b'):
-            store.db.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,space_id,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                (project, project, project, 'device', str(tmp_path / project), 'write', 1, 'team', 'owner', time.time()))
+    model=CurrentModel(store);sessions={}
+    for user in ('owner','viewer','other'):
+        model.user(user,instance_admin=user=='owner')
+        sessions[user]=model.session(user=user)
+    model.workspace('team',owner='owner',label='Plugin tests')
+    for user in ('viewer','other'):model.member('team',user,{})
+    model.device('device',owner='owner');model.bind_device('team','device')
+    root=tmp_path/'source';root.mkdir()
+    model.folder('plugin-folder',space='team',device='device',path=root)
+    for project in ('project-a','project-b'):
+        model.project(project,space='team',folder='plugin-folder',owner='owner',subpath=project)
     backend = Backend()
     app.state.gateway.enabled = True
     app.state.gateway.pool = RemotePool(resolver=public_dns, transport=httpx.MockTransport(backend.handle))
@@ -138,31 +135,30 @@ def plugin_env(tmp_path, monkeypatch):
         yield app, browsers, backend
 
 
-def setup(plugin_env, *, mode='role', consent=True, actions=None, projects=None):
+def setup(plugin_env, *, mode='live', consent=True, actions=None, projects=None):
     app, b, backend = plugin_env
     connector = must(b['owner'].post('/api/mcp-gateway/connectors', json={'label': 'Fixture', 'endpoint': 'https://mcp.example/mcp'}), 201)
-    account = must(b['owner'].post('/api/mcp-gateway/accounts', json={'connector_id': connector['id'], 'label': 'Shared fixture',
+    account = must(b['owner'].post('/api/spaces/team/mcp-gateway/accounts', json={'connector_id': connector['id'], 'label': 'Shared fixture',
         'sharing': 'space', 'token': 'FIXTURE_BACKEND_CREDENTIAL'}), 201)
-    discovery = must(b['owner'].post('/api/mcp-gateway/accounts/' + account['id'] + '/discover'))
-    binding = must(b['owner'].post('/api/mcp-gateway/bindings', json={'account_id': account['id'], 'alias': 'rawgitlab',
+    discovery = must(b['owner'].post('/api/spaces/team/mcp-gateway/accounts/' + account['id'] + '/discover'))
+    binding = must(b['owner'].post('/api/spaces/team/mcp-gateway/bindings', json={'account_id': account['id'], 'alias': 'rawgitlab',
         'catalog_hash': discovery['catalog_hash'], 'tools': [t['name'] for t in discovery['tools']], 'confirmed': True}), 201)
     manifest = must(b['owner'].get('/api/external-plugins'))['plugins'][0]
     integration_body = {'plugin_id': 'gitlab', 'manifest_hash': manifest['manifest_hash'], 'expected_version': 0,
         'backends': {'gitlab': {'binding_id': binding['id'], 'tools': {'pipeline_get': 'backend_pipeline', 'pipeline_list': 'backend_list'}}}}
-    integration = must(b['owner'].put('/api/external-integrations/main', json=integration_body))
+    integration = must(b['owner'].put('/api/spaces/team/external-integrations/main', json=integration_body))
     for project, external in [('project-a', 123), ('project-b', 456)]:
-        must(b['owner'].put(f"/api/external-integrations/{integration['id']}/projects/{project}",
+        must(b['owner'].put(f"/api/spaces/team/external-integrations/{integration['id']}/projects/{project}",
             json={'expected_version': 0, 'config': {'remote_project_id': external}}))
-    role = must(b['owner'].post('/api/access-roles', json={'label': 'Plugin reader', 'idempotency_key': uuid.uuid4().hex,
-        'project_rules': [{'projects': ['project-a', 'project-b'], 'actions': ['read']}],
-        'plugin_rules': [{'integration_id': integration['id'], 'projects': projects or ['project-a'], 'actions': actions or ['pipeline.get']}]}), 201)
-    must(b['owner'].put('/api/iam/spaces/team/assignments/' + role['id'] + '/viewer',
-        json={'active': True, 'may_delegate': True, 'expected_version': 0}))
-    grant = must(b['viewer'].post('/api/client-connections', json={'name': 'Plugin client', 'role_id': role['id'],
-        'expected_role_version': role['version'], 'authorization_mode': mode, 'confirm_dynamic_role': mode == 'role',
-        'confirm_external_mcp': True, 'idempotency_key': uuid.uuid4().hex}), 201)
-    value = {'app': app, 'b': b, 'backend': backend, 'integration': integration, 'integration_body': integration_body,
-             'binding': binding, 'account': account, 'role': role, 'grant': grant}
+    policy={'project_rules':[{'projects':['project-a','project-b'],'actions':['read']}],
+        'plugin_rules':[{'integration_id':integration['id'],'projects':projects or ['project-a'],
+            'actions':actions or ['pipeline.get']}]}
+    set_member(b['owner'],'viewer',policy)
+    profile=must(b['owner'].post('/api/spaces/team/profiles',json={
+        'label':'Plugin reader','policy':policy,'idempotency_key':uuid.uuid4().hex}))
+    grant=create_connection(b['viewer'],profile,mode=mode)
+    value={'app':app,'b':b,'backend':backend,'integration':integration,'integration_body':integration_body,
+        'binding':binding,'account':account,'profile':profile,'grant':grant}
     if consent:
         approve(value)
     return value
@@ -170,18 +166,31 @@ def setup(plugin_env, *, mode='role', consent=True, actions=None, projects=None)
 
 def approve(value):
     browser, grant = value['b']['viewer'], value['grant']
-    path = '/api/external-integrations/grants/' + grant['grant_id'] + '/consent'
+    path = '/api/spaces/team/external-integrations/grants/' + grant['connection_id'] + '/consent'
     preview = must(browser.get(path))
     assert preview['routes'], preview
-    must(browser.post(path, json={'confirmed': True, 'expected_role_version': preview['role_version'], 'review_hash': preview['review_hash']}))
+    must(browser.post(path, json={'confirmed': True, 'expected_profile_version': preview['profile_version'], 'review_hash': preview['review_hash']}))
     return preview
 
 
-def update_role(value, **updates):
-    old = must(value['b']['owner'].get('/api/access-roles/' + value['role']['id']))
-    body = {k: old[k] for k in ('label', 'enabled', 'project_rules', 'device_rules', 'connector_rules', 'plugin_rules', 'vps_rules')}
-    value['role'] = must(value['b']['owner'].put('/api/access-roles/' + old['id'], json={**body, 'expected_version': old['version'], **updates}))
-    return value['role']
+def create_connection(browser,profile,*,mode='live'):
+    assert mode in {'live','fixed'}
+    return must(browser.post('/api/spaces/team/connections',json={
+        'name':'Plugin client','profile_id':profile['id'],'profile_version':profile['version'],
+        'consent_mode':mode,'confirm_live_profile':mode=='live','confirm_external_mcp':True,
+        'idempotency_key':uuid.uuid4().hex}),201)
+
+
+def update_policy(value,**updates):
+    old=must(value['b']['owner'].get('/api/spaces/team/profiles/'+value['profile']['id']))
+    policy={**old['policy'],**updates}
+    # These are two real distinct administrator actions, not a Role shim.
+    # The fixture intentionally grants the human and the client the same pairs.
+    set_member(value['b']['owner'],'viewer',policy)
+    value['profile']=must(value['b']['owner'].put('/api/spaces/team/profiles/'+old['id'],json={
+        'label':old['label'],'enabled':old['enabled'],'policy':policy,
+        'expected_version':old['version'],'idempotency_key':uuid.uuid4().hex}))
+    return value['profile']
 
 
 def invoke(value, arguments=None, name='ext.main.pipeline.get', key=None):

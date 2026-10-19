@@ -319,7 +319,7 @@ async def test_revoked_ambiguous_delivery_fences_only_capable_agent(runtime, cap
     identifier = receipt['operation_id']
     hub.store.execute('UPDATE operations SET attempts=1,accepted_at=? WHERE id=?',
                       (time.time() if accepted_ack else None, identifier))
-    hub.store.execute("UPDATE projects SET root='/tmp/revoked-mapping' WHERE id='proj'")
+    hub.store.execute("UPDATE space_folders SET device_path='/tmp/revoked-mapping',version=version+1 WHERE id=(SELECT folder_id FROM projects WHERE id='proj')")
     peer = Peer(capability)
     hub.connections['dev'] = peer
     await hub.deliver(identifier)
@@ -341,7 +341,7 @@ async def test_revoked_ambiguous_delivery_fences_only_capable_agent(runtime, cap
 async def test_revocation_before_delivery_never_sends_conditional_or_real_call(runtime):
     hub, principal = runtime
     receipt = await hub.invoke('fs_read', {'project': 'Imago', 'path': 'file'}, principal)
-    hub.store.execute("UPDATE projects SET root='/tmp/revoked-mapping' WHERE id='proj'")
+    hub.store.execute("UPDATE space_folders SET device_path='/tmp/revoked-mapping',version=version+1 WHERE id=(SELECT folder_id FROM projects WHERE id='proj')")
     peer = Peer(1)
     hub.connections['dev'] = peer
     await hub.deliver(receipt['operation_id'])

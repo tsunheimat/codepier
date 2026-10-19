@@ -15,8 +15,8 @@ def coding_stack(tmp_path_factory):
         yield stack
 
 
-def rpc(s, method, params=None, token=None, profile='coding'):
-    return s.client.post('/mcp?profile='+profile,headers={
+def rpc(s, method, params=None, token=None):
+    return s.client.post('/mcp',headers={
         'Authorization':'Bearer '+(token or s.pat), 'Accept':'application/json, text/event-stream',
         'MCP-Protocol-Version':'2025-11-25'},json={'jsonrpc':'2.0','id':1,'method':method,'params':params or {}})
 
@@ -29,7 +29,7 @@ def tool(s,name,args,token=None):
     assert response.status_code==200,response.text
     result=response.json()['result']
     if not result['isError']:
-        schema=next(t['outputSchema'] for t in tool_definitions('coding') if t['name']==name)
+        schema=next(t['outputSchema'] for t in tool_definitions() if t['name']==name)
         jsonschema.validate(result['structuredContent'],schema)
     return result
 
@@ -42,32 +42,30 @@ def value(s,result):
             operation=s.mcp('process', {'operation':'wait','operation_ids':[data['operation_id']], 'wait_seconds':5})['structuredContent']['operations'][0]
             return operation if not operation.get('pending') else None
         operation=wait_for(terminal,20)
-        assert operation['state']=='succeeded',operation
+        assert operation['state']=='succeeded',json.dumps({'id':operation['id'],'state':operation['state'],'result':operation.get('result'),'error':operation.get('error')})
         return {'operation_id':operation['id'],**operation['result']['data']}
     return data
 
 
-def test_profile_old_transport_and_default_full_remain_compatible(coding_stack):
+def test_canonical_connection_has_one_catalog_and_rejects_old_selectors(coding_stack):
     s=coding_stack
-    original=s.rpc('tools/list').json()['result']['tools']
-    compact=rpc(s,'tools/list').json()['result']['tools']
-    assert_task_catalog(original, 14)
-    assert_task_catalog(compact, 14)
-    assert {t['name'] for t in compact} == {t['name'] for t in original}
-    assert not {'integration_control','validations_accept'} & {t['name'] for t in original}
+    assert_task_catalog(rpc(s,'tools/list').json()['result']['tools'])
     initialized=rpc(s,'initialize',{'protocolVersion':'2025-11-25'}).json()['result']
-    assert initialized['protocolVersion']=='2025-11-25'
-    assert len(initialized['instructions'])<4000
-    assert rpc(s,'tools/list',profile='unknown').status_code==400
+    assert initialized['protocolVersion']=='2025-11-25' and len(initialized['instructions'])<4000
+    for selector in ('coding','full','unknown'):
+        response=s.client.post('/mcp?profile='+selector,headers={
+            'Authorization':'Bearer '+s.pat,'Accept':'application/json, text/event-stream'},
+            json={'jsonrpc':'2.0','id':1,'method':'tools/list'})
+        assert response.status_code==400 and 'result' not in response.json()
     hidden=rpc(s,'tools/call',{'name':'computer_status','arguments':{'project':'Imago'}}).json()['result']
-    assert hidden['isError'] and hidden['structuredContent']['error']['code']=='TOOL_REMOVED'
+    assert hidden['isError'] and hidden['structuredContent']['error']['code']=='UNKNOWN_TOOL'
 
 
 def test_remote_non_git_review_patch_idempotency_and_grant_boundaries(coding_stack):
     s=coding_stack
     first=value(s,tool(s,'open_workspace',{'project':'Imago','capture_baseline':True}))
     assert first['baseline_ref'] and first['workspace']['root']=='.'
-    assert s.call('projects_resolve', {'project':'Imago'})['root']==str(s.imago)
+    assert s.call('projects_resolve', {'project':s.project['id']})['root']==f"/folders/{s.folder['id']}/Imago"
     # Independent file requests preserve per-file failure and SHA checks.
     read = value(s, tool(s, 'read', {'project': 'Imago', 'path': 'README.md'}))
     assert read['sha256'] == hashlib.sha256((s.imago/'README.md').read_bytes()).hexdigest()
@@ -85,9 +83,9 @@ def test_remote_non_git_review_patch_idempotency_and_grant_boundaries(coding_sta
     (s.imago/'src/coding-test.py').write_text('later\n')
     fixed=value(s,tool(s,'show_changes',{'project':'Imago','review_ref':changed['review_ref'],'path':'src/coding-test.py'}))
     assert fixed['diff']==detail['diff']
-    grant=s.must(s.client.post('/api/grants',json={'label':'coding-read-only','scopes':['read'],'projects':[s.project['id']],'days':1}))
+    grant=s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read']}]}))
     denied=tool(s,'apply_patch',patch,grant['token'])
-    assert denied['isError'] and denied['structuredContent']['error']['code']=='INSUFFICIENT_SCOPE'
+    assert denied['isError'] and denied['structuredContent']['error']['code']=='WORKSPACE_POLICY_DENIED'
     private=tool(s,'show_changes',{'project':'Imago','review_ref':changed['review_ref']},grant['token'])
     assert private['isError'] and private['structuredContent']['error']['code']=='REVIEW_NOT_FOUND'
     # The reduced profile does not weaken expected-SHA validation either.
@@ -95,18 +93,24 @@ def test_remote_non_git_review_patch_idempotency_and_grant_boundaries(coding_sta
     assert conflict['isError'] and conflict['structuredContent']['error']['code']=='SHA_CONFLICT'
 
 
-def test_coding_profile_uses_canonical_oauth_resource_and_revocation(coding_stack):
+def test_workspace_profile_uses_canonical_oauth_resource_and_revocation(coding_stack):
     from urllib.parse import parse_qs,urlparse
     from tests.test_integration import oauth_prepare
     s=coding_stack
-    challenge=s.client.post('/mcp?profile=coding',headers={'Accept':'application/json, text/event-stream'},json={'jsonrpc':'2.0','id':1,'method':'tools/list'})
+    challenge=s.client.post('/mcp',headers={'Accept':'application/json, text/event-stream'},json={'jsonrpc':'2.0','id':1,'method':'tools/list'})
     assert challenge.status_code==401 and 'oauth-protected-resource/mcp' in challenge.headers['www-authenticate']
     assert s.client.get('/.well-known/oauth-protected-resource/mcp').json()['resource']==s.url+'/mcp'
-    registration,request,verifier,args=oauth_prepare(s,'read')
-    decision=s.must(s.client.post('/api/oauth/requests/'+request+'/decide',json={'allow':True,'scopes':['read'],'projects':[s.project['id']]}))
+    registration,request,verifier,args=oauth_prepare(s)
+    profile=s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read']}]})
+    initial=s.must(s.client.get('/api/oauth/requests/'+request))
+    selected=s.must(s.client.post('/api/oauth/requests/'+request+'/select-space',json={
+        'space_id':s.space_id,'selection_version':initial['selection_version']}))
+    decision=s.must(s.client.post('/api/oauth/requests/'+request+'/decide',json={
+        'allow':True,'space_id':s.space_id,'profile_id':profile['id'],'profile_version':profile['version'],
+        'selection_version':selected['selection_version']}))
     code=parse_qs(urlparse(decision['redirect']).query)['code'][0]
     tokens=s.must(s.client.post('/oauth/token',data={'grant_type':'authorization_code','client_id':registration['client_id'],'code':code,'code_verifier':verifier,'redirect_uri':args['redirect_uri'],'resource':s.url+'/mcp'}))
-    assert_task_catalog(rpc(s,'tools/list',token=tokens['access_token']).json()['result']['tools'], 14)
+    assert_task_catalog(rpc(s,'tools/list',token=tokens['access_token']).json()['result']['tools'])
     opened=value(s,tool(s,'open_workspace',{'project':'Imago'},tokens['access_token']))
     assert opened['workspace']['granted_scopes']==['read']
     assert s.client.post('/oauth/revoke',data={'token':tokens['access_token'],'client_id':registration['client_id']}).status_code==200

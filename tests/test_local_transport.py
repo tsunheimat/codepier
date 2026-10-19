@@ -408,8 +408,11 @@ async def test_child_cancel_receive_is_terminal_and_guard_disarmed_only_after_fi
 
 def test_real_stdio_redirects_print_fd1_existing_logs_and_descendant_stdout():
     code = '''
-import asyncio, logging, os, subprocess, sys
+import asyncio, faulthandler, logging, os, subprocess, sys
 from shared.local_transport import StdioTransport
+# A failed native shutdown must report which owned worker/CRT operation is
+# blocked. This timer belongs only to the isolated test subprocess.
+faulthandler.dump_traceback_later(5, file=sys.stderr)
 logger = logging.getLogger("fixture")
 logger.addHandler(logging.StreamHandler(sys.stdout))
 async def run():
@@ -420,13 +423,22 @@ async def run():
         logger.warning("existing logger")
         subprocess.run([sys.executable, "-c", "print('descendant diagnostic')"], check=True)
         await transport.send("only protocol 世界")
+    if os.name=='nt':
+        assert not transport._reader.is_alive() and not transport._writer.is_alive()
+        assert not transport._windows_io.handles
 asyncio.run(run())
+faulthandler.cancel_dump_traceback_later()
 '''
     # Keep parent stdin open while child produces its frame and exits normally.
     child = subprocess.Popen([sys.executable, "-c", code], cwd=REPO, stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        child.wait(timeout=10)
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            _output, diagnostic=child.communicate(timeout=2)
+            pytest.fail('Isolated stdio child failed to exit with stdin open:\n'+diagnostic.decode(errors='replace'))
         stdout, stderr = child.communicate(timeout=2)
         assert child.returncode == 0, stderr.decode()
         assert stdout == frame("only protocol 世界")
