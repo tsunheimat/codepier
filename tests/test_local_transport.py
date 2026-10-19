@@ -418,10 +418,17 @@ logger.addHandler(logging.StreamHandler(sys.stdout))
 async def run():
     with StdioTransport.from_stdio(asyncio.get_running_loop(), lambda: None) as transport:
         assert not os.get_inheritable(transport._writer._args[0])
+        assert not os.get_inheritable(transport._reader._args[0])
+        # The private framing reader owns the parent's protocol pipe. Neither
+        # ordinary Python stdin nor a descendant may read or inherit it.
+        assert os.read(0, 1) == b''
         print("python diagnostic", flush=True)
         os.write(1, b"fd1 diagnostic\\n")
         logger.warning("existing logger")
-        subprocess.run([sys.executable, "-c", "print('descendant diagnostic')"], check=True)
+        subprocess.run([sys.executable, "-c",
+            "import sys; assert sys.stdin.read() == ''; print('descendant diagnostic')"],
+            check=True, timeout=5)
+        assert await transport.recv() == 'private protocol request'
         await transport.send("only protocol 世界")
     if os.name=='nt':
         assert not transport._reader.is_alive() and not transport._writer.is_alive()
@@ -429,10 +436,14 @@ async def run():
 asyncio.run(run())
 faulthandler.cancel_dump_traceback_later()
 '''
-    # Keep parent stdin open while child produces its frame and exits normally.
+    # Keep the protocol input pipe open even after sending one frame. Ordinary
+    # descendants must observe EOF on their own stdin without stealing a frame
+    # or blocking Python startup on the original synchronous pipe handle.
     child = subprocess.Popen([sys.executable, "-c", code], cwd=REPO, stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
+        child.stdin.write(frame('private protocol request'))
+        child.stdin.flush()
         try:
             child.wait(timeout=10)
         except subprocess.TimeoutExpired:

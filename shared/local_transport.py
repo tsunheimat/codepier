@@ -253,8 +253,10 @@ class StdioTransport(_TextTransport):
 
     @classmethod
     def from_stdio(cls, loop, stop):
-        # Reserve the protocol fd BEFORE redirecting fd 1. No Python stream or
-        # descendant may inherit it, even when the descendant inherits stdout.
+        # Reserve both protocol fds BEFORE replacing ordinary stdin/stdout.
+        # Neither Python streams nor descendants may share the framing pipes.
+        # In particular, an inherited synchronous Windows input handle can
+        # stall a descendant while the dedicated reader has a pending read.
         write_fd = os.dup(1)
         read_fd = None
         try:
@@ -265,17 +267,25 @@ class StdioTransport(_TextTransport):
                 import msvcrt
                 msvcrt.setmode(read_fd, os.O_BINARY)
                 msvcrt.setmode(write_fd, os.O_BINARY)
+            # fd 0 belongs to ordinary code and inheriting child processes.
+            # Only the private, non-inheritable duplicate may consume frames.
+            # Redirect before starting either I/O worker: CRT descriptor locks
+            # must not be changed under an already-blocking read.
+            with open(os.devnull, 'rb', buffering=0) as null_input:
+                os.dup2(null_input.fileno(), 0)
             os.dup2(2, 1)
             if os.name == "nt":
-                # CRT fd redirection alone does not reliably replace the Win32
-                # standard handle used by native code / inherited child stdout.
+                # CRT fd redirection alone does not reliably replace Win32
+                # standard handles used by native code and CreateProcess.
+                # Publish the safe stdin as well as diagnostic-only stdout.
                 import ctypes
                 from ctypes import wintypes
                 set_handle = ctypes.WinDLL("kernel32", use_last_error=True).SetStdHandle
                 set_handle.argtypes = (wintypes.DWORD, wintypes.HANDLE)
                 set_handle.restype = wintypes.BOOL
-                if not set_handle(wintypes.DWORD(-11), msvcrt.get_osfhandle(1)):
-                    raise ctypes.WinError(ctypes.get_last_error())
+                for standard, fd in ((-10, 0), (-11, 1)):
+                    if not set_handle(wintypes.DWORD(standard), msvcrt.get_osfhandle(fd)):
+                        raise ctypes.WinError(ctypes.get_last_error())
             previous = sys.stdout
             sys.stdout = sys.stderr
             # Buffered pre-initialization diagnostics now flush to stderr too.

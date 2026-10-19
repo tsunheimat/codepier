@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 LIVE = {'starting', 'running', 'stopping', 'orphaned'}
@@ -45,6 +46,28 @@ CREATE TABLE native_security (kind TEXT NOT NULL CHECK(kind IN ('session','file'
 """
 
 
+def _enable_wal(db, timeout=10):
+    """Bounded retry of an idempotent journal-mode transition, never user work.
+
+    SQLite may return BUSY immediately when concurrent first-time openers try
+    to promote the journal lock. A connection timeout alone does not serialize
+    that promotion. Recheck the mode after each contention; another opener may
+    already have completed it. Non-contention errors are never retried.
+    """
+    deadline=time.monotonic()+timeout
+    while True:
+        try:
+            if db.execute('PRAGMA journal_mode').fetchone()[0]=='wal':return
+            if db.execute('PRAGMA journal_mode=WAL').fetchone()[0]!='wal':
+                raise RuntimeError('Native spool requires WAL; journal mode was not changed')
+            return
+        except sqlite3.OperationalError as exc:
+            code=getattr(exc,'sqlite_errorcode',0)&0xff
+            if code not in {sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED} or time.monotonic()>=deadline:
+                raise
+            time.sleep(.01)
+
+
 def database(directory):
     """Open only a current native spool; never upgrade or adopt old records."""
     directory=Path(directory)
@@ -56,13 +79,19 @@ def database(directory):
     db=sqlite3.connect(path,timeout=10)
     db.row_factory=sqlite3.Row
     try:
+        # Inspect the version and catalog in one read snapshot. Without it,
+        # another initializer can commit between those reads and make a fresh
+        # database look like old tables with version zero.
+        db.execute('BEGIN')
         version=db.execute('PRAGMA user_version').fetchone()[0]
         if version!=NATIVE_SCHEMA:
-            # Inspect before changing WAL mode or writing anything. After the
-            # write lock, recheck to serialize concurrent first-time openers.
             tables=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
             if version or tables:
                 raise RuntimeError('NATIVE_DATABASE_REQUIRED: old or unknown native schema is not supported; use a separate empty native spool. No data was converted.')
+        db.commit()
+        if version!=NATIVE_SCHEMA:
+            # End the read snapshot before requesting the write lock, then
+            # recheck under that lock; do not upgrade a stale read transaction.
             db.execute('BEGIN IMMEDIATE')
             version=db.execute('PRAGMA user_version').fetchone()[0]
             if version!=NATIVE_SCHEMA:
@@ -73,7 +102,7 @@ def database(directory):
                     if statement.strip():db.execute(statement)
                 db.execute(f'PRAGMA user_version={NATIVE_SCHEMA}')
             db.commit()
-        if db.execute('PRAGMA journal_mode').fetchone()[0]!='wal':db.execute('PRAGMA journal_mode=WAL')
+        _enable_wal(db)
         db.execute('PRAGMA synchronous=FULL')
         db.execute('PRAGMA secure_delete=ON')
         os.chmod(path,0o600)

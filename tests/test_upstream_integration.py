@@ -53,7 +53,9 @@ def test_call_log_watch_filters_detail_and_cursor_respect_private_space(team):
     assert cross not in json.dumps(result) and other not in json.dumps(result)
     assert {p['id'] for p in result['projects']}=={'project-team'}
     assert b['alice'].get('/api/call-log/'+other).status_code==404
-    assert b['alice'].get('/api/call-log/'+cross).status_code==404
+    cross_denied=b['alice'].get('/api/call-log/'+cross)
+    assert cross_denied.status_code==403
+    assert 'PRIVATE' not in cross_denied.text and 'owner' not in cross_denied.text
     assert b['bob'].get('/api/call-log',params={'limit':1,'cursor':result['next_cursor']}).status_code==400
     store.execute("INSERT INTO membership_blocks VALUES('team','alice',1)")
     revoked=b['alice'].get('/api/call-log',params={'watch':own[0]})
@@ -137,7 +139,7 @@ def test_rotation_covers_gateway_oidc_and_preserves_retry_and_idempotency(gw,oid
                   (identity['id'],'OIDC_UPSTREAM_ERROR',digest(identity['upstream_tokens']),provider['version'],identity['checked_at']))
     expected={}
     for table,column in keyring.CIPHER_COLUMNS:
-        primary='state_hash' if table=='oidc_transactions' else 'id'
+        primary={'oidc_transactions':'state_hash','oauth_refresh_receipts':'predecessor_hash'}.get(table,'id')
         for row in store.all(f"SELECT {primary} AS id,{column} AS cipher FROM {table} WHERE {column} IS NOT NULL AND {column}!=''"):
             expected[(table,column,primary,row['id'])]=store.decrypt(row['cipher'])
     assert {'oidc_providers','oidc_transactions','external_identities','gateway_accounts','gateway_calls','gateway_secrets'}<={k[0] for k in expected}
