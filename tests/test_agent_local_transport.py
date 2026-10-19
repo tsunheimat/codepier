@@ -5,6 +5,7 @@ from shared.tool_protocol import advertisement, catalog_digest
 
 import asyncio
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -202,7 +203,7 @@ main()
     child = await asyncio.create_subprocess_exec(sys.executable, "-c", code, str(tmp_path / "config.json"),
         cwd=REPO, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
-        assert await asyncio.wait_for(child.stderr.readline(), 10) == b"init diagnostic\n"
+        assert await asyncio.wait_for(child.stderr.readline(),10)==b"init diagnostic"+os.linesep.encode()
         assert await asyncio.wait_for(child.stderr.readline(), 2) == b"init-ready\n"
         child.stdin.close()
         await asyncio.wait_for(child.wait(), 3)

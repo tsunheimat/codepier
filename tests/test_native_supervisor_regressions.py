@@ -30,7 +30,7 @@ def native_cache(tmp_path):
     row={'id':uuid.uuid4().hex,'project_id':project_id,'device_id':device,
         'root':str(root),'cwd':str(root),'provider':'codex','title':'Owned session',
         'status':'running','created':time.time()-50,'updated':time.time()-20,
-        'size':5,'exit_code':None,'error':'','mode':'terminal',
+        'size':5,'exit_code':None,'error':'','mode':'terminal','native_thread':'','chat_settings':'{}',
         '_native_owner':'user:u','_native_space':space}
     try:yield service,project,row
     finally:store.close()

@@ -40,13 +40,13 @@ def resolved(s,name,args=None,*,panel=False,expect='succeeded'):
     args={'project':'Imago',**(args or {})}
     if name not in {'activity_list'}:args.setdefault('idempotency_key',uuid.uuid4().hex)
     public_name, public_args = public_call(name, args)
-    result=s.call(name,args) if panel else s.mcp(public_name,public_args)['structuredContent']
+    result=s.call(name,{**args,'project':s.project['id']}) if panel else s.mcp(public_name,public_args)['structuredContent']
     if result.get('pending'):
         def terminal():
             operation=s.mcp('process', {'operation':'wait','operation_ids':[result['operation_id']], 'wait_seconds':5})['structuredContent']['operations'][0]
             return operation if not operation.get('pending') else None
         operation=s.poll(result['operation_id'],timeout=35) if panel else wait_for(terminal,35)
-        assert operation['state']==expect,operation
+        assert operation['state']==expect,json.dumps({'id':operation['id'],'state':operation['state'],'result':operation.get('result'),'error':operation.get('error')})
         result={**(operation.get('result') or {}).get('data',{}),'operation_id':operation['id']}
     assert not result.get('error'),result
     schema=OUTPUT_SCHEMAS[name] if panel else next(item['outputSchema'] for item in tool_definitions() if item['name']==public_name)
@@ -54,7 +54,7 @@ def resolved(s,name,args=None,*,panel=False,expect='succeeded'):
     return result
 
 
-def modern(s,method,params=None,*,profile='full',**overrides):
+def modern(s,method,params=None,**overrides):
     params=dict(params or {})
     params['_meta']={PREFIX+'protocolVersion':MODERN,PREFIX+'clientCapabilities':{},
                      PREFIX+'clientInfo':{'name':'CodePier independent wire test','version':'1'}}
@@ -63,10 +63,10 @@ def modern(s,method,params=None,*,profile='full',**overrides):
     if method=='tools/call':headers['Mcp-Name']=params['name']
     if method=='resources/read':headers['Mcp-Name']=params['uri']
     headers.update(overrides)
-    return s.client.post('/mcp?profile='+profile,headers=headers,json={'jsonrpc':'2.0','id':uuid.uuid4().hex,'method':method,'params':params})
+    return s.client.post('/mcp',headers=headers,json={'jsonrpc':'2.0','id':uuid.uuid4().hex,'method':method,'params':params})
 
 
-def test_legacy_and_modern_protocols_are_distinct_and_share_permissions(integrated_stack):
+def test_supported_protocols_require_distinct_envelopes_and_share_connection_authority(integrated_stack):
     s=integrated_stack
     old=s.rpc('initialize',{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'old','version':'1'}})
     assert old.status_code==200 and old.json()['result']['protocolVersion']=='2025-11-25'
@@ -85,15 +85,14 @@ def test_legacy_and_modern_protocols_are_distinct_and_share_permissions(integrat
     assert bad.json()['result']['isError']
 
 
-@pytest.mark.parametrize('profile', ['core', 'full', 'coding'])
 @pytest.mark.parametrize('protocol', ['legacy', 'modern'])
-def test_text_project_queries_remain_usable_without_workbench(integrated_stack, profile, protocol):
+def test_text_project_queries_remain_usable_without_workbench(integrated_stack, protocol):
     s = integrated_stack
     def rpc(method, params=None):
         if protocol == 'modern':
-            response = modern(s, method, params, profile=profile)
+            response = modern(s, method, params)
         else:
-            response = s.client.post('/mcp?profile=' + profile,
+            response = s.client.post('/mcp',
                 headers={'Authorization': 'Bearer ' + s.pat,
                          'Accept': 'application/json, text/event-stream',
                          'MCP-Protocol-Version': '2025-11-25'},
@@ -114,19 +113,21 @@ def test_text_project_queries_remain_usable_without_workbench(integrated_stack, 
     assert 'com.codepier/binding' not in result.get('_meta', {})
     assert result['structuredContent']['projects']
     assert all(project['root'] == '.' for project in result['structuredContent']['projects'])
-    retired = rpc('tools/call', {'name': 'workbench', 'arguments': {}})
-    assert retired['isError']
-    assert retired['structuredContent']['error']['code'] == 'TOOL_REMOVED'
-    assert 'project_query' in retired['structuredContent']['error']['message']
+    if protocol=='modern':
+        retired=modern(s,'tools/call',{'name':'workbench','arguments':{}})
+        assert retired.status_code==400 and retired.json()['error']['code']==-32602
+        assert 'result' not in retired.json()
+    else:
+        retired=rpc('tools/call',{'name':'workbench','arguments':{}})
+        assert retired['isError'] and retired['structuredContent']['error']['code']=='UNKNOWN_TOOL'
 
 
 def test_apps_resources_are_real_built_documents_and_bound_to_snapshots(integrated_stack):
     s=integrated_stack
     # New calls stay text-only; saved app instances can still resolve their resources.
-    for profile in ('full', 'coding'):
-        for definition in modern(s, 'tools/list', profile=profile).json()['result']['tools']:
-            assert 'resourceUri' not in definition['_meta'].get('ui', {})
-            assert 'openai/outputTemplate' not in definition['_meta']
+    for definition in modern(s,'tools/list').json()['result']['tools']:
+        assert 'resourceUri' not in definition['_meta'].get('ui',{})
+        assert 'openai/outputTemplate' not in definition['_meta']
     listing=s.rpc('resources/list').json()['result']['resources']
     assert 'ui://codepier/changes-v1.html' in {r['uri'] for r in listing}
     assert 'ui://codepier/workspace-v1.html' not in {r['uri'] for r in listing}
@@ -157,7 +158,7 @@ def test_worktree_is_real_isolated_scoped_and_safe_to_remove(integrated_stack):
     assert s.poll(opened['operation_id'])['result']['data']['workspace']['root']==str(target)
     result=resolved(s,'fs_write',{'workspace_id':workspace,'path':'isolated.txt','content':'only this worktree','expected_sha256':'new'})
     assert (target/'isolated.txt').read_text()=='only this worktree' and not (s.imago/'isolated.txt').exists()
-    issued=s.client.post('/api/grants',json={'label':'other-worktree-owner','scopes':['read','write','execute'],'projects':[s.project['id']],'days':1}).json()
+    issued=s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read','write','execute']}]}))
     denied=s.mcp('read',{'project':'Imago','workspace_id':workspace,'path':'README.md'},token_value=issued['token'])
     if denied['structuredContent'].get('pending'):
         assert s.poll(denied['structuredContent']['operation_id'])['state']=='failed'
@@ -176,7 +177,7 @@ def test_worktree_is_real_isolated_scoped_and_safe_to_remove(integrated_stack):
     deleted=resolved(s,'worktrees_remove',{'target_workspace_id':workspace,'confirm':workspace})
     assert deleted['removed'] and not target.exists()
     assert s.client.get(archive['download_path']).content==b'only this worktree'
-    s.client.delete('/api/grants/'+issued['grant_id'])
+    s.client.post(f'/api/spaces/{s.space_id}/connections/' + issued['connection_id'] + '/revoke')
 
 
 @pytest.mark.parametrize('action',['symbols','workspace_symbols','definition','references','hover','diagnostics','incoming_calls','outgoing_calls'])
@@ -251,10 +252,10 @@ def test_activity_is_real_timing_not_model_thinking_and_is_scoped(integrated_sta
     assert len(reads)>=2 and any(x['next_call_gap_ms'] is not None for x in reads)
     assert all(x['service_ms'] is not None and x['status']!='running' for x in reads)
     assert 'PRIVATE_HOST_HINT' not in json.dumps(items)
-    grant=s.client.post('/api/grants',json={'label':'other-observer','scopes':['read'],'projects':[s.project['id']],'days':1}).json()
+    grant=s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read']}]}))
     own=s.mcp('process',{'operation':'activity','project':'Imago'},token_value=grant['token'])['structuredContent']['activities']
     assert all(row['tool']=='process' and row['window_key'] is None for row in own)
-    s.client.delete('/api/grants/'+grant['grant_id'])
+    s.client.post(f'/api/spaces/{s.space_id}/connections/' + grant['connection_id'] + '/revoke')
 
 
 def test_local_owner_control_is_loopback_authenticated_and_journaled(integrated_stack):
@@ -278,12 +279,12 @@ def test_local_owner_control_is_loopback_authenticated_and_journaled(integrated_
 def test_coding_profile_dashboard_query_keeps_scope_enforcement(integrated_stack):
     s = integrated_stack
     headers = {'Authorization': 'Bearer ' + s.pat, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}
-    result = s.client.post('/mcp?profile=coding', headers=headers, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+    result = s.client.post('/mcp', headers=headers, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
         'params': {'name': 'workspace', 'arguments': {'operation':'dashboard','project': 'Imago'}}}).json()['result']
     assert not result['isError'] and result['structuredContent']['execution_started'] is False
     invalid = s.client.post('/api/grants', json={'label': 'dashboard-no-read', 'scopes': ['write'], 'projects': [s.project['id']], 'days': 1})
     assert not invalid.is_success  # The owner API itself requires the base read scope.
-    grant = s.client.post('/api/grants', json={'label': 'dashboard-other-project', 'scopes': ['read'], 'projects': [s.projects[1]['id']], 'days': 1}).json()
+    grant = s.create_connection(s.create_profile({'project_rules':[{'projects':[s.projects[1]['id']],'actions':['read']}]}))
     denied = s.mcp('workspace', {'project': 'Imago', 'operation': 'dashboard', 'options': {}}, token_value=grant['token'])
-    assert denied['isError'] and denied['structuredContent']['error']['code'] == 'PROJECT_NOT_FOUND'
-    s.client.delete('/api/grants/' + grant['grant_id'])
+    assert denied['isError'] and denied['structuredContent']['error']['code'] == 'WORKSPACE_POLICY_DENIED'
+    s.client.post(f'/api/spaces/{s.space_id}/connections/' + grant['connection_id'] + '/revoke')

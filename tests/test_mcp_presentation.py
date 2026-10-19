@@ -156,6 +156,29 @@ def test_errors_hide_home_prefix_without_changing_source_or_codes(path):
     assert shown['content'] == shown['output'] == path and shown['diff'] == '+' + path
 
 
+@pytest.mark.parametrize('name',['workspace','exec','process','project_query'])
+def test_route_projection_hides_source_metadata_without_rewriting_evidence(name):
+    route={'family':'shell','device_id':'runner','source_key':'device:runner',
+        'subpath':ROOT,'view_hash':'a'*64,'folder_id':'private-folder'}
+    original={'operation_id':OP,'route':deepcopy(route),'route_context':json.dumps(route),
+        'output':ROOT,'content':json.dumps(route),'next_call':{'arguments':{'cwd':ROOT}}}
+    saved=deepcopy(original)
+    shown=present(name,{},original)
+    assert shown['route']=={'family':'shell','device_id':'runner'}
+    assert 'route_context' not in shown
+    assert shown['output']==ROOT and shown['content']==json.dumps(route)
+    assert shown['next_call']['arguments']=={'cwd':ROOT}
+    assert original==saved
+
+
+def test_explicit_execution_options_preserve_reviewable_path_mappings():
+    options={'project':'fixture','logical_project_root':'/storage/development/fixture',
+        'default_device_id':'runner','devices':[{'device_id':'runner','name':'Requested builder',
+            'physical_project_root':ROOT,'online':True}]}
+    shown=present('get_execution_options',{'project':'fixture'},options)
+    assert shown==options and shown is not options
+
+
 def test_file_contents_vps_identity_profile_and_call_arguments_are_preserved():
     content = json.dumps(EXECUTION)
     file = {'operation_id': OP, 'path': 'fixture.json', 'content': content, 'sha256': 'a' * 64,
@@ -174,7 +197,7 @@ def test_file_contents_vps_identity_profile_and_call_arguments_are_preserved():
 @pytest.mark.parametrize('modern', [False, True])
 def test_http_discovery_resources_and_errors_use_one_projection(api, monkeypatch, modern):
     app, client, pat = api
-    app.state.store.execute('UPDATE projects SET root=?', (ROOT,))
+    app.state.store.execute('UPDATE space_folders SET device_path=?', (ROOT,))
     app.state.store.execute('UPDATE devices SET name=?', ('Private MacBook',))
     def call(method, params):
         body = {'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': deepcopy(params)}
@@ -191,7 +214,10 @@ def test_http_discovery_resources_and_errors_use_one_projection(api, monkeypatch
         Draft202012Validator(schema(name)).validate(result['structuredContent'])
     resource = call('resources/read', {'uri': 'rd://projects'})
     assert json.loads(resource['contents'][0]['text'])[0]['root'] == '.'
-    assert client.get('/api/projects').json()['projects'][0]['root'] == ROOT
+    listed=client.get('/api/projects').json()['projects'][0]
+    assert listed['root']=='/folders/audit-folder'
+    folder=client.get('/api/spaces/audit-space/folders').json()['folders'][0]
+    assert folder['device_path']==ROOT
     async def failed(*args):
         raise DevError('EXPECTED_FAILURE', 'Cannot access ' + ROOT + '/file', 409)
     monkeypatch.setattr(app.state.runtime, 'invoke', failed)
@@ -227,4 +253,7 @@ def test_real_agent_discovery_receipts_and_panel_keep_distinct_views(stack):
     assert 'command' not in result
     original = stack.poll(result['operation_id'])['result']['data']
     assert original['command'] and original['output'] == result['output']
-    assert stack.call('projects_resolve', {'project': 'Imago'})['root'] == str(stack.imago)
+    resolved=stack.call('projects_resolve',{'project':stack.project['id']})
+    assert resolved['root']=='/folders/'+stack.folder['id']+'/Imago'
+    folders=stack.client.get('/api/spaces/'+stack.space_id+'/folders').json()['folders']
+    assert next(f for f in folders if f['id']==stack.folder['id'])['device_path']==str(stack.root)

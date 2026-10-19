@@ -99,7 +99,7 @@ def claims_for(engine, tool, project, args, root):
     if args.get('task'):
         task = engine.config.get('tasks', {}).get(args['task'], {})
         # This is local task policy, never caller-declared resource policy.
-        # Public exec(task=...) must preserve legacy tasks_run's exclusion.
+        # Public named execution must preserve the configured task's exclusion.
         return [Claim('agent', 'path', canonical_path(root), not task.get('allow_read_concurrency', False))]
     remote = project.get('_ssh_target')
     namespace = f"ssh:{remote['resource_id']}" if remote else 'agent'
@@ -108,7 +108,14 @@ def claims_for(engine, tool, project, args, root):
         cwd = root / cwd
     # Routed commands retain a conservative source claim, but must also keep
     # caller-declared service/path claims (including cross-project services).
-    claims = [Claim('agent', 'path', canonical_path(root), True)] if tool == 'routed_exec' else []
+    context=project.get('_route_context') or {}
+    # Hub routing now covers ordinary single-Runner Projects too. Those must
+    # keep exec's explicit path/service claims rather than acquire a new
+    # whole-directory write lock solely because the wire tool is routed_exec.
+    # Tests, Git actions and shared/unknown source views remain conservative.
+    direct_shell=(context.get('source_key','').startswith('device:')
+                  and context.get('family')=='shell' and args.get('action','shell')=='shell')
+    claims=[Claim('agent','path',canonical_path(root),True)] if tool=='routed_exec' and not direct_shell else []
     for resource in args['resources']:
         name = resource['name']
         if resource['kind'] == 'path':

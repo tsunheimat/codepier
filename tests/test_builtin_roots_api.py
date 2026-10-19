@@ -8,6 +8,7 @@ from hub.builtin_agent import META_KEY as IDENTITY_KEY
 from hub.builtin_roots import META_KEY, load_settings
 from shared.util import DevError
 from tests.test_builtin_device_api import panel as panel
+from tests.current_model import CurrentModel
 
 
 def url(panel, device=None):
@@ -108,16 +109,20 @@ def test_strict_bounded_request(panel, body):
 
 
 @pytest.mark.parametrize("method", ["get", "put"])
-def test_instance_admin_alone_does_not_bypass_space_and_device_access(panel, method):
-    # Turn the other Personal owner into an instance administrator, without
-    # granting membership in the original owner's private Personal Space.
+def test_builtin_root_inventory_management_requires_explicit_instance_admin(panel, method):
+    panel.client.cookies.set('rd_session','other-cookie')
+    kwargs={'json':{'roots':[],'revision':0}} if method=='put' else {}
+    response=getattr(panel.client,method)(url(panel),**kwargs)
+    assert response.status_code in (403,404) and not panel.wakes
+    # Instance admins administer inventory; a removed ambient Space selector
+    # is not another gate or an authority source for this global resource.
     panel.store.execute("UPDATE iam_users SET instance_admin=1 WHERE user_id='other'")
-    panel.client.cookies.set("rd_session", "other-cookie")
-    kwargs = {"json": {"roots": [], "revision": 0}} if method == "put" else {}
-    assert getattr(panel.client, method)(url(panel), **kwargs).status_code in (403, 404)
-    panel.client.headers["x-codepier-space"] = panel.space
-    assert getattr(panel.client, method)(url(panel), **kwargs).status_code in (403, 404)
-    assert not panel.wakes
+    assert getattr(panel.client,method)(url(panel),**kwargs).status_code==200
+    assert not panel.store.one('SELECT * FROM space_devices WHERE device_id=?',(panel.builtin,))
+    panel.client.headers['X-CodePier-Space']=panel.space
+    response=getattr(panel.client,method)(url(panel),**kwargs)
+    assert response.status_code==400
+    assert response.json()['error']['code']=='WORKSPACE_PATH_REQUIRED'
 
 
 @pytest.mark.parametrize("method", ["get", "put"])
@@ -165,11 +170,14 @@ def test_root_removal_keeps_project_and_files(panel, tmp_path):
     file.write_text("source")
     response = panel.client.put(url(panel), json={"roots": [{"path": str(workspace), "writable": True}], "revision": 0})
     assert response.status_code == 200
-    panel.store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        ("project", "project", "project", panel.builtin, str(workspace), "", "write", 0, 1, panel.space, "owner"))
+    model=CurrentModel(panel.store)
+    model.bind_device(panel.space,panel.builtin)
+    model.folder('mounted-folder',space=panel.space,device=panel.builtin,path=workspace,allow_tasks=False)
+    model.project('project',space=panel.space,folder='mounted-folder',owner='owner')
     response = panel.client.put(url(panel), json={"roots": [], "revision": 1})
     assert response.json()["revision"] == 2 and response.json()["roots"] == []
     assert file.read_text() == "source"
-    assert panel.store.one("SELECT root FROM projects WHERE id='project'")["root"] == str(workspace)
+    assert panel.store.one("SELECT folder_id FROM projects WHERE id='project'")['folder_id']=='mounted-folder'
+    assert panel.store.one("SELECT device_path FROM space_folders WHERE id='mounted-folder'")['device_path']==str(workspace)
     audit = panel.store.one("SELECT detail FROM audit WHERE action='device.builtin_roots_updated' ORDER BY id DESC")
     assert json.loads(audit["detail"])["revision"] == 2

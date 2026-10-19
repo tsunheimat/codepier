@@ -10,8 +10,10 @@ def ident():return uuid.uuid4().hex
 
 def test_real_outbound_agent_online_and_alias(stack):
     devices=stack.client.get('/api/devices').json()['devices'];assert devices[0]['online']
-    assert stack.call('projects_resolve',{'project':'iMaGo'})['root']==str(stack.imago)
-    assert len(stack.call('projects_list')['projects'])==3
+    resolved=stack.mcp('workspace',{'operation':'resolve','project':'iMaGo'})['structuredContent']
+    assert resolved['id']==stack.project['id']
+    assert stack.call('projects_resolve',{'project':stack.project['id']})['root']==f"/folders/{stack.folder['id']}/Imago"
+    assert len(stack.mcp('project_query',{'operation':'list'})['structuredContent']['projects'])==3
 
 
 def test_source_checkout_agent_reports_safe_repair_state(stack):
@@ -38,24 +40,32 @@ def test_read_tree_and_search_codepier(stack):
     many=stack.fs('fs_read_many',paths=['README.md','missing.txt']);assert many['files'][0]['ok'] and not many['files'][1]['ok']
 
 def test_mapping_validation_alias_uniqueness(stack):
-    body={'alias':'IMAGO','device_id':stack.device,'root':str(stack.imago),'mode':'write','allow_tasks':False}
-    assert stack.client.post('/api/projects',json=body).status_code==409
-    body['alias']='Outside';body['root']=str(stack.directory)
-    assert stack.client.post('/api/projects',json=body).status_code==409
-    body['root']=str(stack.imago/'.git')
-    assert stack.client.post('/api/projects',json=body).status_code==409
+    path=f'/api/spaces/{stack.space_id}/projects'
+    body={'alias':'IMAGO','folder_id':stack.folder['id'],'subpath':'Imago','idempotency_key':ident()}
+    assert stack.client.post(path,json=body).status_code==409
+    for subpath in ('../outside','/absolute'):
+        invalid={**body,'alias':'Outside','subpath':subpath,'idempotency_key':ident()}
+        assert stack.client.post(path,json=invalid).status_code==422
+    protected={**body,'alias':'Protected','subpath':'Imago/.git','idempotency_key':ident()}
+    response=stack.client.post(path,json=protected)
+    if response.status_code==409 and response.json()['error']['code']=='VALIDATION_PENDING':
+        result=stack.poll(response.json()['error']['operation_id'],timeout=30)
+        assert result['state']=='failed'
+    else:assert response.status_code in (403,409),response.text
+    assert not any(p['alias']=='Protected' for p in stack.client.get('/api/projects').json()['projects'])
+
 
 @pytest.mark.parametrize('path',['../outside.txt','.env','.git/config','/etc/passwd'])
 def test_denied_files_not_returned(stack,path):
-    r=stack.call('fs_read',{'project':'Imago','path':path},raw=True)
+    r=stack.call('fs_read',{'project':stack.project['id'],'path':path},raw=True)
     assert r.status_code in (400,403,409);assert 'never-return-this' not in r.text
 
 def test_write_exactly_once_and_conflict(stack):
     name='test-'+ident()+'.txt'; args={'path':name,'content':'one\n','expected_sha256':'new','idempotency_key':ident()}
     first=stack.fs('fs_write',**args);second=stack.fs('fs_write',**args)
     assert first['operation_id']==second['operation_id'];assert (stack.imago/name).read_text()=='one\n'
-    assert stack.call('fs_write',{'project':'Imago',**args,'content':'other'},raw=True).status_code==409
-    assert stack.call('fs_write',{'project':'Imago',**args,'idempotency_key':ident()},raw=True).status_code==409
+    assert stack.call('fs_write',{'project':stack.project['id'],**args,'content':'other'},raw=True).status_code==409
+    assert stack.call('fs_write',{'project':stack.project['id'],**args,'idempotency_key':ident()},raw=True).status_code==409
     preview=stack.fs('fs_preview',path=name,content='two\n');assert preview['added_lines']==1
     edit=stack.fs('fs_edit',path=name,expected_sha256=first['sha256'],edits=[{'old_text':'one','new_text':'two'}],idempotency_key=ident())
     assert (stack.imago/name).read_text()=='two\n'
@@ -66,7 +76,7 @@ def test_write_exactly_once_and_conflict(stack):
 def test_external_modification_cas(stack):
     path='cas-'+ident()+'.txt';(stack.imago/path).write_text('old')
     old=stack.fs('fs_read',path=path);(stack.imago/path).write_text('changed locally')
-    r=stack.call('fs_write',{'project':'Imago','path':path,'expected_sha256':old['sha256'],'content':'lost update','idempotency_key':ident()},raw=True)
+    r=stack.call('fs_write',{'project':stack.project['id'],'path':path,'expected_sha256':old['sha256'],'content':'lost update','idempotency_key':ident()},raw=True)
     assert r.status_code==409 and (stack.imago/path).read_text()=='changed locally'
 
 def test_mkdir_move_checkpoint_history(stack):
@@ -85,14 +95,14 @@ def test_tasks_success_failure_timeout_cancel(stack):
     wait_for(lambda:'STARTED' in stack.client.get('/api/operations/'+slow['operation_id']).json()['output'])
     stack.call('operations_cancel',{'operation_id':slow['operation_id']})
     assert stack.poll(slow['operation_id'])['state']=='cancelled'
-    assert stack.call('tasks_run',{'project':'Imago','task':'arbitrary-command','idempotency_key':ident()},raw=True).json()['pending']
+    assert stack.call('tasks_run',{'project':stack.project['id'],'task':'arbitrary-command','idempotency_key':ident()},raw=True).json()['pending']
     # Asynchronous failures are recorded by the Agent, not hidden in a submit response.
 
 def test_mcp_protocol_and_catalog(stack):
     r=stack.rpc('initialize',{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'integration','version':'1'}})
     assert r.json()['result']['protocolVersion']=='2025-11-25'
     catalog=stack.rpc('tools/list').json()['result']['tools']
-    assert_task_catalog(catalog, 14)
+    assert_task_catalog(catalog)
     overview=stack.client.get("/api/overview")
     assert overview.status_code==200
     assert overview.json()["tool_count"]==len(catalog)
@@ -101,7 +111,7 @@ def test_mcp_protocol_and_catalog(stack):
     resources=stack.rpc('resources/list').json()['result']['resources']
     assert {r['uri'] for r in resources}=={'rd://projects','rd://conversations','ui://codepier/changes-v1.html'}
     current=stack.rpc('resources/read',{'uri':'rd://conversations'}).json()['result']['contents'][0]['text']
-    assert 'Audit' in current and 'openai/session' in current
+    assert 'Audit' in current and 'get_execution_options' in current
     assert stack.rpc('resources/read',{'uri':'rd://workflow'}).json()['error']['code'] == -32002
     assert 'Imago' in stack.rpc('resources/read',{'uri':'rd://projects'}).text
     assert stack.rpc('prompts/get',{'name':'review_project','arguments':{'project':'Imago'}}).json()['result']['messages']
@@ -116,14 +126,14 @@ def test_mcp_protocol_and_catalog(stack):
     assert stack.client.post('/mcp',json={'jsonrpc':'2.0','method':'notifications/initialized'},headers=headers).status_code==202
 
 def test_scoped_token_and_revocation(stack):
-    token=stack.must(stack.client.post('/api/grants',json={'label':'read Imago only','scopes':['read'],'projects':[stack.project['id']],'days':1}))
+    token=stack.create_connection(stack.create_profile({'project_rules':[{'projects':[stack.project['id']],'actions':['read']}]}))
     read=stack.mcp('workspace', {'operation': 'list'},token_value=token['token']);assert len(read['structuredContent']['projects'])==1
     no_project=stack.mcp('read',{'project':'Nexus','path':'README.md'},token['token']);assert no_project['isError']
     no_write=stack.mcp('write',{'project':'Imago','path':'blocked.txt','content':'bad','expected_sha256':'new','idempotency_key':ident()},token['token']);assert no_write['isError']
-    stack.must(stack.client.delete('/api/grants/'+token['grant_id']))
+    stack.must(stack.client.post(f'/api/spaces/{stack.space_id}/connections/' + token['connection_id'] + '/revoke'))
     assert stack.rpc('ping',token_value=token['token']).status_code==401
 
-def oauth_prepare(stack,scope='read write execute'):
+def oauth_prepare(stack,scope='codepier.workspace'):
     reg=stack.must(stack.client.post('/oauth/register',json={'client_name':'Integration OAuth','redirect_uris':['http://localhost:19123/callback'],'token_endpoint_auth_method':'none'}))
     verifier='v'*64;challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
     args={'response_type':'code','client_id':reg['client_id'],'redirect_uri':'http://localhost:19123/callback','scope':scope,'state':'test-state','resource':stack.url+'/mcp','code_challenge_method':'S256','code_challenge':challenge}
@@ -135,7 +145,12 @@ def test_oauth_pkce_full_flow_refresh_and_replay(stack):
     reg,id,verifier,args=oauth_prepare(stack)
     details=stack.client.get('/api/oauth/requests/'+id);assert details.json()['client_name']=='Integration OAuth'
     assert stack.client.post('/api/oauth/requests/'+id+'/decide',json={'allow':True,'scopes':['read'],'projects':[]}).status_code==400
-    decision=stack.must(stack.client.post('/api/oauth/requests/'+id+'/decide',json={'allow':True,'scopes':['read','write'],'projects':[stack.project['id']]}))
+    profile=stack.create_profile({'project_rules':[{'projects':[stack.project['id']],'actions':['read','write']}]})
+    selected=stack.must(stack.client.post('/api/oauth/requests/'+id+'/select-space',json={
+        'space_id':stack.space_id,'selection_version':details.json()['selection_version']}))
+    consent={'allow':True,'space_id':stack.space_id,'profile_id':profile['id'],
+        'profile_version':profile['version'],'selection_version':selected['selection_version']}
+    decision=stack.must(stack.client.post('/api/oauth/requests/'+id+'/decide',json=consent))
     code=parse_qs(urlparse(decision['redirect']).query)['code'][0]
     form={'grant_type':'authorization_code','code':code,'client_id':reg['client_id'],'redirect_uri':args['redirect_uri'],'code_verifier':verifier,'resource':stack.url+'/mcp'}
     assert stack.client.post('/oauth/token',data={**form,'code_verifier':'x'*64}).status_code==400
@@ -144,8 +159,12 @@ def test_oauth_pkce_full_flow_refresh_and_replay(stack):
     assert stack.client.post('/oauth/token',data=form).status_code==400
     refresh={'grant_type':'refresh_token','client_id':reg['client_id'],'refresh_token':tokens['refresh_token'],'resource':stack.url+'/mcp'}
     new=stack.must(stack.client.post('/oauth/token',data=refresh));assert new['refresh_token']!=tokens['refresh_token']
-    assert stack.client.post('/oauth/token',data=refresh).status_code==400
-    assert stack.client.post('/api/oauth/requests/'+id+'/decide',json={'allow':True,'scopes':['read'],'projects':[stack.project['id']]}).status_code==410
+    # A lost refresh response is replayed within the bounded retry window:
+    # it must return the same pair, not mint a second token branch or log out.
+    replay=stack.must(stack.client.post('/oauth/token',data=refresh))
+    assert replay['access_token']==new['access_token']
+    assert replay['refresh_token']==new['refresh_token']
+    assert stack.client.post('/api/oauth/requests/'+id+'/decide',json=consent).status_code==410
     assert stack.client.post('/oauth/revoke',data={'token':new['access_token'],'client_id':reg['client_id']}).status_code==200
     assert stack.rpc('ping',token_value=new['access_token']).status_code==401
 
@@ -168,7 +187,7 @@ def test_audit_tracks_real_mcp_and_diff(stack):
 
 def test_offline_queues_then_reconnects(stack):
     stack.stop_agent();wait_for(lambda:not stack.client.get('/api/devices').json()['devices'][0]['online'])
-    result=stack.call('fs_write',{'project':'Imago','path':'offline.txt','expected_sha256':'new','content':'no','idempotency_key':ident()},raw=True)
+    result=stack.call('fs_write',{'project':stack.project['id'],'path':'offline.txt','expected_sha256':'new','content':'no','idempotency_key':ident()},raw=True)
     assert result.status_code==200 and result.json()['pending'] and not (stack.imago/'offline.txt').exists()
     stack.start_agent()
     assert stack.poll(result.json()['operation_id'])['state']=='succeeded'

@@ -166,6 +166,52 @@ def _read_exactly(fd, size):
     return data
 
 
+class _WindowsSynchronousIO:
+    """Cancel only these dedicated I/O workers, using owned thread handles.
+
+    CancelSynchronousIo marks the call, not the thread, for cancellation. A
+    duplicated handle avoids the recycled native thread-ID race at shutdown.
+    https://learn.microsoft.com/windows/win32/api/ioapiset/nf-ioapiset-cancelsynchronousio
+    """
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self.ctypes,self.handle_type=ctypes,wintypes.HANDLE
+        self.kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+        declarations={
+            'GetCurrentProcess':([],wintypes.HANDLE),
+            'GetCurrentThread':([],wintypes.HANDLE),
+            'DuplicateHandle':([wintypes.HANDLE,wintypes.HANDLE,wintypes.HANDLE,
+                ctypes.POINTER(wintypes.HANDLE),wintypes.DWORD,wintypes.BOOL,wintypes.DWORD],wintypes.BOOL),
+            'CancelSynchronousIo':([wintypes.HANDLE],wintypes.BOOL),
+            'CloseHandle':([wintypes.HANDLE],wintypes.BOOL),
+        }
+        for name,(arguments,result) in declarations.items():
+            function=getattr(self.kernel,name);function.argtypes=arguments;function.restype=result
+        self.handles=set();self.lock=threading.Lock()
+
+    def register(self):
+        handle=self.handle_type();process=self.kernel.GetCurrentProcess()
+        if not self.kernel.DuplicateHandle(process,self.kernel.GetCurrentThread(),process,
+                self.ctypes.byref(handle),0x0001,False,0):  # THREAD_TERMINATE, required by cancellation
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+        with self.lock:self.handles.add(handle.value)
+        return handle.value
+
+    def release(self,handle):
+        if handle is None:return
+        with self.lock:
+            self.handles.remove(handle)
+            self.kernel.CloseHandle(handle)
+
+    def cancel(self):
+        # No thread pool and no TerminateThread. Cancel may race completed I/O;
+        # retrying while these same dedicated workers drain covers that window.
+        with self.lock:
+            for handle in self.handles:
+                self.kernel.CancelSynchronousIo(handle)
+
+
 class StdioTransport(_TextTransport):
     """One child session, with bounded daemon I/O workers on POSIX and Windows.
 
@@ -197,6 +243,7 @@ class StdioTransport(_TextTransport):
         self._closed = threading.Event()
         self._finished = threading.Event()
         self._error = None
+        self._windows_io=_WindowsSynchronousIO() if os.name=='nt' else None
         self._reader = threading.Thread(target=self._read_worker, args=(read_fd,),
                                         name="agent-stdio-reader", daemon=True)
         self._writer = threading.Thread(target=self._write_worker, args=(write_fd,),
@@ -278,7 +325,9 @@ class StdioTransport(_TextTransport):
             raise ConnectionError(self._error)
 
     def _read_worker(self, fd):
+        handle=None
         try:
+            if self._windows_io:handle=self._windows_io.register()
             while not self._closed.is_set():
                 length = _length(_read_exactly(fd, 4))
                 text = _read_exactly(fd, length).decode("utf-8")
@@ -295,9 +344,12 @@ class StdioTransport(_TextTransport):
             self._fail(exc)
         finally:
             os.close(fd)
+            if self._windows_io:self._windows_io.release(handle)
 
     def _write_worker(self, fd):
+        handle=None
         try:
+            if self._windows_io:handle=self._windows_io.register()
             while not self._closed.is_set():
                 payload = self._outgoing.get()
                 if payload is None or self._closed.is_set():
@@ -314,6 +366,7 @@ class StdioTransport(_TextTransport):
             self._fail(exc)
         finally:
             os.close(fd)
+            if self._windows_io:self._windows_io.release(handle)
 
     async def recv(self):
         async with self._recv_lock:
@@ -348,5 +401,20 @@ class StdioTransport(_TextTransport):
         self._fail(reason or "Local pipe closed")
 
     def finish(self):
-        self._finished.set()
-        self._fail("Local stdio context finished")
+        if self._windows_io:
+            # CRT finalization can wait on a descriptor locked by a blocked
+            # _read even though Python's I/O worker is a daemon. Poison first,
+            # cancel pending synchronous I/O, and let each owner close its fd.
+            # The independent exit guard remains armed if cancellation fails.
+            self._fail('Local stdio context finished')
+            workers=(self._reader,self._writer)
+            deadline=time.monotonic()+.5
+            while any(worker.is_alive() for worker in workers) and time.monotonic()<deadline:
+                self._windows_io.cancel()
+                for worker in workers:worker.join(.005)
+            if any(worker.is_alive() for worker in workers):
+                raise ConnectionError('Windows local I/O workers did not finish after cancellation')
+            self._finished.set()
+        else:
+            self._finished.set()
+            self._fail('Local stdio context finished')

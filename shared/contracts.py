@@ -529,6 +529,11 @@ def tool_definitions(profile="core", authorization="workspace"):
             definition['inputSchema'] = _compact_input_schema(definition['inputSchema'])
             definition['outputSchema'] = _compact_input_schema(definition['outputSchema'], output=True)
     for item in result:
+        if item['name']=='get_execution_options':
+            # Eligibility requires execution authority, but this operation only
+            # reads saved choices. OAuth scope is not a side-effect annotation.
+            item['annotations']['readOnlyHint']=True
+            item['annotations']['openWorldHint']=False
         if item["name"] in {"workspace", "browser", "computer", "process", "conversations"}:
             item["annotations"]["readOnlyHint"] = False
             item["annotations"]["openWorldHint"] = True

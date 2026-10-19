@@ -27,8 +27,10 @@ def test_route_identity_is_present_in_the_original_operation_insert(routing_stac
         result = r.exec([sys.executable, '-c', 'print("atomic routing")'])
         assert result['state'] == 'succeeded', result
         context = json.loads(result['route_context'])
-        assert context['route_id'] == r.routes['test']['id']
-        assert context['source_root_id'] == r.source['id']
+        assert context['source_key']=='pool:'+r.pool['id']
+        assert len(context['view_hash'])==64 and len(context['plan_hash'])==64
+        assert result['project_id']==r.project['id']
+        assert context['subpath']=='Imago'
         assert context['device_id'] == r.s.device
     finally:
         store.close()
@@ -39,7 +41,7 @@ async def test_local_output_error_after_rch_launch_is_not_a_safe_retry(tmp_path,
     root = tmp_path / 'source'
     root.mkdir()
     project = {'id': 'p', 'alias': 'P', 'root': str(root), 'mode': 'write', 'allow_tasks': True,
-        '_integration_owner': 'grant:test', '_route_context': {'route_id': 'original-route'},
+        '_integration_owner': 'grant:test', '_route_context': {'source_key':'pool:original','folder_id':'source-folder','device_id':'launcher'},
         '_execution_plan': {'hook_protocol': 1, 'provider': 'rch', 'rch': {}}}
     agent = SimpleNamespace(
         state_dir=tmp_path, cancelled=set(), stop_event=asyncio.Event(),
@@ -62,7 +64,7 @@ async def test_local_output_error_after_rch_launch_is_not_a_safe_retry(tmp_path,
     assert agent.run_process.await_count == 1
     retained = json.loads((tmp_path / 'rch-operations' / identifier / 'codepier.json').read_text())
     assert retained['owner'] == 'grant:test'
-    assert retained['route'] == {'route_id': 'original-route'}
+    assert retained['route'] == {'source_key':'pool:original','folder_id':'source-folder','device_id':'launcher'}
     # Re-entering the same launch is refused even without a wrapper result.
     with pytest.raises(DevError) as repeated:
         await routed_execution.execute(agent, identifier, project, args)

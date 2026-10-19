@@ -5,11 +5,31 @@ from pathlib import Path
 from shared.util import DevError
 from agent.filesystem import within
 
+def parent_source(project):
+    """Restore the authenticated source when leaving a managed worktree view."""
+    parent={**project,'root':project.get('_original_root',project['root']),'_workspace_id':''}
+    if '_original_source_boundary' in project:
+        parent['_source_boundary']=project['_original_source_boundary']
+        parent.pop('_original_source_boundary',None)
+    return parent
+
+
 class Workspaces:
     def __init__(self,agent,records):self.agent,self.records=agent,records
 
     def parent_project(self,project):
-        return {**project,'root':project.get('_original_root',project['root']),'_workspace_id':''}
+        return parent_source(project)
+
+    def view_project(self,parent,path,workspace_id):
+        # Only call after validating the original source and this recorded,
+        # locally managed worktree. The original mount cannot describe a
+        # sibling worktree, and dropping source validation would be unsafe.
+        # Give the derived view an exact root, never the enclosing directory.
+        view={**parent,'_original_root':parent['root'],'root':str(path),'_workspace_id':workspace_id}
+        if parent.get('_source_boundary') is not None:
+            view['_original_source_boundary']=dict(parent['_source_boundary'])
+            view['_source_boundary']={'mount':str(path),'subpath':'.','protocol':1}
+        return view
 
     async def git(self,identifier,project,cwd,args):
         flags=['git','-c','core.fsmonitor=false','-c','core.hooksPath='+str(self.agent.state_dir/'no-hooks'),
@@ -28,7 +48,7 @@ class Workspaces:
         if path.is_symlink() or path.resolve()!=path or not path.is_dir():raise DevError('WORKSPACE_CHANGED','隔离目录已移动或被替换',409)
         st=path.stat()
         if [st.st_dev,st.st_ino]!=record['identity']:raise DevError('WORKSPACE_CHANGED','隔离目录身份不匹配',409)
-        actual={**parent,'_original_root':parent['root'],'root':str(path),'_workspace_id':workspace_id}
+        actual=self.view_project(parent,path,workspace_id)
         self.agent.engine.root(actual)
         return actual
 
@@ -61,7 +81,7 @@ class Workspaces:
         try:
             await self.git(identifier,project,root,['worktree','add','--detach',str(target),commit])
             st=target.stat();record.update(state='ready',identity=[st.st_dev,st.st_ino])
-            self.agent.engine.root({**parent,'root':str(target)},True)
+            self.agent.engine.root(self.view_project(parent,target,identifier),True)
         except BaseException:
             record['state']='needs_review';self.records.save('workspace',identifier,parent,record,replace=True);raise
         self.records.save('workspace',identifier,parent,record,replace=True)

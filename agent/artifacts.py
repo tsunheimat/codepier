@@ -67,7 +67,9 @@ class Artifacts:
         source=self.engine.path(root,args['path'],False)
         binding_root=project.get('_original_root',str(root))
         # Snapshots survive managed-worktree cleanup, but never mapping revocation.
-        if binding_root!=str(root):self.engine.root({**project,'root':binding_root},True)
+        if binding_root!=str(root):
+            from agent.workspaces import parent_source
+            self.engine.root(parent_source(project),True)
         name=self.validate_name(args['name'] or source.name)
         with self.lock:
             self.cleanup()

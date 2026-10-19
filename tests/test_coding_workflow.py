@@ -29,7 +29,8 @@ def test_all_catalog_profiles_share_the_nine_core_tools():
     from shared.query_contracts import QUERY_TOOLS
     for profile in ('core', 'full', 'coding'):
         tools = tool_definitions(profile)
-        assert {definition['name'] for definition in tools} == CORE_TOOLS | QUERY_TOOLS | {'get_profile','get_access_context'}
+        assert {definition['name'] for definition in tools} == CORE_TOOLS | QUERY_TOOLS | {'get_profile','get_access_context',
+            'session','get_execution_options','folders_list','projects_create'}
         assert not CORE_TOOLS.intersection(REPLACED_MCP_TOOLS)
     assert next(item for item in tool_definitions() if item['name'] == 'process')['inputSchema']['properties']['output_limit']['default'] == 8000
 
@@ -222,6 +223,7 @@ def test_native_history_cleanup_purges_only_its_review_snapshots(native,action):
     obj,project=native;engine=obj.agent.engine;sid=uuid.uuid4().hex;now=time.time()
     bound={**project,'_coding_owner':'native:'+sid}
     with closing(database(obj.directory)) as db,db:
+        obj.security(db,'session',sid,project,create=True)
         db.execute('INSERT INTO sessions(id,project_id,device_id,root,cwd,provider,title,status,created,updated,argv,mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                    (sid,project['id'],project['device_id'],project['root'],project['root'],'codex','fixture','exited',now,now,'[]','chat'))
     store=ReviewStore(engine)

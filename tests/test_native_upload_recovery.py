@@ -20,7 +20,8 @@ def upload(tmp_path):
     root = tmp_path / 'project'
     root.mkdir()
     agent = SimpleNamespace(state_dir=tmp_path / 'state')
-    project = {'id': 'project', 'device_id': 'device', 'root': str(root)}
+    project = {'id': 'project', 'device_id': 'device', 'root': str(root),
+        '_native_owner':'user:upload-fixture','_native_space':'upload-workspace'}
     raw = b'isolated attachment fixture'
     args = {'file': uuid.uuid4().hex, 'name': 'fixture.txt', 'size': len(raw),
             'sha256': hashlib.sha256(raw).hexdigest()}
@@ -100,7 +101,7 @@ def test_fault_windows_resume_same_id_without_orphan_or_double_quota(upload, mon
 
 
 @pytest.mark.parametrize('kind', ['empty', 'nonempty', 'other_suffix', 'symlink', 'directory'])
-def test_legacy_unregistered_path_is_preserved_with_actionable_error(upload, kind):
+def test_unregistered_path_is_never_adopted_and_preserves_existing_bytes(upload, kind):
     restart, project, args, _ = upload
     obj = restart()
     folder = obj.directory / 'uploads'

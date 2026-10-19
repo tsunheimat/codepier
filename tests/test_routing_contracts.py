@@ -110,3 +110,20 @@ def test_family_resolution_is_explicit_not_command_regex():
     assert family_for('exec', {'action': 'shell', 'target': 'vps:abc'}) == 'ssh'
     assert family_for('routed_job_control', {'action': 'cancel'}) == 'test'
     assert family_for('worktrees_create', {}) == 'git'
+
+
+@pytest.mark.parametrize('source,prior_state,prior_family,expected',[
+    ('device:node','running','shell',None),
+    ('device:node','running','test','prior'),
+    ('device:node','needs_review','shell','prior'),
+    ('pool:shared','running','shell','prior'),
+])
+def test_direct_runner_claims_remain_independent_but_shared_and_test_holds_survive(source,prior_state,prior_family,expected):
+    row={'id':'prior','tool':'routed_exec','state':prior_state,
+        'route_context':json.dumps({'source_key':source,'subpath':'app','family':prior_family})}
+    routing=ProjectRouting(SimpleNamespace(store=SimpleNamespace(all=lambda *args:[row])))
+    current={'id':'next','tool':'routed_exec','created':2,'attempts':0,
+        'route_context':json.dumps({'source_key':source,'subpath':'app','family':'shell'})}
+    assert routing.source_blocker(current)==expected
+    current['tool']='session';current['args_summary']=json.dumps({'operation':'close'})
+    assert routing.source_blocker(current) is None

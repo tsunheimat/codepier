@@ -203,8 +203,16 @@ class ProjectRouting:
                 continue
             path_type=PureWindowsPath if ':' in context['subpath'] or context['subpath'].startswith('\\\\') else PurePosixPath
             a,b=path_type(context['subpath']),path_type(other['subpath'])
-            if (a==b or a in b.parents or b in a.parents) and (row['state']=='needs_review'
-                    or op['tool'] in MUTATING|PROCESS_TOOLS or row['tool'] in MUTATING|PROCESS_TOOLS):
+            overlaps=a==b or a in b.parents or b in a.parents
+            whole_source=(context['source_key'].startswith('pool:')
+                          or context.get('family')=='test' or other.get('family')=='test')
+            # A direct Folder has one Runner, whose explicit path/service claims
+            # already coordinate concurrent commands. Routing every new Project
+            # must not accidentally serialize its entire shell and file surface.
+            # Shared-pool writers and test plans keep the mandatory source hold;
+            # uncertain outcomes hold overlapping bytes for either source kind.
+            if overlaps and (row['state']=='needs_review' or whole_source and (
+                    op['tool'] in MUTATING|PROCESS_TOOLS or row['tool'] in MUTATING|PROCESS_TOOLS)):
                 return row['id']
         return None
 
