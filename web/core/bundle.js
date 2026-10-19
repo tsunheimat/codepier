@@ -385,7 +385,9 @@ var CP = (() => {
           dialog.dataset.editorForm = complex.closest("form")?.id || complex.id;
           const dirty = (event) => {
             const control = event.target;
-            if (control.matches?.("input[name],select[name],textarea[name],[data-policy-kind],#device-rename") && !control.readOnly)
+            if (control.matches?.(
+              "input[name],select[name],textarea[name],[data-policy-kind],#device-rename"
+            ) && !control.readOnly)
               dialog.dataset.editorDirty = "true";
           };
           dialog.addEventListener("input", dirty);

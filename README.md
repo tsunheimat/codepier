@@ -7,12 +7,15 @@ explicitly authorized Projects, VPS resources and external MCP services. The Hub
 manages identities/resources and dispatches work; your Runner accesses files,
 launches local tools and opens SSH connections.
 
-## Workspace abstraction — development branch
+## Workspace abstraction — 2.0 hard cutoff
 
-**This is a breaking development branch, not a released upgrade.** It requires a
-separate fresh `workspace-1` database. It refuses older databases without modifying
-or deleting them. Do not replace a running Hub's database or deploy over its data
-volume. Shared folders and VPS files are independent of Hub database state.
+**CodePier 2.0 uses a fresh-start model, not an in-place upgrade.** Initialize a
+separate empty `HUB_DATA_DIR` with the `workspace-1` schema and create new workspace
+bindings, Profiles and Connections. Older or mixed-model databases are refused,
+never converted or deleted. Do not point the new Hub at a previous data volume.
+Shared folders and VPS files are independent of Hub database state and remain
+untouched. A source merge does not deploy, publish a release, or replace a running
+Hub; deployment is a separate explicit operation.
 
 Resources → Workspace bindings → Projects / Profiles → MCP Connections.
 

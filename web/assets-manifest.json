@@ -11,8 +11,8 @@
       "bytes": 28999
     },
     "app.js": {
-      "sha256": "2d2391234b457cac2304ddaa3bc7b1dfce599bc877ddfe230cb99fdcc8bf4309",
-      "bytes": 122106
+      "sha256": "68412dc61b425d1183a97cbefeb47d51b8d1c36bef84044a1f2bef5cded72764",
+      "bytes": 122112
     },
     "appearance.js": {
       "sha256": "7fc8e8ffa85a4bb5836b8919cdf6ff12813cfb4a9e4736709f5858e5d8782bb1",
@@ -71,12 +71,12 @@
       "bytes": 17301
     },
     "core/bundle.js": {
-      "sha256": "1858f1cb37d5d8a98b0145277a17fe2219859b703a4f0fc9b2fda05fe052e582",
-      "bytes": 24052
+      "sha256": "4e1e7c1ae847a6ea9d0bdd7dcfe3d1ff447cca4bb54fffc663f3545ec20658f0",
+      "bytes": 24080
     },
     "external-plugins.js": {
-      "sha256": "c60d05da40ece3767afc1f6384be28ae90054c0b1c449816e096339d59993c3e",
-      "bytes": 21111
+      "sha256": "28549a755a116d26a9c3c4221a1cdf0e8102e3cc02e3c321971e5effecc79440",
+      "bytes": 21129
     },
     "favicon.svg": {
       "sha256": "f99761d39d805b7f995e20bb44df1b1adfe17fc9cef8caf47c965e1af713032f",
@@ -155,8 +155,8 @@
       "bytes": 1267
     },
     "spaces.js": {
-      "sha256": "7fe4d39b7ef62cd0bb9822f52d6b214215498910162cd032b0f9071ed5d90f68",
-      "bytes": 62437
+      "sha256": "0d7c176d44e6c2db052c68bedd29ab5a29aa80ddd8331d15ee946be3a6a55aca",
+      "bytes": 62880
     },
     "styles.css": {
       "sha256": "0f509e15056bc28b2e3af7652d94c53d6f51635bcb9f0a0bdc288e3a486805f4",

@@ -1,8 +1,8 @@
-# Workspace abstract — breaking development branch
+# Workspace abstraction — fresh-start model
 
 This build uses a fresh `workspace-1` database. It does not convert, open with
 fallbacks, or delete the former database. Use a separate empty `HUB_DATA_DIR` and
-initialize new connections. Do not deploy this development branch over an existing
+initialize new connections. Do not deploy this schema over an existing Hub
 data volume. Working folders, NFS exports and VPS files are not database state and
 are never deleted by choosing a new database.
 

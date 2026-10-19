@@ -2654,7 +2654,8 @@ window.addEventListener('hashchange', () => {
   if (nav.some((n) => n[0] === page) && location.hash.slice(1) !== productHash(page))
     history.replaceState(null, '', location.pathname + location.search + '#' + productHash(page));
   if (
-    (location.hash !== S.renderHash || page !== S.page ||
+    (location.hash !== S.renderHash ||
+      page !== S.page ||
       (['integrations', 'artifacts', 'audit', 'spaces'].includes(page) &&
         location.hash.slice(1) !== previousContext) ||
       before !== JSON.stringify([S.resourceTab, S.accessTab, S.identityTab])) &&

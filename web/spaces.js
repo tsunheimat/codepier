@@ -60,8 +60,10 @@ window.CodePierSpaces = (() => {
   const newKey = () => 'workspace-' + uid();
 
   function viewIntent() {
-    const login=S.session, page=location.hash, modalId=S.modalIntent || 0;
-    return () => login===S.session && page===location.hash && modalId===(S.modalIntent || 0);
+    const login = S.session,
+      page = location.hash,
+      modalId = S.modalIntent || 0;
+    return () => login === S.session && page === location.hash && modalId === (S.modalIntent || 0);
   }
   function form(title, body, submit, setup = null, done = null) {
     const login = S.session,
@@ -77,16 +79,18 @@ window.CodePierSpaces = (() => {
       status = $('[data-ws-status]', d),
       b = $('button[type="submit"]', d);
     const current = () => d.isConnected && login === S.session && page === location.hash;
-    let submitted = null, attemptedValues = null;
+    let submitted = null,
+      attemptedValues = null;
     f.onsubmit = (event) => {
       event.preventDefault();
       if (!current() || f.dataset.saving || f.dataset.uncertain || !f.reportValidity()) return;
-      const values=JSON.stringify([...new FormData(f).entries()]);
+      const values = JSON.stringify([...new FormData(f).entries()]);
       if (attemptedValues !== null && attemptedValues !== values) {
-        status.textContent='原保存结果尚未核实；不能使用原保存键提交修改后的配置。请先核对原校验回执。';
+        status.textContent =
+          '原保存结果尚未核实；不能使用原保存键提交修改后的配置。请先核对原校验回执。';
         return;
       }
-      attemptedValues=values;
+      attemptedValues = values;
       f.dataset.saving = 'true';
       void busy(b, async () => {
         try {
@@ -113,13 +117,18 @@ window.CodePierSpaces = (() => {
           } else {
             status.textContent =
               error.message + (error.operation_id ? ' · ' + error.operation_id : '');
-            if (error.code === 'NETWORK_UNCERTAIN' || [408,500,502,503,504].includes(error.status)) {
+            if (
+              error.code === 'NETWORK_UNCERTAIN' ||
+              [408, 500, 502, 503, 504].includes(error.status)
+            ) {
               f.dataset.uncertain = 'true';
               status.textContent += '。结果不确定：关闭并刷新列表核对，不自动重新创建。';
             } else {
               // Definite rejection is not an accepted mutation. The next
               // explicit save receives a fresh key; no background replay.
-              attemptedValues=null; submitted=null; key=newKey();
+              attemptedValues = null;
+              submitted = null;
+              key = newKey();
             }
           }
         } finally {
@@ -250,7 +259,8 @@ window.CodePierSpaces = (() => {
               x.name,
               `${esc(x.profile?.label || '')} · ${esc(x.status)} · ${x.consent_mode === 'live' ? '明确同意跟随 Profile' : '固定同意范围'} · 到期 ${esc(timeText(x.expires))}<details><summary>有效权限 / 连接身份</summary><code>${esc(x.id)}</code>${pretty(x.permissions)}</details>${x.unavailable_reason ? '<p>' + esc(x.unavailable_reason) + '</p>' : ''}`,
               x.status !== 'revoked'
-                ? button('plugin-consent', '外部插件动作同意', x.id) + button('revoke', '撤销', x.id)
+                ? button('plugin-consent', '外部插件动作同意', x.id) +
+                    button('revoke', '撤销', x.id)
                 : '',
             ),
           )
@@ -274,11 +284,24 @@ window.CodePierSpaces = (() => {
         if (editable) {
           const invited = await api(root(space.id) + '/invites');
           data.invitations = invited.invitations;
-          content += '<h3>工作空间邀请</h3>' + invited.invitations.map((invite) => row(
-            invite.used_by ? '已使用的邀请' : '待接受的邀请',
-            `到期 ${esc(timeText(invite.expires))}<details><summary>邀请授予的直接权限</summary>${pretty(invite.policy)}</details>`,
-            invite.used_by ? '' : button('revoke-invite', '撤销邀请', invite.id, `data-ws-invite="${esc(invite.id)}"`),
-          )).join('');
+          content +=
+            '<h3>工作空间邀请</h3>' +
+            invited.invitations
+              .map((invite) =>
+                row(
+                  invite.used_by ? '已使用的邀请' : '待接受的邀请',
+                  `到期 ${esc(timeText(invite.expires))}<details><summary>邀请授予的直接权限</summary>${pretty(invite.policy)}</details>`,
+                  invite.used_by
+                    ? ''
+                    : button(
+                        'revoke-invite',
+                        '撤销邀请',
+                        invite.id,
+                        `data-ws-invite="${esc(invite.id)}"`,
+                      ),
+                ),
+              )
+              .join('');
         }
       }
       content = panel(titles[address.tab], content || empty('尚无项目。'), add);
@@ -450,7 +473,7 @@ window.CodePierSpaces = (() => {
     );
   }
   async function projectEditor(id = null, spaceId = '') {
-    const current=viewIntent();
+    const current = viewIntent();
     if (!id && !spaceId)
       return chooseSpace('Project 所属工作空间', (chosen) => projectEditor(null, chosen));
     let old = null;
@@ -501,7 +524,7 @@ window.CodePierSpaces = (() => {
     );
   }
   async function projectDetail(id) {
-    const current=viewIntent();
+    const current = viewIntent();
     await loadBasics();
     if (!current()) return;
     const old = S.projects.find((x) => x.id === id);
@@ -998,9 +1021,11 @@ window.CodePierSpaces = (() => {
       field('days', '有效天数', 7, 'type="number" min="1" max="30" required') +
         policyEditorHTML({}, true) +
         notice('邀请直接授予所选工作空间权限，不分配 Role；默认不增加资源权限。'),
-      (f) => post(root(space.id) + '/invites', {
-        days: Number(f.elements.days.value), policy: readPolicy(f, true),
-      }),
+      (f) =>
+        post(root(space.id) + '/invites', {
+          days: Number(f.elements.days.value),
+          policy: readPolicy(f, true),
+        }),
       null,
       async (result) => {
         const saved = modal(

@@ -1,197 +1,103 @@
-# Workspace refactor validation — 2026-10-18
+# Workspace validation and merge gates
 
-## Latest hard-cutoff update
+CodePier 2.0 is a hard cutoff to the workspace model. An old database, Role,
+ambient Current Space, former grant API or old Runner protocol is not an input
+that a release must migrate or keep working. Rejection tests cover these removed
+interfaces; retained features use the actual current schema and authentication.
 
-The user explicitly requires a direct cutoff, not retention or migration of any
-former application model. This overrides any interpretation below that all old
-positive tests must be restored or preserved. See the hard-cutoff contract in
-`WORKSPACES.md`.
+## What constitutes acceptance
 
-This change removes the three dedicated Role unit/integration/UI suites (593
-lines), the old readable-App-alias expectation, the provider-ID OIDC callback,
-saved workspace App notices/aliases and the dual-brand App binding. The current
-review App and stable `/auth/oidc/callback` remain. Workspace initialization also
-rejects retired tables or columns even under the current schema marker. Rejection
-never mutates an existing database or tries to upgrade its tokens, projects or
-permissions. No runtime compatibility helper replaces the deleted Role test helper.
+A selected test run, successful image build or green workspace-focused workflow
+is not a substitute for the complete CodePier CI workflow. Evaluate the exact PR
+head and base through the checked public-source archive, rather than treating
+results from an earlier commit as current. The workflow requires:
 
-The new `test_workspace_cutoff.py` and updated App retirement rejection tests run
-in the focused workflow. **524 tests passed** in one completed combined pinned
-Python 3.13 Linux run, including the existing 468 new-model/backend/browser cases
-and 56 cutoff/catalog/retirement cases. No failures, errors, skips or deselections;
-one upstream TestClient deprecation warning. Source checks, the configured mypy
-scope, generated assets and packaging/credential-pattern checks also passed.
-The actual new-model Chromium/WebKit browser cases remain in that combined run.
-This update does not claim a new native Windows or completed GitHub Actions run;
-the previous exact-head CI results below are historical evidence.
+- Complete Linux and macOS regression shards and their aggregate evidence.
+  Every selected test runs once; the evidence verifies identical source
+  inventories and collection hashes, no missing cases and no source changes
+  during execution. A collection success alone is not an execution result.
+- Actual Chromium and WebKit page/form interaction, native Windows core and
+  PowerShell/ConPTY acceptance, plus the isolated Windows service-recovery check.
+  Portable process fixtures are not evidence of native Windows behavior.
+- A real isolated Authentik instance with two users, discovery/JWKS validation,
+  browser login, two-stage workspace/Profile consent, separate Connection
+  identities, token renewal and upstream offboarding. Mock OIDC tests remain
+  useful unit coverage, not a replacement for this gate.
+- Locked Python/JavaScript dependencies, frontend formatting and reproducible
+  asset builds, static checks, source packaging and credential-pattern scans.
+  The existing mypy gate covers its configured files, not the whole application.
 
-A fresh repository collection reports **3697 collected with 30 collection
-errors**. The three-error reduction comes from deleting the obsolete Role suites,
-not fixing three retained features. Remaining modules which import old helpers
-must be retired if they assert removed behavior, or replaced with tests of retained
-new-model features. Restoring the old helpers, dummy re-exports, migration paths,
-skips and broad collection exclusions are not the resolution. Do not describe
-these errors as a requirement for backward compatibility or the selected suite as
-full-repository acceptance. PR #10 remains Draft; no merge or deployment occurred.
+Workflow definitions live in `.github/workflows/ci.yml` and
+`.github/workflows/workspace-refactor.yml`. The run associated with a particular
+commit, and its retained JSON/JUnit/coverage receipts, are the status authority.
+This document does not encode a test total or describe an in-progress run as
+passed. Historical checkpoint totals in PR comments are not cumulative coverage.
 
-## Previous verification checkpoint
-
-Status at the previous checkpoint: **new-model acceptance passes; full-repository
-release acceptance remains blocked**. That record covers code/test commit
-`43fe86421fef18c045c98b70a75fc26a67c22c85` on `refactor/workspace-abstract`, based on
-main `ecd0753f8e8e6e1c37afb96845949f1f83d2f8f0`. Later documentation-only changes do
-not represent an additional code validation run.
-
-No production database, deployed Hub/Runner, actual VPS, or main branch was
-modified. All Hub/Runner restarts mentioned below use disposable loopback test
-processes and isolated data directories, never the deployed service.
-
-## Implemented model
-
-Roles and ambient Current Space are replaced by direct workspace membership
-policies, workspace-owned Profiles and immutable Connection → Space + Profile
-identities. Inventory resources are separate from workspace bindings. Each
-Project references one workspace Folder plus a bounded subpath. Its execution
-choices come only from mappings supplied by that Folder in the same workspace.
-Default routing does not require agent discovery and does not silently fail over.
-
-Whole VPS resources have a workspace binding, Runner and saved OpenSSH reference.
-Top-level/project-only/both are discovery categories for the same resource, not
-extra grants or a local project-directory sandbox. One-shot, persistent Shell and
-PTY execution keep original target and connection identities. POSIX execution,
-native Windows PowerShell sessions and Windows ConPTY have real-process tests.
-The fresh schema refuses old databases; it does not migrate, delete or fall back
-to the removed Role/password transport/runtime model.
-
-## Fixes verified in this continuation
-
-- **Workspace editor navigation:** modal dismissal used an asynchronous browser
-  history traversal which raced the newly created workspace navigation, especially
-  on WebKit. Save completion now awaits the actual traversal and checks its view
-  and login context. Back/forward behavior, independent tabs, held clicks, stale
-  drafts and explicit navigation are tested through real pages.
-- **Native Windows ConPTY:** console writes have actual UTF-8 pipe receipts and
-  suspended startup establishes process ownership before execution. Explicit
-  console standard handles prevent redirected parent service/test streams from
-  leaking into the terminal or causing premature EOF. Windows PowerShell and
-  PowerShell 7 persistent state, cmd/PowerShell terminal input, resize and cleanup
-  are verified on a real Windows CI worker. PTY tests require file effects rather
-  than mistaking echoed input for command execution.
-- **Cancellation:** the Runner referenced a nonexistent SessionManager attribute
-  on cancel packets, disconnecting before termination. The correct original
-  execution manager is now used. Local shell cancellation is terminal; SSH
-  cancellation preserves `needs_review`, local cancelled flags and remote outcome
-  uncertainty. Original-key observation and repeated cancellation do not rerun a
-  command or turn an error receipt into success.
-- **Regression fixture port:** SSH, VPS, VPS UI and local Shell tests now exercise
-  actual workspace membership/Profile/Connection and whole-VPS bindings, not
-  removed Role, default-space or password APIs. Coverage includes authorization
-  before transport, injection/quoting, read-only access, cross-workspace denial,
-  fixed versus live consent, concurrent updates, CSRF/Origin, private receipts,
-  output redaction, Hub restart recovery, and revoked queued work never executing.
-
-## Environments
-
-The project's configured `remote-test` executor runs the selected suite on a
-separate Linux test host using CPython **3.13.15** and hash-locked development
-dependencies. Local WebKit uses a disposable browser library/sysroot wrapper;
-no production system packages, browser profiles or user cookies were changed.
-GitHub Actions uses CPython **3.13.16**, the same dependency lock, Ubuntu 24.04 for
-backend/browser jobs and Windows Server 2022 for native execution acceptance.
-
-Browser jobs install Chromium and WebKit with system dependencies. The seven
-`test_frontend_core.py` cases use a real Chromium page and therefore belong in
-that browser job, not a backend job without a browser installation. They are not
-mock DOM or Node-only tests, and moving the job retains every assertion.
-
-SSH tests execute a deterministic local process fixture through the actual
-Hub/Runner OpenSSH adapter. They are not evidence of a live VPS, real keys,
-ProxyJump, production NFS or a real identity provider.
-
-## Observed results
-
-| Check | Result |
-| --- | --- |
-| Combined new-model, routing, execution, SSH/VPS/Shell and browser suite | **468 passed**, no failures/errors/skips/deselections; one upstream TestClient deprecation warning |
-| Backend/contracts portion of that suite | 433 cases, included in 468 |
-| Real Chromium/WebKit workspace/VPS and Chromium core UI portion | 35 cases, included in 468 |
-| Native Windows PowerShell/ConPTY acceptance CI job | Passed on Windows Server 2022; separate from the Linux run |
-| Ruff over `agent hub shared scripts tests` | Passed |
-| Existing incremental mypy gate | Passed; its configured scope remains 3 source files |
-| Python compilation and JavaScript syntax | Passed |
-| Generated panel assets | Passed, no outdated assets |
-| Packaged-source / credential-pattern scan | Passed, no findings |
-| Git whitespace checks | Passed |
-| Full repository collection | **3652 collected, 33 collection errors**; not a full-suite pass |
-
-The 468-case result is one completed run on commit `43fe864`, not the sum of
-successive attempts. Earlier isolated counts of 300, 97, 36 and browser subsets
-must not be added again. Portable Windows adapter tests also run on Linux and
-must not all be described as native OS acceptance or counted twice.
-
-The configured three-job GitHub workflow completed successfully for the same
-code/test head:
-
-- Run: https://github.com/tsunheimat/codepier/actions/runs/39125061114
-- Backend/static job: `117668325261`, success.
-- Chromium/WebKit/core UI job: `117668325262`, success.
-- Native Windows job: `117668325032`, success.
-
-These are **focused workspace checks**, not the repository's separate full
-CodePier CI workflow. Earlier failures were reproduced and fixed, not relabelled:
-WebKit navigation raced history; Windows redirected standard streams and a
-PowerShell test command needed correction; cancel packets disconnected the Runner;
-and browser cases were initially placed in a job missing the browser runtime.
-
-## Reproduction
-
-Use fresh development dependencies and browser runtimes; this does not upgrade a
-live Hub or replace its data directory:
+## Reproduce from an isolated checkout
 
 ```sh
 python3.13 -m venv .venv
 .venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
+python3.13 -m venv .venv-compat
+.venv-compat/bin/python -m pip install --require-hashes -r requirements-compat.txt
 .venv/bin/python -m playwright install --with-deps chromium webkit
-.venv/bin/python -m pytest -q \
-  tests/test_workspace_model.py tests/test_workspace_policy.py \
-  tests/test_workspace_http.py tests/test_workspace_acceptance.py \
-  tests/test_execution_workspace.py tests/test_workspace_integration.py \
-  tests/test_workspace_panel_contracts.py tests/test_routing_contracts.py \
-  tests/test_execution_policy_interpreters.py tests/test_session_windows_contracts.py \
-  tests/test_external_plugins_contract.py tests/test_core_tools.py \
-  tests/test_core_output_schemas.py tests/test_ssh.py tests/test_vps.py \
-  tests/test_shell.py tests/test_workspace_browser.py tests/test_vps_ui.py \
-  tests/test_frontend_core.py --junitxml=workspace-acceptance.xml
+npm --prefix web/mcp-apps ci --ignore-scripts
+npm --prefix web/mcp-apps run format:check
+npm --prefix web/mcp-apps run build
+.venv/bin/python scripts/build_integration_assets.py
+.venv/bin/python scripts/build_web_assets.py --check
+.venv/bin/python -m ruff check agent hub shared scripts tests
+.venv/bin/python -m mypy
+.venv/bin/python scripts/check_release.py
+.venv/bin/python scripts/check_full_regression.py \
+  --output /tmp/codepier-workspace-proof-unique --workers 2 --timeout 1200 --coverage
 ```
 
-The native Windows job separately runs `tests/test_execution_windows.py` and
-`tests/test_session_windows_contracts.py`, requires a real ConPTY API and installed
-Windows PowerShell/PowerShell 7, and rejects a result with native acceptance skips.
-See `.github/workflows/workspace-refactor.yml` for exact setup and artifact paths.
+Choose a new evidence directory for each run. Do not edit the source during the
+final run. The alternate environment tests interoperability with a separately
+locked external MCP SDK; it does not restore the removed CodePier application
+model or allow old credentials to select a workspace.
 
-## Remaining release blockers
+A dedicated remote test host can provide an isolated browser dependency sysroot
+rather than installing libraries on a live application host. Record that host
+adaptation separately: it must not alter application behavior, test selection,
+assertions, outcome reporting or credentials. Tests still use the actual browser
+engine. CI installs its matching browser system dependencies directly.
 
-**Full repository fixtures and removed-interface tests still need deliberate
-porting.** The prior checkpoint had 39 collection errors; the start of this
-continuation had 36, and the latest collection has 33 after the SSH/VPS ports.
-Remaining groups include direct IAM/identity, OAuth/OIDC, MCP Gateway,
-conversations/session activity, project creation/privacy and removed Role/schema
-fixtures. Tests which collect may still rely on old `tests/support.py` setup and
-removed default-space/grant endpoints; collection alone is not behavioral proof.
+## Regression boundaries
 
-Do not restore Role/password/migration adapters just to satisfy old tests, or
-silently skip failures. Port meaningful behavior to explicit workspace fixtures,
-retire tests of intentionally removed features with replacement coverage, and
-complete the independent repository-wide CI gate. In particular, finish the IAM
-fixture family before claiming OIDC/Gateway/browser acceptance through it.
+The retained tests exercise concrete authority and effects, not only response
+shapes. Coverage includes direct Member/Profile intersections, immutable
+Connection identities, profile creation returning to pending OAuth consent,
+cross-workspace denial, private artifact/operation histories and live revocation.
+Folder tests prove one source reference, bounded paths, real device validation,
+atomic save/rollback, same-key retry and no device substitution. Whole-VPS tests
+prove all three discovery modes point to the same resource and do not require a
+fictitious local Project.
 
-**Deployment acceptance remains separate.** Real SSH credentials/hosts/ProxyJump,
-production NFS, live OIDC providers and cross-platform service install/restart
-have not been certified by the disposable execution/browser fixtures. Native
-Windows and WebKit are no longer unimplemented or unrun items, but their focused
-passes do not certify every deployment configuration.
+Execution checks cover Local/SSH one-shot, persistent Shell and PTY, cancellation,
+original-operation recovery and terminal uncertainty without replay. UI checks
+include independent workspace pages, global overviews that enumerate only live
+resource bindings, held clicks, stale replies, uncertain writes, dirty-form leave
+confirmation, responsive layouts and actual OIDC-style root-to-workspace hash
+navigation while an earlier read is in flight.
 
-Keep this PR Draft. Use a separate empty `HUB_DATA_DIR` for manual workspace
-evaluation. Never point this breaking schema at the existing Hub data volume,
-and never delete source folders, shared storage or VPS contents as part of a
-configuration/database initialization.
+A browser routed into a disposable ASGI app must forward only that browser
+context's cookies. A shared HTTP test client's cookie jar must never inject a
+previous test user's identity. Synthetic fixture cookies and transport overrides
+are not production credentials and must not be included in published evidence.
+
+## Separate deployment boundary
+
+Merge acceptance does not deploy the application or certify a particular fleet.
+Use a separate empty `HUB_DATA_DIR`, initialize the new account/workspaces and
+create new Profiles and Connections. Upgrade Hub and intended Runners together;
+a missing/old tool handshake is rejected rather than inferred as compatible.
+
+Real NFS mounts, device folder mappings, SSH Host aliases/keys/ProxyJump and an
+operator's actual identity-provider configuration require explicit deployment
+validation. Shared paths must already expose the intended bytes; CodePier does
+not synchronize unrelated clones or turn full Shell/SSH into a directory sandbox.
+Never delete an old data volume, project folder, shared export or VPS contents to
+make the fresh-schema startup succeed. Publishing a release, replacing a running
+service and initializing production storage remain separate authorized actions.

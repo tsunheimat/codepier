@@ -257,9 +257,7 @@ window.CodePierExternalPlugins = (() => {
       `<p>${esc(row.alias)} · 只配置外部资源 ID，不移动文件，也不授予权限。</p>${select(
         'project',
         'CodePier 项目',
-        availableProjects
-          .map((p) => option(p.id, p.alias, p.id === selectedProject))
-          .join(''),
+        availableProjects.map((p) => option(p.id, p.alias, p.id === selectedProject)).join(''),
         'required',
       )}${select('mode', '操作', option('attach', '保存 / 重新绑定') + option('detach', '解除绑定（保留资源）'))}<div id="ext-project-config"></div>`,
       async (node) => {
@@ -307,9 +305,7 @@ window.CodePierExternalPlugins = (() => {
       `${select('profile', 'Profile', profiles.map((r) => option(r.id, r.label)).join(''), 'required')}${select(
         'target',
         '动作作用范围',
-        availableProjects
-          .map((p) => option(p.id, p.alias))
-          .join('') + scopeOption,
+        availableProjects.map((p) => option(p.id, p.alias)).join('') + scopeOption,
         'required',
       )}<div id="ext-profile-actions"></div><p class="form-note">只修改当前集成与所选范围的动作。其他规则保持不变；项目动作仍需已有项目读取权，不会获得原始 MCP 工具权限。客户端须另行同意。</p>`,
       async (node) => {
@@ -385,7 +381,12 @@ window.CodePierExternalPlugins = (() => {
   async function consent(grant, spaceId) {
     if (!spaceId) throw new Error('从连接所属的明确工作空间审阅插件同意。');
     const valid = intent(),
-      path = '/api/spaces/' + encodeURIComponent(spaceId) + '/external-integrations/grants/' + encodeURIComponent(grant) + '/consent',
+      path =
+        '/api/spaces/' +
+        encodeURIComponent(spaceId) +
+        '/external-integrations/grants/' +
+        encodeURIComponent(grant) +
+        '/consent',
       preview = await api(path);
     if (!valid()) return;
     form(
@@ -409,7 +410,10 @@ window.CodePierExternalPlugins = (() => {
     if (!node || node.disabled) return;
     const actions = { configure, projects, profile, toggle, consent };
     const action = actions[node.dataset.extAction];
-    if (action) action(node.dataset.extId, node.dataset.extSpace).catch((error) => toast(error.message, true));
+    if (action)
+      action(node.dataset.extId, node.dataset.extSpace).catch((error) =>
+        toast(error.message, true),
+      );
   });
   return { html, consent, configFields, configValue };
 })();

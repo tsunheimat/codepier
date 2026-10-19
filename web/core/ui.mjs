@@ -345,7 +345,9 @@ export function createModal({
         const dirty = (event) => {
           const control = event.target;
           if (
-            control.matches?.('input[name],select[name],textarea[name],[data-policy-kind],#device-rename') &&
+            control.matches?.(
+              'input[name],select[name],textarea[name],[data-policy-kind],#device-rename',
+            ) &&
             !control.readOnly
           )
             dialog.dataset.editorDirty = 'true';
