@@ -67,17 +67,18 @@ def fake_hub(tmp_path, *, existing=False, probe_status='3'):
         shutil.copyfile(ROOT / name, tmp_path / name)
     if existing:
         (tmp_path / '.env').write_text('HUB_PUBLIC_URL=http://preserved.example:9999\nHUB_PORT=9999\n')
-    # The install entrypoint is tested here; the actual migrators have separate
-    # filesystem/Docker fault-injection tests. This executable records delegation.
+    # This tests the public shell entrypoint's delegation, not database internals.
+    # Actual read-only volume admission is covered by installation-cutoff tests
+    # and the real candidate-image acceptance; no migration stub is installed.
     bootstrap = tmp_path / 'bin/bootstrap-python'
-    bootstrap.write_text('#!/usr/bin/env bash\nif [[ "$1" == -c ]]; then exec "$REAL_PYTHON" "$@"; fi\nprintf "%s\\n" "$*" >> "$MIGRATION_LOG"\nexit 0\n')
+    bootstrap.write_text('#!/usr/bin/env bash\nif [[ "$1" == -c ]]; then exec "$REAL_PYTHON" "$@"; fi\n[[ "$1" == scripts/bootstrap_hub.py ]] || exit 98\nprintf "%s\\n" "$*" >> "$BOOTSTRAP_LOG"\nprintf "%s\\n" codepier-data\n')
     bootstrap.chmod(0o700)
     docker = tmp_path / 'bin/docker'
     docker.write_text('''#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
   'compose version'|'compose config --quiet'|'compose build hub') exit 0 ;;
-  *'python -c '*) exit "$PROBE_STATUS" ;;
+  'compose run --rm --no-deps --volume codepier-data:/app/data:ro hub python -m hub.installation') exit "$PROBE_STATUS" ;;
   *'python -m hub init'*) [[ "$CODEPIER_ADMIN_PASSWORD" == "$EXPECTED_PASSWORD" ]] || exit 45; exit 0 ;;
   'compose up '*) exit "${START_STATUS:-0}" ;;
 esac
@@ -86,9 +87,9 @@ exit 99
     docker.chmod(0o700)
     return {**os.environ, 'PATH': str(tmp_path / 'bin') + os.pathsep + os.environ['PATH'],
             'DOCKER_LOG': str(tmp_path / 'docker.log'), 'PROBE_STATUS': probe_status,
-            'EXPECTED_PASSWORD': 'fixture-password-long', 'RD_ADMIN_PASSWORD': '', 'CODEPIER_ADMIN_PASSWORD': '',
+            'EXPECTED_PASSWORD': 'fixture-password-long', 'CODEPIER_ADMIN_PASSWORD': '',
             'CODEPIER_BOOTSTRAP_PYTHON': str(bootstrap), 'REAL_PYTHON': sys.executable,
-            'MIGRATION_LOG': str(tmp_path / 'migration.log')}
+            'BOOTSTRAP_LOG': str(tmp_path / 'bootstrap.log')}
 
 
 def test_hub_one_command_noninteractive_password_not_in_args_or_env_file(tmp_path):
@@ -106,6 +107,9 @@ def test_hub_one_command_noninteractive_password_not_in_args_or_env_file(tmp_pat
     assert env['EXPECTED_PASSWORD'] not in log + settings + result.stdout + result.stderr
     assert 'HUB_PORT=8080' in settings and 'http://192.0.2.20:8080' in settings
     assert 'compose up -d --wait --wait-timeout 90' in log
+    assert '--volume codepier-data:/app/data:ro hub python -m hub.installation' in log
+    assert log.index('-m hub.installation') < log.index('-m hub init') < log.index('compose up ')
+    assert 'migrat' not in (tmp_path/'bootstrap.log').read_text()
     assert (tmp_path / '.env').stat().st_mode & 0o777 == 0o600
 
 
@@ -117,7 +121,8 @@ def test_hub_repeat_install_preserves_env_and_existing_admin(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / '.env').read_bytes() == original
     assert 'python -m hub init' not in (tmp_path / 'docker.log').read_text()
-    assert '保留原账号和数据' in result.stdout
+    assert '保留该安装的账号与资料' in result.stdout
+    assert '--volume codepier-data:/app/data:ro hub python -m hub.installation' in (tmp_path/'docker.log').read_text()
 
 
 def test_hub_noninteractive_without_password_never_initializes(tmp_path):

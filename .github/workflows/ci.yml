@@ -126,11 +126,10 @@ jobs:
         run: |
           VERSION=$(.venv/bin/python -c 'from scripts.build_source_bundle import source_version; print(source_version())')
           .venv/bin/python scripts/build_source_bundle.py --public
-          .venv/bin/python scripts/check_release.py --bundle "dist/codepier-$VERSION-source-full.zip" --output dist/public-check.json
-          .venv/bin/python scripts/build_source_bundle.py --public --panel-update
+          .venv/bin/python scripts/check_release.py --bundle "dist/codepier-$VERSION-source.zip" --output dist/public-check.json
           .venv/bin/python scripts/check_release.py --panel-update --bundle "dist/codepier-$VERSION-source.zip" --output dist/panel-update-check.json
           ACCEPTANCE="$RUNNER_TEMP/codepier-public-$GITHUB_RUN_ID-${{ matrix.shard }}"
-          BUNDLE="$GITHUB_WORKSPACE/dist/codepier-$VERSION-source-full.zip"
+          BUNDLE="$GITHUB_WORKSPACE/dist/codepier-$VERSION-source.zip"
           .venv/bin/python scripts/release_acceptance.py prepare --root "$GITHUB_WORKSPACE" --archive "$BUNDLE" --destination "$ACCEPTANCE" --proof "$GITHUB_WORKSPACE/dist/ci-results/archive-proof.json" --commit "$GITHUB_SHA"
           ln -s "$GITHUB_WORKSPACE/.venv" "$ACCEPTANCE/.venv"
           ln -s "$GITHUB_WORKSPACE/.venv-compat" "$ACCEPTANCE/.venv-compat"

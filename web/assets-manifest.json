@@ -11,20 +11,20 @@
       "bytes": 28999
     },
     "app.js": {
-      "sha256": "68412dc61b425d1183a97cbefeb47d51b8d1c36bef84044a1f2bef5cded72764",
-      "bytes": 122112
+      "sha256": "77e28c1c612ee9c6ef0296c2e971050dac9948c8bdd97d2f13db1c5c5fd4c3b6",
+      "bytes": 120693
     },
     "appearance.js": {
-      "sha256": "7fc8e8ffa85a4bb5836b8919cdf6ff12813cfb4a9e4736709f5858e5d8782bb1",
-      "bytes": 4151
+      "sha256": "94dbfb4e5f75d448073a115b310d4eedf900fc5446331ba485b30d07df480d11",
+      "bytes": 3869
     },
     "audit-sessions.js": {
       "sha256": "91320fa51db41b96be347b389cc8c7299bc3d301f772395924e67f7e592554f3",
       "bytes": 9632
     },
     "brand.js": {
-      "sha256": "33956c4be73ef4c5cda6ba9638ea75d42fa040cbd5daecb07c983992ac62aa4d",
-      "bytes": 1757
+      "sha256": "ad55018ff9e5c7f6ff8198fd7a11a6c51ba7453e631f2b5ca491448eb08c370b",
+      "bytes": 229
     },
     "call-log.css": {
       "sha256": "a709536a4afb304ea68666b7d1829f9c59f94fd74689842eb4323ec69c93eacf",
@@ -139,8 +139,8 @@
       "bytes": 1498
     },
     "product.js": {
-      "sha256": "e93eeaad0c0fb466b120118ae8a775c6858e987e1be93e66a5b2b652c10e8b2e",
-      "bytes": 2789
+      "sha256": "d7506be19290a0f89b5dfdd6c685ffbdcd660971a03c3690ec3f6c2223803e37",
+      "bytes": 2495
     },
     "project-routing.css": {
       "sha256": "e7ddb60e7f3b37460fcdd0acc166138b74cf60ee60dd02ce1c54e200bdd84875",
@@ -155,8 +155,8 @@
       "bytes": 1267
     },
     "spaces.js": {
-      "sha256": "0d7c176d44e6c2db052c68bedd29ab5a29aa80ddd8331d15ee946be3a6a55aca",
-      "bytes": 62880
+      "sha256": "2ca0a11f5a181a98e1392de7366945ff5370c8a0833024e2ff0c505a159183ff",
+      "bytes": 65527
     },
     "styles.css": {
       "sha256": "0f509e15056bc28b2e3af7652d94c53d6f51635bcb9f0a0bdc288e3a486805f4",
@@ -167,8 +167,8 @@
       "bytes": 7583
     },
     "ui.js": {
-      "sha256": "762545188e11c5ee8695d2eb08ebf0ee5dc7c166492d08324514c0a5f5500409",
-      "bytes": 24960
+      "sha256": "3d9617b613b82233f80a458781311d3d00669250a250c6eb69680f49fc04d0f3",
+      "bytes": 25165
     },
     "vendor/js-sha256-1.0.0/sha256.min.js": {
       "sha256": "a050d794e170699bd1a69d33908d0942c68901cb88347016064b60b240f0067e",

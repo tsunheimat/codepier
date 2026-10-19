@@ -962,8 +962,6 @@ class Agent:
             self.computer.start_guard()
             if local_transport is None:
                 background.append(asyncio.create_task(self.watch_config()))
-                from agent.brand_upgrade import watch as watch_brand_upgrade
-                background.append(asyncio.create_task(watch_brand_upgrade(self)))
             background.append(asyncio.create_task(self.output_sender()))
             stopping = asyncio.create_task(self.stop_event.wait())
             background.append(stopping)

@@ -13,7 +13,7 @@ def test_branding_and_existing_preferences_survive_update(stack,width,height,sch
     with sync_playwright() as pw:
         browser=pw.chromium.launch();page=browser.new_page(viewport={'width':width,'height':height},reduced_motion='reduce')
         errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
-        page.add_init_script("if(!localStorage.getItem('codepier-appearance'))localStorage.setItem('relay-appearance',"+json.dumps(scheme)+");")
+        page.add_init_script("if(!localStorage.getItem('codepier-appearance'))localStorage.setItem('codepier-appearance',"+json.dumps(scheme)+");")
         page.goto(stack.url);expect(page.locator('#login-form')).to_be_visible()
         assert page.title()=='登录 · CodePier'
         assert page.locator('.brand-name').first.inner_text()=='CodePier · 码头'
@@ -23,7 +23,7 @@ def test_branding_and_existing_preferences_survive_update(stack,width,height,sch
         assert page.evaluate('() => document.documentElement.scrollWidth<=innerWidth+1')
         page.screenshot(path=str(OUT/f'login-{width}-{scheme}.png'),animations='disabled')
         _login(page,stack)
-        for route in ['overview','devices','integrations','native']:
+        for route in ['overview','resources/devices','integrations','native']:
             _navigate(page,route)
             assert 'CodePier' in page.title()
             assert page.evaluate('() => document.documentElement.scrollWidth<=innerWidth+1'),route

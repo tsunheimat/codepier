@@ -49,7 +49,7 @@ def open_workspace(context, server, path):
     return page
 
 
-@pytest.mark.parametrize('lookup',['/api/session','/api/iam/me'])
+@pytest.mark.parametrize('lookup',['/api/session','/api/iam/me','/api/devices','/api/projects'])
 def test_initial_account_lookup_survives_workspace_navigation_without_replaying_writes(workspace_server,workspace_browser,lookup):
     server=workspace_server;context,errors=workspace_browser
     held=[];writes=[]
@@ -61,8 +61,12 @@ def test_initial_account_lookup_survives_workspace_navigation_without_replaying_
     page.on('request',lambda request:writes.append(request.url)
         if request.method not in {'GET','HEAD','OPTIONS'} else None)
     try:
+        # The workspace listing intentionally does not enumerate global
+        # devices/projects. Exercise those account snapshots from their actual
+        # resource-page entrypoint, not by requiring unused startup requests.
+        start='resources/devices' if lookup in {'/api/devices','/api/projects'} else 'spaces'
         with page.expect_request(server.url+lookup):
-            page.goto(server.url+'/#spaces',wait_until='domcontentloaded')
+            page.goto(server.url+'/#'+start,wait_until='domcontentloaded')
         page.wait_for_function('document.documentElement.dataset.bootLookupHeld==="true"')
         assert len(held)==1
         # Fetch authentic fixture account data, then change only the view before
@@ -71,7 +75,18 @@ def test_initial_account_lookup_survives_workspace_navigation_without_replaying_
         assert response.status==200
         page.evaluate('location.hash="#spaces/alice/profiles"')
         held.pop().fulfill(response=response)
-        expect(page.locator('#workspace-page h2')).to_have_text('Profiles',timeout=15000)
+        try:
+            expect(page.locator('#workspace-page h2')).to_have_text('Profiles',timeout=15000)
+        except AssertionError:
+            # Bounded diagnostics from a disposable fixture only, no cookies,
+            # token values, draft contents or user resource data.
+            print('Boot navigation state',page.evaluate('''()=>({
+                user:S.session?.user_id,page:S.page,identity:!!S.identity,
+                hash:location.hash,renderSeq:S.renderSeq,
+                accountReads:performance.getEntriesByType('resource')
+                    .filter(x=>x.name.includes('/api/')).map(x=>new URL(x.name).pathname)
+            })'''),errors)
+            raise
         expect(page).to_have_url(re.compile(r'#spaces/alice/profiles$'))
         expect(page.locator('#retry-boot')).to_have_count(0)
         assert page.evaluate('S.session.user_id')=='alice'
@@ -79,6 +94,34 @@ def test_initial_account_lookup_survives_workspace_navigation_without_replaying_
     finally:
         for route in held:route.abort()
         context.unroute(server.url+lookup)
+
+
+def test_project_search_counts_actual_scope_and_keeps_only_same_page_drafts(workspace_server,workspace_browser):
+    server=workspace_server;context,errors=workspace_browser
+    page=open_workspace(context,server,'spaces/alice/projects')
+    count=len(server.must(server.client.get('/api/spaces/alice/projects'))['projects'])
+    expect(page.locator('#project-count')).to_have_text(f'{count} / {count} 个项目')
+    search=page.locator('#project-query')
+    search.fill('no-matching-source')
+    expect(page.locator('#project-no-match')).to_be_visible()
+    expect(page.locator('#project-count')).to_have_text(f'0 / {count} 个项目')
+    # A passive render cannot overwrite a search draft on this same page.
+    page.evaluate('renderPage(false)')
+    expect(search).to_have_value('no-matching-source')
+    expect(page.locator('[data-project-row]:visible')).to_have_count(0)
+    page.get_by_role('button',name='清除筛选',exact=True).click()
+    expect(search).to_have_value('');expect(search).to_be_focused()
+    expect(page.locator('[data-project-row]:visible')).to_have_count(count)
+    search.fill('codepier')
+    page.evaluate('navigate("resources/projects")')
+    expect(page.locator('#resources-page')).to_be_visible()
+    expect(search).to_have_value('')
+    count=len(server.must(server.client.get('/api/spaces/alice/projects'))['projects'])
+    expect(page.locator('#project-count')).to_have_text(f'{count} / {count} 个项目')
+    page.locator('[data-project-detail="project"]').click()
+    expect(page.locator('#modal-title')).to_contain_text('codepier')
+    assert 'space_id' not in page.evaluate('Object.keys(S)')
+    assert errors==[]
 
 
 def test_two_tabs_do_not_share_current_workspace(workspace_server, workspace_browser):
@@ -244,3 +287,35 @@ def test_vps_display_form_and_mcp_share_one_resource(workspace_server, workspace
     result = server.execute('exec', target='vps:'+'a'*32, command='printf whole-vps')
     assert result['output'] == 'whole-vps'
     assert errors == []
+
+
+def test_navigation_during_revalidation_preserves_url_without_old_content(workspace_server,workspace_browser):
+    server=workspace_server;context,errors=workspace_browser
+    page=open_workspace(context,server,'spaces/alice/projects');held=[];reads=[]
+    assert page.evaluate('!S.work.project && !ChatUI.project && ChatUI.views.size===0')
+    page.on('request',lambda request:reads.append(urlparse(request.url).path) if request.method=='GET' else None)
+    url=server.url+'/api/iam/me'
+    def hold_identity(route):
+        held.append(route)
+        page.evaluate('document.documentElement.dataset.heldIdentityRead="yes"')
+    context.route(url,hold_identity,times=1)
+    try:
+        with page.expect_request(url):page.evaluate('void recoverPanelAccess()')
+        page.wait_for_function('document.documentElement.dataset.heldIdentityRead==="yes"')
+        assert len(held)==1
+        expect(page.locator('#breadcrumb-page')).to_have_count(0)
+        page.evaluate('navigate("spaces/alice/folders")')
+        expect(page).to_have_url(server.url+'/#spaces/alice/folders')
+        expect(page.locator('#workspace-page')).to_have_count(0)
+        original=held.pop()
+        response=original.fetch()
+        assert response.status==200
+        original.fulfill(response=response)
+        expect(page.locator('#workspace-page h2')).to_have_text('Folders',timeout=15000)
+        assert '/api/spaces/alice/folders' in reads
+        assert '/api/devices' not in reads and '/api/projects' not in reads
+        assert page.evaluate('Object.hasOwn(S,"space_id")') is False
+        assert errors==[]
+    finally:
+        for request in held:request.abort()
+        context.unroute(url,hold_identity)

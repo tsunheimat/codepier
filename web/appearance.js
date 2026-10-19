@@ -1,7 +1,6 @@
 'use strict';
 (function initCodePierAppearance(window, document) {
   const KEY = 'codepier-appearance';
-  const LEGACY_KEY = 'codepier-chat-appearance';
   const VALUES = new Set(['auto', 'light', 'dark']);
   const media =
     typeof window.matchMedia === 'function'
@@ -83,17 +82,13 @@
     let next = null;
     if (event.key === null) next = 'auto';
     else if (event.key === KEY) next = valid(event.newValue) ? event.newValue : 'auto';
-    else if (event.key === LEGACY_KEY && !read(KEY))
-      next = valid(event.newValue) ? event.newValue : 'auto';
     if (next === null) return;
     preference = next;
     apply(true);
   }
 
   const saved = read(KEY);
-  const legacy = read(LEGACY_KEY);
-  preference = valid(saved) ? saved : valid(legacy) ? legacy : 'auto';
-  if (!valid(saved) && valid(legacy)) write(KEY, legacy);
+  preference = valid(saved) ? saved : 'auto';
 
   window.CodePierAppearance = Object.freeze({
     getPreference: () => preference,

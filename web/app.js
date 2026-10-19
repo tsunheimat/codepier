@@ -171,6 +171,15 @@ function clearResourceSnapshots() {
     basicsRequest: null,
   });
 }
+function projectSourceSnapshot(project) {
+  return {
+    root: project.root,
+    device_id: project.device_id,
+    folder_id: project.folder_id,
+    subpath: project.subpath,
+    space_id: project.space_id ?? project.workspace?.id,
+  };
+}
 function suspendPanelContext(discard = false, keepLogin = false) {
   clearPanelAccessRetry();
   const session = S.session,
@@ -194,12 +203,7 @@ function suspendPanelContext(discard = false, keepLogin = false) {
   S.suspendedMappings = discard
     ? null
     : priorMappings ||
-      new Map(
-        (S.projects || []).map((project) => [
-          project.id,
-          { root: project.root, device_id: project.device_id },
-        ]),
-      );
+      new Map((S.projects || []).map((project) => [project.id, projectSourceSnapshot(project)]));
   window.CodePierIntegrations?.detach();
   S.integrations = null;
   sessionValue('codepier-integration-receipts', null);
@@ -278,18 +282,18 @@ function recoverPanelAccess() {
   return recovery.promise;
 }
 let sessionVerification = null;
-function verifyPanelSession(session, space, discard = false) {
-  if (session !== S.session || space !== location.hash) return Promise.reject(sessionChanged());
-  if (sessionVerification?.session === session && sessionVerification.space === space) {
+function verifyPanelSession(session, discard = false) {
+  if (session !== S.session) return Promise.reject(sessionChanged());
+  if (sessionVerification?.session === session) {
     sessionVerification.discard ||= discard;
     return sessionVerification.promise;
   }
-  const check = { session, space, discard, promise: null };
+  const check = { session, discard, promise: null };
   // Probe the panel cookie, not the failing resource credential. /api/session
   // does not recurse into this path, and a lost/invalid probe is not logout.
   check.promise = api('/api/session', { retryDelays: [], requestTimeout: 5000 })
     .then((value) => {
-      if (session !== S.session || space !== location.hash) throw sessionChanged();
+      if (session !== S.session) throw sessionChanged();
       if (value.authenticated === false) {
         endSession(check.discard);
       } else if (
@@ -325,11 +329,13 @@ async function api(path, options = {}) {
     space = location.hash,
     method = (request.method || 'GET').toUpperCase();
   const safe = method === 'GET' || retrySafe;
-  // These two exact read-only endpoints describe the authenticated account,
-  // not a workspace or view. A hash navigation must not abort initial login.
-  // Session replacement still rejects them; every resource read and mutation
-  // remains bound to the captured view, with no write retry on navigation.
-  const accountRead = method === 'GET' && ['/api/session', '/api/iam/me'].includes(path);
+  // These exact GET endpoints return account-wide snapshots, never a
+  // selected workspace. A route change must not strand login/revalidation.
+  // Resource-specific paths, query variants and every mutation stay bound
+  // to the originating view; session replacement always rejects old replies.
+  const accountRead =
+    method === 'GET' &&
+    ['/api/session', '/api/iam/me', '/api/devices', '/api/projects'].includes(path);
   const currentRequest = () => session === S.session && (accountRead || space === location.hash);
   const headers = {
     ...(request.body ? { 'Content-Type': 'application/json' } : {}),
@@ -367,7 +373,7 @@ async function api(path, options = {}) {
     if (!currentRequest()) throw sessionChanged();
     if (res) {
       if (res.status === 401 && session && !['/api/login', '/api/session'].includes(path))
-        await verifyPanelSession(session, space, discardOnAuthFailure);
+        await verifyPanelSession(session, discardOnAuthFailure);
       if (res.ok && body !== null && body !== undefined) {
         if (method !== 'GET' && method !== 'HEAD') invalidateBasics();
         return body;
@@ -441,8 +447,16 @@ async function settled(promise) {
     try {
       op = await tool('operations_wait', { operation_id: id, wait_seconds: 8 });
     } catch (error) {
-      if (!S.session || ['OPERATION_NOT_FOUND', 'SESSION_CHANGED'].includes(error.code))
+      const rejected =
+        error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status);
+      if (!S.session || rejected || error.code === 'SESSION_CHANGED') {
+        // Lost access or a missing private receipt is not a transport retry.
+        // The original command may still exist/run; preserve its identity and
+        // uncertainty instead of inviting a new submission or waiting forever.
+        error.operation_id = id;
+        error.operation_uncertain = true;
         throw error;
+      }
       networkState('操作 ' + id.slice(0, 8) + ' · 网络恢复后继续');
       await pause(3000);
       continue;
@@ -461,7 +475,11 @@ async function settled(promise) {
     networkState((stateNames[op.state] || op.state) + ' · ' + id.slice(0, 8));
     await pause(400);
   }
-  throw new Error('操作仍保存在审计中，编号 ' + id + '；未重复提交。');
+  throw Object.assign(new Error('操作仍保存在审计中，编号 ' + id + '；未重复提交。'), {
+    code: 'OPERATION_OBSERVATION_INCOMPLETE',
+    operation_id: id,
+    operation_uncertain: true,
+  });
 }
 function download(...args) {
   return CP.ui.download(...args);
@@ -616,15 +634,13 @@ function invalidateBasics() {
 }
 async function loadBasics() {
   const session = S.session,
-    space = location.hash,
     revision = S.basicsRevision || 0;
   const pending = S.basicsRequest;
-  if (pending?.session === session && pending.space === space && pending.revision === revision)
-    return pending.promise;
-  const request = { session, space, revision, promise: null };
+  if (pending?.session === session && pending.revision === revision) return pending.promise;
+  const request = { session, revision, promise: null };
   request.promise = Promise.all([api('/api/devices'), api('/api/projects')])
     .then(([d, p]) => {
-      if (S.session !== session || location.hash !== space) throw sessionChanged();
+      if (S.session !== session) throw sessionChanged();
       // A completed mutation or mapping event invalidates in-flight snapshots.
       // Join a fresh read rather than publishing data from before that change.
       if ((S.basicsRevision || 0) !== revision) return loadBasics();
@@ -653,16 +669,27 @@ function restoreTaskSubmission() {
   }
 }
 async function revalidateSuspendedWork() {
+  const chat = typeof ChatUI === 'undefined' ? null : ChatUI;
+  const retainedChat =
+    chat && (chat.project || chat.views.size || chat.rows.length || chat.recentProjects?.length);
+  if (!S.work.project && !retainedChat) {
+    // No resource work can be restored. The selected workspace page performs
+    // its own fresh, authorized reads after identity validation. Do not block
+    // it on unrelated global devices/projects merely to restore an empty UI.
+    chat?.catalogCache.clear();
+    return;
+  }
   await loadBasics();
   if (!Array.isArray(S.projects)) throw new Error('没有收到有效的项目权限清单，请重新校验。');
   const projects = new Map(S.projects.map((project) => [project.id, project]));
   const sameMapping = (id) => {
     const current = projects.get(id),
       prior = S.suspendedMappings?.get(id);
-    return (
-      !!current &&
-      (!prior || (prior.root === current.root && prior.device_id === current.device_id))
-    );
+    // The same physical path can be rebound through another workspace Folder.
+    // Without the original source identity there is nothing safe to restore.
+    if (!current || !prior) return false;
+    const source = projectSourceSnapshot(current);
+    return Object.keys(source).every((key) => source[key] === prior[key]);
   };
   if (S.work.project && !sameMapping(S.work.project)) {
     resetWork('');
@@ -1054,7 +1081,12 @@ async function navigate(page) {
   const destination = productHash(page);
   if (location.hash.slice(1) !== destination)
     history.pushState(null, '', location.pathname + location.search + '#' + destination);
-  $('#breadcrumb-page').textContent = nav.find((x) => x[0] === page)[2];
+  const breadcrumb = $('#breadcrumb-page');
+  // During live reauthorization only the gated boot/retry surface exists.
+  // Keep this explicit URL for bootAuthenticated, but do not start reads or
+  // restore old content before identity and resource checks finish.
+  if (!breadcrumb) return;
+  breadcrumb.textContent = nav.find((x) => x[0] === page)[2];
   uiSetMenu(false, false);
   uiSyncNavigation();
   await renderPage();
@@ -1256,30 +1288,6 @@ function devicesHTML() {
     uiHelp(
       '节点与 Agent 管理',
       '节点主动连接 Hub，无需开放家里入站端口。受管 Agent 可从这里校验并更新、重启或卸载；更新只替换运行时并保留配置、授权目录、状态和日志。卸载 Agent 与移除面板节点是两个独立操作，都不会删除项目文件。',
-    )
-  );
-}
-function projectsHTML() {
-  const rows = S.projects
-    .map(
-      (p, index) =>
-        `<article class="panel workspace-project-row" data-cp-key="project:${esc(p.id)}" data-project-row data-project-search="${esc((p.alias + ' ' + p.root + ' ' + p.device_name + ' ' + (p.description || '')).toLocaleLowerCase())}"><header class="workspace-project-head"><span class="project-index" aria-hidden="true">${icon('folder')}</span><div><span class="project-cover-label">PROJECT</span><h2>${esc(p.alias)}</h2>${p.description ? `<p>${esc(p.description)}</p>` : ''}</div>${onlineBadge(p.online)}</header><div class="workspace-project-path"><span>本机路径</span><code title="${esc(p.root)}">${esc(p.root)}</code></div><dl class="workspace-project-facts"><div><dt>设备</dt><dd>${esc(p.device_name)}</dd></div><div><dt>文件权限</dt><dd><span class="badge ${p.mode === 'write' ? 'purple' : 'neutral'}">${p.mode === 'write' ? '可编辑' : '只读'}</span></dd></div><div><dt>任务执行</dt><dd><span class="badge neutral">${p.allow_tasks ? '已授权' : '未授权'}</span></dd></div></dl><footer class="workspace-project-actions"><div class="actions">${typeof chatProjectButtons === 'function' ? chatProjectButtons(p.id) : ''}<button class="btn small" data-resource-detail="${esc(p.id)}" data-resource-type="project">资源详情</button><button class="btn primary small" data-action="open-project" data-id="${esc(p.id)}">工作台 ${icon('arrow')}</button></div><button class="btn ghost small" data-vps-action="project" data-project="${esc(p.id)}">${icon('cloud')}VPS 关联</button><button class="icon-btn" data-action="edit-project" data-id="${esc(p.id)}" aria-label="编辑 ${esc(p.alias)} 项目映射">${icon('edit')}</button></footer></article>`,
-    )
-    .join('');
-  return (
-    heading(
-      '项目映射',
-      '工作空间',
-      '',
-      `<button class="btn primary" data-action="add-project">${icon('plus')}添加映射</button>`,
-    ) +
-    (S.projects.length
-      ? `<div class="project-search workspace-project-search"><label for="project-query">${icon('search')}<input id="project-query" type="search" aria-label="筛选项目" placeholder="搜索项目、设备或路径"></label><small id="project-count" role="status"></small></div>`
-      : '') +
-    `${S.projects.length ? `<section class="workspace-project-collection">${rows}<div class="empty panel" id="project-no-match" hidden><p>没有匹配的项目</p><button type="button" class="btn ghost small" data-ui="clear-project-query">清除筛选</button></div></section>` : empty('接入设备后，映射本机项目目录。', 'add-project', '添加映射')}` +
-    uiHelp(
-      '别名与授权',
-      '通过别名访问项目，例如 Imago；不区分大小写。选择“全部现有及未来新增项目”的连接会自动包含新增映射；限定项目的连接可在“MCP 接入”调整范围，无需更换凭据。',
     )
   );
 }

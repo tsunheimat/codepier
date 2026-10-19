@@ -168,10 +168,15 @@ async function scenario(name){
   }else if(name==='workspace_navigation_rejects_pending_receipt'){
     editor();run("location.hash='#spaces/a/projects'");const receipt=deferred();context.receipt=receipt.promise;
     const pending=assert.rejects(run('settled(receipt)'),e=>e.code==='SESSION_CHANGED');run("location.hash='#spaces/b/projects'");receipt.resolve({operation_id:'old',pending:false});await pending;
-  }else if(name==='late_probe_cannot_clear_new_workspace_view'){
-    editor();run("location.hash='#spaces/a/projects'");const probe=deferred();fetchImpl=async path=>path==='/api/session'?probe.promise:response({error:{code:'LOGIN_REQUIRED'}},401);
-    const pending=assert.rejects(run("api('/api/devices')"),e=>e.code==='SESSION_CHANGED');await tick();run("location.hash='#spaces/b/projects'");
-    probe.resolve(response({authenticated:false}));await pending;assert.equal(run('location.hash'),'#spaces/b/projects');assert.ok(run('S.session'));
+  }else if(name==='expired_cookie_is_account_scoped_after_workspace_navigation'){
+    editor();run("location.hash='#spaces/a/projects';endSession=()=>{S.session=null;S.ended=(S.ended||0)+1;}");
+    const probe=deferred();let reads=0;fetchImpl=async path=>{reads++;return path==='/api/session'?probe.promise:response({error:{code:'LOGIN_REQUIRED'}},401);};
+    const pending=assert.rejects(run("api('/api/devices')"),e=>e.code==='LOGIN_REQUIRED');await tick();run("location.hash='#spaces/b/projects'");
+    // A different resource view is not a different login. A confirmed expired
+    // cookie must end that same account's access, not keep a stale session alive.
+    probe.resolve(response({authenticated:false}));await pending;
+    assert.equal(run('location.hash'),'#spaces/b/projects');assert.equal(run('S.session'),null);
+    assert.equal(run('S.ended'),1);assert.equal(reads,2);
   }else if(name==='project_addition_keeps_session'){
     editor();const session=run('S.session');fetchImpl=async()=>response({});run('connectEvents()');
     run('S.events').onmessage({data:JSON.stringify({type:'project',data:{id:'future'}})});assert.equal(run('S.session'),session);
@@ -232,7 +237,7 @@ scenario(process.argv[1]).then(()=>console.log('SCENARIO_COMPLETED')).catch(erro
     "late_probe_cannot_clear_new_login",
     "changed_cookie_does_not_adopt_old_work",
     "workspace_navigation_rejects_pending_receipt",
-    "late_probe_cannot_clear_new_workspace_view",
+    "expired_cookie_is_account_scoped_after_workspace_navigation",
     "project_addition_keeps_session",
     "null_json_retries_are_bounded",
     "uncertain_task_reuses_key_after_reload",

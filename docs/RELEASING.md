@@ -12,20 +12,19 @@
 VERSION=$(.venv/bin/python -c 'from scripts.build_source_bundle import source_version; print(source_version())')
 .venv/bin/python scripts/check_release.py
 .venv/bin/python scripts/build_source_bundle.py --public
-.venv/bin/python scripts/check_release.py --bundle "dist/codepier-${VERSION}-source-full.zip"
-.venv/bin/python scripts/build_source_bundle.py --public --panel-update
+.venv/bin/python scripts/check_release.py --bundle "dist/codepier-${VERSION}-source.zip"
 .venv/bin/python scripts/check_release.py --panel-update --bundle "dist/codepier-${VERSION}-source.zip"
 ```
 
-正式 Release 同时上传两种 ZIP 及各自 `.manifest.json`。`source-full.zip` 是完整开发源码，包含格式、测试配置与依赖输入；`source.zip` 是旧面板更新器识别的固定附件名，仅排除 8 个开发专用顶层文件，所有运行代码与锁文件完全一致。排除项在 `PANEL_UPDATE_EXCLUDES` 中显式列出，不放宽更新器安全白名单。兼容检查必须用保留的 1.13.0 原始更新器及当前更新器实际解包更新 ZIP；仅验证新源码或最小测试包不能证明旧面板可升级。
+正式 Release 只上传一份完整 `source.zip` 与对应 `.manifest.json`。开发、归档回归和新版面板更新器使用相同内容，包含明确列出的格式、测试配置与依赖输入。旧 1.13 更新器、精简兼容 ZIP 及其排除清单已删除，不承诺旧版更新路径。`check_release.py --panel-update` 只验证当前更新器能解包同一完整来源包；未知顶层文件、私密状态、路径越界和清单不匹配仍拒绝。旧工作空间数据库必须使用独立新安装，不通过源码包转换。
 
-重复构建并比较两种 ZIP 的 SHA-256，确认同一源码输入产生相同归档。归档中的 `MANIFEST.sha256` 必须覆盖全部源文件；外部 `.manifest.json` 提供逐文件清单。检查公开包内没有运行状态、个人服务地址、历史部署证据或凭据。模式扫描不能替代对新增文件和截图的人工检查。
+重复构建同一完整 ZIP 并比较 SHA-256，确认同一源码输入产生相同归档。归档中的 `MANIFEST.sha256` 必须覆盖全部源文件；外部 `.manifest.json` 提供逐文件清单。检查公开包内没有运行状态、个人服务地址、历史部署证据或凭据。模式扫描不能替代对新增文件和截图的人工检查。
 
 归档校验只接受普通文件、Stored/Deflate 压缩及支持的标记；归档上限为 256 MiB，成员与整体摘要均分块读取。文件在校验期间被替换、截断或修改时，检查必须失败，不能复用之前的成功结论。
 
 ## 独立源码验收目录
 
-对最终公开 `source-full.zip` 解包后的源码副本建立隔离依赖环境并执行完整回归；不要仅在包含私有配置、历史生成文件和预装依赖的旧工作目录中验收。解包时保留 ZIP 中记录的可执行权限，并将验收前后的公开源码清单与原 ZIP 逐项比对。生成的测试日志与截图不加入公开源码。
+对最终公开 `source.zip` 解包后的源码副本建立隔离依赖环境并执行完整回归；不要仅在包含私有配置、历史生成文件和预装依赖的旧工作目录中验收。解包时保留 ZIP 中记录的可执行权限，并将验收前后的公开源码清单与原 ZIP 逐项比对。生成的测试日志与截图不加入公开源码。
 
 GitHub CI 的每个 Linux/macOS 分片也从本次提交构建并校验的公开 ZIP 解包运行，不从 checkout 执行业务测试。每片记录精确 commit、ZIP 摘要、内部 manifest、逐文件内容/权限及验收后复核结果；平台聚合同时核对四片恰好一次的完整回归和同一归档证明。同一 job 按对应锁文件新建的依赖环境可链接到解包副本，兼容 SDK 解释器和浏览器缓存使用明确的绝对路径。正式 Release 的 ZIP 必须与通过这组门禁的归档一致；本机浏览器环境阻塞不能算通过，也不能用跳过、重试或修改权限绕过。
 

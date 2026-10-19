@@ -7,7 +7,6 @@ import os
 import signal
 import sys
 from pathlib import Path
-from shared.brand_migration import default_base
 from shared.util import atomic_json, VERSION
 from agent.config import validate_config
 
@@ -87,8 +86,9 @@ def main():
     args = parser.parse_args()
     if args.command == "run" and args.local_stdio and not args.supervised:
         parser.error("--local-stdio requires --supervised")
-    from shared.brand_migration import default_base
-    path = (Path(args.config).expanduser() if args.config else default_base()/'config.json').resolve()
+    # Only the current installation is a default. An explicit --config remains
+    # an operator-selected path; no old directory discovery or adoption occurs.
+    path = (Path(args.config).expanduser() if args.config else DEFAULT).resolve()
     if args.command == "init":
         if path.exists() and not args.re_pair:
             parser.error(f"配置已存在：{path}；修改地址请使用 configure，重新配对请使用 init --re-pair --pairing-file，保留原目录授权和任务配置")

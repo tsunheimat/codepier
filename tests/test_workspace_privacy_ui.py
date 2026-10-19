@@ -20,7 +20,7 @@ def privacy_page(request, chat_browser_pool):
     page.add_script_tag(path=str(ROOT / "web/identity.js"))
     page.evaluate("""() => {
       S.session={user_id:'fixture-owner',username:'Fixture'};
-      S.space_id='team';S.page='workbench';
+      S.page='workbench';location.hash='#spaces/team/projects';
       window.fetch=async()=>new Response(JSON.stringify({providers:[]}),
         {status:200,headers:{'Content-Type':'application/json'}});
       window.EventSource=class {
@@ -59,7 +59,7 @@ def test_sse_revocation_clears_loaded_private_content(privacy_page):
     assert page.locator("#login-form").is_visible()
 
 
-def test_audit_download_keeps_selected_space(privacy_page):
+def test_audit_download_is_account_scoped_without_an_ambient_space(privacy_page):
     page=privacy_page
     page.evaluate("""async () => {
       window.downloads=[];
@@ -68,19 +68,20 @@ def test_audit_download_keeps_selected_space(privacy_page):
     }""")
     from urllib.parse import parse_qs, urlsplit
     query=parse_qs(urlsplit(page.evaluate("downloads[0]")).query)
-    assert query["space_id"] == ["team"]
+    assert "space_id" not in query
+    assert page.evaluate("Object.hasOwn(S,'space_id')") is False
 
 
 def test_stale_stream_cannot_clear_new_space(privacy_page):
     page=privacy_page
     page.evaluate("""() => {
       connectEvents();window.oldEvents=fixtureEvents;
-      S.session={user_id:'fixture-owner'};S.space_id='new-team';
+      S.session={user_id:'fixture-owner'};location.hash='#spaces/new-team/projects';
       S.work.content='NEW_SPACE_DRAFT';
       oldEvents.listeners.session_revoked?.({data:'{}'});oldEvents.listeners.access_changed?.({data:'{}'});
     }""")
     assert page.evaluate("S.work.content") == "NEW_SPACE_DRAFT"
-    assert page.evaluate("S.space_id") == "new-team"
+    assert page.evaluate("location.hash") == "#spaces/new-team/projects"
 
 
 @pytest.mark.parametrize("status,code,revoked", [
@@ -113,20 +114,22 @@ def test_rejected_reconnect_rechecks_authority_without_erasing_on_network_failur
         assert page.evaluate("S.session!==null")
 
 
-def test_audit_download_without_space_fails_closed(privacy_page):
+def test_audit_download_needs_no_workspace_selector(privacy_page):
     page=privacy_page
     result=page.evaluate("""async () => {
-      S.space_id=null;window.downloads=[];
+      window.downloads=[];
       HTMLAnchorElement.prototype.click=function(){downloads.push(this.href);};
       try { await panelActions.dispatch('export-audit',document.createElement('button'),{}); }
       catch(error) { return {error:error.message,downloads}; }
       return {downloads};
     }""")
-    assert result["downloads"] == []
-    assert result.get("error")
+    assert len(result["downloads"])==1
+    assert "/api/audit-export" in result["downloads"][0]
+    assert "space_id" not in result["downloads"][0]
+    assert "error" not in result
 
 
-@pytest.mark.parametrize("event", ["access_changed", "access_revoked"])
+@pytest.mark.parametrize("event", ["access_changed"])
 @pytest.mark.parametrize("project", ["kept", "removed"])
 def test_policy_change_resynchronizes_without_login_or_mutation_replay(privacy_page, event, project):
     page = privacy_page
@@ -139,7 +142,7 @@ def test_policy_change_resynchronizes_without_login_or_mutation_replay(privacy_p
       window.fetch=async(path,options)=>{
         requests.push({path,method:options?.method||'GET'});
         const value=path==='/api/iam/me'
-          ? {id:'fixture-owner',instance_admin:false,spaces:[{id:'team',level:'member'}],default_space_id:'team'}
+          ? {id:'fixture-owner',instance_admin:false,spaces:[{id:'team',kind:'workspace',management:[]}]}
           : path==='/api/projects'?{projects:[mapping('kept')]}
           : path==='/api/devices'?{devices:[]}
           : path==='/api/session'?{authenticated:true,user_id:'fixture-owner'}
@@ -157,7 +160,7 @@ def test_policy_change_resynchronizes_without_login_or_mutation_replay(privacy_p
     assert page.evaluate("hiddenImmediately")
     page.wait_for_function("window.recovered===true")
     assert page.evaluate("S.session.user_id") == 'fixture-owner'
-    assert page.evaluate("S.space_id") == 'team'
+    assert page.evaluate("Object.hasOwn(S,'space_id')") is False
     assert page.evaluate("S.work.content") == ('DRAFT_kept' if project == 'kept' else '')
     assert not page.locator('#login-form').count()
     assert all(r['method'] == 'GET' and r['path'] not in {'/api/login', '/api/logout'} for r in page.evaluate('requests'))
@@ -181,17 +184,17 @@ def test_late_reply_cannot_restore_revoked_content(privacy_page):
     assert page.evaluate('S.session!==null')
 
 
-def test_old_space_event_does_not_affect_current_space_without_session_replacement(privacy_page):
+def test_global_session_revocation_is_not_ignored_after_workspace_navigation(privacy_page):
     page = privacy_page
     page.evaluate("""() => {
       connectEvents();const previous=fixtureEvents;
-      S.space_id='other';S.work.content='CURRENT_DRAFT';
+      location.hash='#spaces/other/projects';S.work.content='CURRENT_DRAFT';
       previous.listeners.session_revoked({data:'{}'});
       previous.listeners.access_changed({data:'{}'});
     }""")
-    assert page.evaluate('S.space_id') == 'other'
-    assert page.evaluate('S.work.content') == 'CURRENT_DRAFT'
-    assert page.evaluate('S.session!==null')
+    assert page.evaluate('S.work.content')==''
+    assert page.evaluate('S.session') is None
+    assert page.locator('#login-form').is_visible()
 
 
 
@@ -212,13 +215,37 @@ def test_repeated_suspension_preserves_original_project_mapping(privacy_page):
     assert page.evaluate('S.session!==null')
 
 
-def test_suspended_work_cannot_be_relabelled_to_another_space(privacy_page):
+def test_suspended_work_cannot_be_relabelled_to_another_account(privacy_page):
     page = privacy_page
     page.evaluate("""() => {
       S.work.content='OTHER_SPACE_PRIVATE';
       suspendPanelContext(false,true);
-      S.space_id='different-space';
+      S.session={user_id:'another-account',username:'Other'};
       suspendPanelContext(false,true);
     }""")
     assert page.evaluate('S.work.content') == ''
     assert page.evaluate('S.suspendedMappings') is None
+
+
+@pytest.mark.parametrize('changed',['folder_id','subpath','space_id','missing_snapshot'])
+def test_quarantined_draft_requires_the_same_folder_binding_not_just_same_path(privacy_page,changed):
+    page=privacy_page
+    page.evaluate("""async changed => {
+      const original={id:'p',space_id:'one',folder_id:'folder-a',subpath:'app',root:'/shared/app',device_id:'d'};
+      S.projects=changed==='missing_snapshot'?[]:[original];
+      Object.assign(S.work,{project:'p',content:'OLD_BINDING_DRAFT',dirty:true});
+      suspendPanelContext(false,true);
+      const replacement={...original};
+      if(changed!=='missing_snapshot') replacement[changed]='different';
+      window.fetch=async path=>new Response(JSON.stringify(path==='/api/projects'
+        ? {projects:[replacement]}:{devices:[]}),{status:200});
+      await revalidateSuspendedWork();
+    }""",changed)
+    assert page.evaluate('S.work.content')==''
+    assert page.evaluate('S.session!==null')
+
+
+def test_retired_access_event_is_not_registered_as_a_second_protocol(privacy_page):
+    names=privacy_page.evaluate("() => {connectEvents();return Object.keys(fixtureEvents.listeners);}")
+    assert 'access_revoked' not in names
+    assert {'access_changed','session_revoked'}<=set(names)

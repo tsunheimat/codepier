@@ -63,10 +63,12 @@ if(testCase==='preference'){
   assert.equal(h.meta.content,'#191919');assert.equal(ui.attrs['aria-label'],'全站外观');
   assert.equal(chat.value,'dark');assert.equal(h.values.get('codepier-appearance'),'dark');
   assert.deepEqual(events.at(-1),{preference:'dark',scheme:'dark'});
-}else if(testCase==='migration'){
-  const h=harness({legacy:'auto',dark:true});
+}else if(testCase==='cutoff'){
+  const h=harness({legacy:'light',dark:true});
   assert.equal(h.api.getPreference(),'auto');assert.equal(h.api.getScheme(),'dark');
-  assert.equal(h.values.get('codepier-appearance'),'auto');assert.equal(h.root.dataset.appearance,'dark');
+  assert.equal(h.values.has('codepier-appearance'),false);
+  h.window.dispatchEvent({type:'storage',key:'codepier-chat-appearance',newValue:'light',storageArea:h.storage});
+  assert.equal(h.api.getPreference(),'auto');assert.equal(h.root.dataset.appearance,'dark');
   h.media.matches=false;h.media.dispatchEvent({type:'change'});
   assert.equal(h.api.getScheme(),'light');assert.equal(h.meta.content,'#f4f4f4');
 }else if(testCase==='storage'){
@@ -107,7 +109,7 @@ def test_appearance_source_contract():
     for method in ['getPreference', 'getScheme', 'setPreference', 'subscribe']:
         assert method in source
     assert "'codepier-appearance'" in source
-    assert "'codepier-chat-appearance'" in source
+    assert "'codepier-chat-appearance'" not in source
     assert 'codepier:appearance' in source
     assert 'data-ui-appearance' in source
 
@@ -116,8 +118,8 @@ def test_preference_controls_event_and_theme_color():
     run_case('preference')
 
 
-def test_auto_and_legacy_migration():
-    run_case('migration')
+def test_auto_ignores_retired_keys_without_migration_or_cross_tab_adoption():
+    run_case('cutoff')
 
 
 def test_cross_tab_storage_sync_and_unsubscribe():

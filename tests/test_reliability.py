@@ -213,11 +213,20 @@ async def test_corrupt_recovery_payload_stops_without_fake_success(runtime):
 async def test_slow_socket_does_not_lock_http_admission(runtime):
     r,p=runtime;one=await r.invoke('fs_read',{'project':'Imago','path':'one'},p)
     peer=Peer();peer.gate=asyncio.Event();r.connections['dev']=peer
+    entered=asyncio.Event();original_send=peer.send
+    async def observe_send(packet):
+        entered.set();await original_send(packet)
+    peer.send=observe_send
     send=asyncio.create_task(r.deliver(one['operation_id']))
-    await asyncio.sleep(.02);assert peer.packets
-    two=await asyncio.wait_for(r.invoke('fs_read',{'project':'Imago','path':'two'},p),.3)
-    assert two['pending'] and two['operation_id']!=one['operation_id']
-    peer.gate.set();await send
+    try:
+        # Synchronize on actual socket entry, not a 20ms scheduling guess.
+        # The socket stays blocked while the second admission must finish.
+        await asyncio.wait_for(entered.wait(),2)
+        assert peer.packets and not send.done()
+        two=await asyncio.wait_for(r.invoke('fs_read',{'project':'Imago','path':'two'},p),.3)
+        assert two['pending'] and two['operation_id']!=one['operation_id']
+    finally:
+        peer.gate.set();await send
 
 
 @pytest.mark.asyncio

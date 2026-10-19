@@ -110,6 +110,36 @@ def await_ready(predicate, seconds=300):
     raise RuntimeError('Disposable service readiness deadline exceeded')
 
 
+def await_collection(client, path, predicate, *, seconds=300):
+    """Wait only on read-only startup discovery; never retry mutations/consent.
+
+    Authentik may restart a worker after API authentication becomes available.
+    A temporary 502/503/504 is not a ready collection. Authentication failures,
+    unexpected responses and malformed successful payloads still fail the gate.
+    Return the successfully inspected rows instead of issuing a racing extra GET.
+    """
+    rows = []
+
+    def ready():
+        response = client.get('/api/v3/' + path)
+        if response.status_code in {502, 503, 504}:
+            return False
+        try:
+            value = required(response)
+            candidates = value.get('results')
+        except (ValueError, AttributeError) as exc:
+            raise AssertionError('Invalid disposable provider readiness collection') from exc
+        if not isinstance(candidates, list) or any(not isinstance(row, dict) for row in candidates):
+            raise AssertionError('Invalid disposable provider readiness collection')
+        if not predicate(candidates):
+            return False
+        rows.extend(candidates)
+        return True
+
+    await_ready(ready, seconds)
+    return rows
+
+
 def password_hash(password):
     salt = secrets.token_hex(12)
     count = 1000000
@@ -159,11 +189,9 @@ def acceptance(output):
             phase = 'authentik-default-flows'
             flow_slugs = {'default-provider-authorization-implicit-consent',
                           'default-provider-invalidation-flow', 'default-authentication-flow'}
-            def flows_ready():
-                rows = ak_call('GET', 'flows/instances/?page_size=100')['results']
-                return flow_slugs <= {row['slug'] for row in rows}
-            await_ready(flows_ready)
-            flows = {row['slug']: row['pk'] for row in ak_call('GET', 'flows/instances/?page_size=100')['results']}
+            flow_rows = await_collection(ak, 'flows/instances/?page_size=100',
+                lambda rows: flow_slugs <= {row.get('slug') for row in rows})
+            flows = {row['slug']: row['pk'] for row in flow_rows}
             authorization = flows['default-provider-authorization-implicit-consent']
             invalidation = flows['default-provider-invalidation-flow']
             authentication = flows['default-authentication-flow']
@@ -174,11 +202,8 @@ def acceptance(output):
             signing = signing_key['pk']
             phase = 'authentik-scope-mappings'
             scope_names = {'openid', 'profile', 'email', 'offline_access'}
-            def scopes_ready():
-                rows = ak_call('GET', 'propertymappings/provider/scope/?page_size=100')['results']
-                return scope_names <= {row.get('scope_name') for row in rows}
-            await_ready(scopes_ready)
-            mappings = ak_call('GET', 'propertymappings/provider/scope/?page_size=100')['results']
+            mappings = await_collection(ak, 'propertymappings/provider/scope/?page_size=100',
+                lambda rows: scope_names <= {row.get('scope_name') for row in rows})
             scopes = [row['pk'] for row in mappings if row.get('scope_name') in scope_names]
             phase = 'authentik-test-users'
             group = ak_call('POST', 'core/groups/', {'name': 'codepier-acceptance-team'}, 201)

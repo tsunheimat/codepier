@@ -5,7 +5,7 @@ window.CodePierProduct = (() => {
     let body = '';
     if (tab === 'projects') {
       await loadBasics();
-      body = `<section class="panel"><div class="panel-head"><h2>Projects</h2><button class="btn primary" data-action="add-project">添加 Project</button></div><div class="panel-body">${S.projects.map((p) => `<article class="grant-row"><div><h3>${esc(p.alias)}</h3><p>${esc(p.description)}</p><code>${esc(p.root)}</code><p class="form-note">${esc(p.workspace?.label || '')}</p></div><button class="btn" data-project-detail="${esc(p.id)}">项目详情</button></article>`).join('') || empty('进入工作空间，先添加 Folder 再建立 Project。')}</div></section>`;
+      body = `<section class="panel"><div class="panel-head"><h2>Projects</h2><button class="btn primary" data-action="add-project">添加 Project</button></div><div class="panel-body">${CodePierSpaces.projectCollection(S.projects, { workspaceLabels: true })}</div></section>`;
     } else if (tab === 'devices') {
       await loadBasics();
       body = devicesHTML();

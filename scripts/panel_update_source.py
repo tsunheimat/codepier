@@ -31,6 +31,10 @@ ROOT_FILES = {
     '.gitattributes', '.env.example', 'requirements.txt', 'requirements-agent.txt',
     'requirements-bridge.txt', 'requirements-dev.txt', 'requirements-compat.txt',
     'requirements-tools.txt',
+    # The 2.x updater consumes the same full, reviewed archive used for CI.
+    # Keep exact names: future/unrecognized roots are still rejected.
+    '.prettierrc.json', 'pyproject.toml', 'requirements.in', 'requirements-agent.in',
+    'requirements-bridge.in', 'requirements-compat.in', 'requirements-dev.in', 'requirements-tools.in',
 }
 ROOT_DIRS = {'hub', 'agent', 'shared', 'web', 'scripts', 'deploy', 'docs', 'tests', 'skills', '.github'}
 

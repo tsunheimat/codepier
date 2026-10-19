@@ -39,7 +39,7 @@ def test_editorial_composition_navigation_and_live_controls(stack,engine,scheme,
         errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
         _login(page,stack);_set_scheme(page,scheme)
         results=[]
-        for route in ['overview','projects','devices','native']:
+        for route in ['overview','resources/projects','resources/devices','native']:
             _navigate(page,route)
             result=readable(page,(engine,scheme,width,route));result['route']=route;results.append(result)
             if route=='overview':
@@ -56,16 +56,16 @@ def test_editorial_composition_navigation_and_live_controls(stack,engine,scheme,
                 expect(page.locator('.overview-summary .workspace-stat')).to_have_count(4)
                 expect(page.locator('.editorial-board > .workspace-stats')).to_have_count(0)
                 expect(page.locator('.codepier-focus-path,.codepier-focus-actions')).to_have_count(0)
-            if route=='projects':
+            if route=='resources/projects':
                 expect(page.locator('[data-project-row]')).to_have_count(page.evaluate('() => S.projects.length'))
-                expect(page.locator('[data-action="edit-project"]').first).to_be_visible()
+                expect(page.locator('[data-project-detail]').first).to_be_visible()
                 page.fill('#project-query','__nothing__')
                 expect(page.locator('#project-no-match')).to_be_visible()
                 page.get_by_role('button',name='清除筛选').click()
                 expect(page.locator('#project-no-match')).to_be_hidden()
                 page.locator('#page h1').click()
                 within(page,'.workspace-project-actions .btn')
-            if route=='devices':
+            if route=='resources/devices':
                 expect(page.locator('[data-action="device-detail"]').first).to_be_visible()
             if route=='native':
                 page.locator('.chat-starters button').first.click()
@@ -76,7 +76,7 @@ def test_editorial_composition_navigation_and_live_controls(stack,engine,scheme,
                 page.keyboard.press('Escape')
                 expect(page.locator('#chat-compose')).to_have_value('保留草稿，不发送')
                 within(page,'#chat-compose,#chat-send,#chat-effort-select')
-            page.screenshot(path=str(OUT/f'{engine}-{scheme}-{width}-{route}.png'),animations='disabled')
+            page.screenshot(path=str(OUT/f'{engine}-{scheme}-{width}-{route.replace(chr(47), chr(45))}.png'),animations='disabled')
         (OUT/f'{engine}-{scheme}-{width}.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
         assert not errors,errors
         browser.close()
@@ -89,17 +89,18 @@ def test_long_names_empty_states_and_colored_card_actions(stack,engine,width,hei
         browser=getattr(pw,engine).launch();page=browser.new_page(viewport={'width':width,'height':height},reduced_motion='reduce')
         # Synthetic project data must not be replaced by live event refreshes.
         page.route('**/api/events?*', lambda route: route.abort())
-        _login(page,stack,'projects')
+        _login(page,stack,'resources/projects')
         page.evaluate('''() => {
           S.projects=S.projects.map(p=>({...p,alias:'长项目名称_'.repeat(12),description:'说明文字 '.repeat(20),root:'/project/'+('long-path/'.repeat(40))}));
-          document.querySelector('#page').innerHTML=projectsHTML();uiPageReady();
+          document.querySelector('#page').innerHTML=CodePierSpaces.projectCollection(S.projects,{workspaceLabels:true});uiPageReady();
         }''')
         within(page,'.workspace-project-row,.workspace-project-actions,.workspace-project-path')
-        expect(page.locator('[data-action="edit-project"]').first).to_have_accessible_name(__import__('re').compile('编辑'))
+        expect(page.locator('[data-project-detail]').first).to_have_accessible_name('项目详情')
         for btn in page.locator('.workspace-project-row').first.locator('button').all():
             btn.scroll_into_view_if_needed();btn.click(trial=True)
-        page.evaluate('''() => {S.projects=[];document.querySelector('#page').innerHTML=projectsHTML();uiPageReady();}''')
-        expect(page.locator('[data-action="add-project"]')).not_to_have_count(0)
+        page.evaluate('''() => {S.projects=[];document.querySelector('#page').innerHTML=CodePierSpaces.projectCollection(S.projects,{workspaceLabels:true});uiPageReady();}''')
+        expect(page.locator('#page')).to_contain_text('先添加 Folder 再建立 Project')
+        expect(page.locator('[data-project-row]')).to_have_count(0)
         readable(page,'empty projects')
         browser.close()
 

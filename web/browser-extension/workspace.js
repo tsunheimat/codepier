@@ -19,14 +19,17 @@ export class BrowserWorkspace{
   serial(fn){const job=this.tail.then(fn,fn);this.tail=job.catch(()=>{});return job;}
   async load(){
     if(this.state)return this.state;
-    let saved=(await this.api.storage.local.get('codepierWorkspace')).codepierWorkspace;
-    let migrated=false;
-    if(saved==null){saved=(await this.api.storage.local.get('relayWorkspace')).relayWorkspace;migrated=saved!=null;}
-    this.state=saved&&saved.version===1?saved:{version:1,profile_id:uuid(),origins:[],pool:[],seen:[]};
-    if(!idPattern.test(this.state.profile_id)||!Array.isArray(this.state.pool)||!Array.isArray(this.state.origins)||!Array.isArray(this.state.seen))throw failure('BROWSER_DOCUMENT_UNAVAILABLE','扩展状态无效，请在本机重置扩展');
-    await this.save();
-    if(migrated&&this.api.storage.local.remove)await this.api.storage.local.remove('relayWorkspace');
-    return this.state;
+    const saved=(await this.api.storage.local.get('codepierWorkspace')).codepierWorkspace;
+    const state=saved==null?{version:1,profile_id:uuid(),origins:[],pool:[],seen:[]}:saved;
+    if(!state||typeof state!=='object'||Array.isArray(state)||state.version!==1||
+       typeof state.profile_id!=='string'||!idPattern.test(state.profile_id)||
+       !Array.isArray(state.pool)||!Array.isArray(state.origins)||!Array.isArray(state.seen))
+      throw failure('BROWSER_DOCUMENT_UNAVAILABLE','扩展状态无效，请在本机重置扩展');
+    // Never adopt old namespace permissions/leases. Invalid or unsaved state
+    // must not become a cache hit on the next call after an error.
+    await this.api.storage.local.set({codepierWorkspace:state});
+    this.state=state;
+    return state;
   }
   async save(){await this.api.storage.local.set({codepierWorkspace:this.state});}
   async counts(){

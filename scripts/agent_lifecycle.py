@@ -25,40 +25,25 @@ TASK = "CodePierAgent"
 UNIT = "codepier-agent.service"
 
 def managed_service_name(base, kind, scope):
-    # Bootstrap runs before shared modules are installed. Keep this discovery
-    # standard-library-only, and validate ownership before any service action.
-    names = {'launchd': ('com.codepier.agent', 'com.liangchanghua.remote-dev-agent'),
-             'systemd': ('codepier-agent.service', 'remote-dev-agent.service'),
-             'schtasks': ('CodePierAgent', 'RemoteDevAgent')}.get(kind)
-    if not names: return ''
-    metadata_path = base/'management.json'
-    metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.is_file() else {}
-    name = metadata.get('service_name')
-    if name:
-        if name not in names: raise ValueError('Unrecognized managed service name')
-        return name
-    if kind == 'schtasks':
-        target = base/'service.xml'
-        if target.is_file():
-            text = target.read_text(encoding='utf-16')
-            return names[0] if 'CodePierAgent' in text or '.codepier-agent' in text else names[1]
-        return names[0]
-    folder = (Path.home()/'Library/LaunchAgents' if kind == 'launchd' else
-              Path('/etc/systemd/system') if scope == 'system' else Path.home()/'.config/systemd/user')
-    owned = []
-    for name in names:
-        target = folder/(name+'.plist' if kind == 'launchd' else name)
-        if target.is_symlink(): raise ValueError('Managed service definition must not be a symlink')
-        if not target.is_file(): continue
-        if kind == 'launchd':
-            value = plistlib.loads(target.read_bytes())
-            matches = value.get('Label') == name and value.get('WorkingDirectory') == str(base/'runtime')
-        else:
-            matches = 'WorkingDirectory='+str(base/'runtime').replace('%','%%') in target.read_text(encoding='utf-8').splitlines()
-        if matches: owned.append(name)
-    if len(owned)>1: raise ValueError('Both legacy and CodePier services exist; inspect before updating')
-    return owned[0] if owned else names[0]
-
+    # This file is copied for bootstrap/handoff and must stay stdlib-only.
+    # No service-name discovery or adoption of an older installation occurs.
+    expected={'launchd':'com.codepier.agent','systemd':'codepier-agent.service',
+              'schtasks':'CodePierAgent'}.get(kind)
+    if not expected:return ''
+    allowed_scopes={'launchd':{'user'},'systemd':{'user','system'},'schtasks':{'user'}}
+    if scope not in allowed_scopes[kind]:raise ValueError('Unsupported managed service scope')
+    metadata_path=base/'management.json'
+    if metadata_path.is_symlink():raise ValueError('Managed service metadata must not be a symlink')
+    metadata=json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.is_file() else {}
+    if not isinstance(metadata,dict) or metadata.get('service_name') not in (None,'',expected):
+        raise ValueError('Unsupported service identity; initialize a current CodePier installation')
+    if kind=='schtasks':target=base/'service.xml'
+    else:
+        folder=(Path.home()/'Library/LaunchAgents' if kind=='launchd' else
+                Path('/etc/systemd/system') if scope=='system' else Path.home()/'.config/systemd/user')
+        target=folder/(expected+'.plist' if kind=='launchd' else expected)
+    if target.is_symlink():raise ValueError('Managed service definition must not be a symlink')
+    return expected
 
 
 def _service_name(base):
@@ -397,7 +382,7 @@ def apply_update(base: Path, candidate: Path, pid: int) -> None:
         runtime_moved = True
         _move(candidate, runtime)
         _update_management(base, managed=True, service=True, installed_version=_version(runtime),
-                           previous_version=previous_version, status="starting", last_error="", brand_migration="", brand_migration_error="")
+                           previous_version=previous_version, status="starting", last_error="")
         start_service(base)
         verify_service(base)
         refresh_cli_commands(base)
@@ -502,11 +487,6 @@ def uninstall(base: Path, pid: int) -> None:
     if receipt.is_file():
         subprocess.run([str(python),'-m','agent.install_browser_bridge','--config',str(base/'config.json'),'--uninstall','--apply'],
                        cwd=base/'runtime',check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=60)
-    if base.name=='.codepier-agent':
-        old=base.with_name('.remote-dev-agent')
-        if (old.is_symlink() or getattr(old,'is_junction',lambda:False)()) and old.resolve()==base:
-            if getattr(old,'is_junction',lambda:False)():old.rmdir()
-            else:old.unlink()
     if os.name == "nt":
         _schedule_windows_removal(base)
     else:
@@ -515,10 +495,6 @@ def uninstall(base: Path, pid: int) -> None:
 
 def record_failure(base: Path, exc: Exception) -> None:
     current = _read_json(base / "management.json")
-    brand_record = _read_json(base / '.codepier-migration.json')
-    if current.get('brand_migration') == 'rollback' and brand_record.get('stage') == 'rolled_back':
-        _update_management(base, status='rollback', last_error='CodePier 命名迁移失败，已验证恢复原安装')
-        return
     if current.get("status") == "rollback":
         # apply_update already restored and verified the previous service. Keep
         # that stronger state instead of obscuring it with a generic error.
@@ -528,24 +504,6 @@ def record_failure(base: Path, exc: Exception) -> None:
     _update_management(base, status="error", last_error=str(exc)[:500])
 
 
-def migrate_brand(base, pid):
-    # Load verified source into memory before moving the installation.
-    import importlib.util
-    from types import SimpleNamespace
-    loaded = {}
-    for name in ('brand_migration', 'brand_browser'):
-        source = base / 'runtime/shared' / (name + '.py')
-        spec = importlib.util.spec_from_file_location('codepier_' + name, source)
-        if not spec or not spec.loader:
-            raise RuntimeError('Missing brand migration component')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        loaded[name] = module
-    backend = SimpleNamespace(**globals())
-    backend.brand_browser = loaded['brand_browser']
-    return loaded['brand_migration'].migrate_agent(base, pid, backend)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install-dir", required=True)
@@ -553,26 +511,25 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--apply-update")
     group.add_argument("--restart", action="store_true")
-    group.add_argument("--migrate-brand", action="store_true")
     group.add_argument("--uninstall", action="store_true")
     parser.add_argument("--handoff-task", default="")
     parser.add_argument("--handoff-label", default="")
     args = parser.parse_args()
     base = Path(args.install_dir).expanduser()
+    if base.name=='.remote-dev-agent' or base.is_symlink() or getattr(base,'is_junction',lambda:False)():
+        parser.error('A current installation directory is required; aliases are not adopted')
     if not args.uninstall:
         base = base.resolve()
     time.sleep(0.5)
     try:
-        if args.migrate_brand:
-            print(json.dumps(migrate_brand(base, args.wait_pid), ensure_ascii=False))
-        elif args.apply_update:
+        if args.apply_update:
             apply_update(base, Path(args.apply_update), args.wait_pid)
         elif args.restart:
             restart(base, args.wait_pid)
         else:
             uninstall(base, args.wait_pid)
     except Exception as exc:
-        if base.exists() and not args.uninstall and not args.migrate_brand:
+        if base.exists() and not args.uninstall:
             try:
                 record_failure(base, exc)
             except Exception:

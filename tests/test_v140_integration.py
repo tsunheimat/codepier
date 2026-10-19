@@ -99,7 +99,7 @@ def test_search_and_artifact_do_not_cross_grants(stack):
     if search.get('pending'):
         op=stack.poll(search['operation_id']);search=op['result']['data']
     other=stack.mcp('process',{'project': 'Imago', 'operation': 'search_get', 'options': {'search_id': search['search_id']}},token_value=issued['token'])
-    assert other['isError'] and other['structuredContent']['error']['code']=='OPERATION_NOT_FOUND'
+    assert other['isError'] and other['structuredContent']['error']['code']=='NOT_FOUND'
     artifact=stack.mcp('write',{'project': 'Imago', 'idempotency_key': uuid.uuid4().hex, 'operation': 'artifact', 'options': {'path': name}})['structuredContent']
     if artifact.get('pending'):artifact=stack.poll(artifact['operation_id'])['result']['data']
     with httpx.Client() as client:

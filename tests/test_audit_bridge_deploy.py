@@ -207,21 +207,20 @@ def fake_hub_installer(tmp_path, *, probe_status=0, start_status=0):
     (tmp_path / "deploy").mkdir()
     (tmp_path / "bin").mkdir()
     shutil.copy(BASE / "deploy/install-hub.sh", tmp_path / "deploy/install-hub.sh")
-    # These tests exercise the shell's init/error flow; migration internals have
-    # separate real SQLite, Docker and proxy regression coverage.
+    # Exercise the current host-volume helper as well as the shell flow. Docker
+    # itself is a disposable argv fixture; it never reaches a running daemon.
     (tmp_path / "scripts").mkdir()
-    for name in ("rename_checkout.py", "migrate_hub.py"):
-        (tmp_path / "scripts" / name).write_text(
-            "import os,sys\nfrom pathlib import Path\n"
-            "with Path(os.environ['DOCKER_LOG']).open('a') as f: f.write(Path(__file__).name+' '+' '.join(sys.argv[1:])+'\\n')\n"
-            "if len(sys.argv)>1 and sys.argv[1]=='probe-volume': print('codepier_hub_data')\n")
+    shutil.copy(BASE / "scripts/bootstrap_hub.py",tmp_path / "scripts/bootstrap_hub.py")
     (tmp_path / ".env").write_text("HUB_PUBLIC_URL=http://fixture:8765\n")
     fake = tmp_path / "bin/docker"
     fake.write_text("""#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
   'compose version'|'compose config --quiet'|'compose build hub') exit 0 ;;
-  *'python -c '*)
+  'compose config --format json')
+    printf '%s\\n' '{"name":"codepier","services":{"hub":{"environment":{"HUB_DATA_DIR":"/app/data"},"volumes":[{"type":"volume","source":"hub-data","target":"/app/data"}]}},"volumes":{"hub-data":{"external":true,"name":"codepier_hub_data"}}}'; exit 0 ;;
+  'volume ls --quiet') printf '%s\\n' codepier_hub_data; exit 0 ;;
+  *'python -m hub.installation'*)
     [[ "$*" == *'--volume codepier_hub_data:/app/data:ro'* ]] || exit 98
     exit "$PROBE_STATUS" ;;
   *'python -m hub init'*) exit 0 ;;
@@ -252,10 +251,10 @@ def test_hub_new_volume_initializes_once_and_waits_for_health(tmp_path):
     assert result.returncode == 0
     assert log.count("python -m hub init") == 1
     assert "compose up -d --wait --wait-timeout 90" in log
-    assert (log.index('--volume codepier_hub_data:/app/data:ro')
-            < log.index('migrate_hub.py proxy-trust')
-            < log.index('migrate_hub.py write-boundary')
+    assert (log.index('compose config --format json') < log.index('volume ls --quiet')
+            < log.index('--volume codepier_hub_data:/app/data:ro')
             < log.index('python -m hub init') < log.index('compose up -d'))
+    assert 'migrate' not in log and 'rename' not in log and 'volume rm' not in log
 
 
 def test_hub_health_failure_is_not_reported_as_started(tmp_path):

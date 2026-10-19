@@ -27,48 +27,30 @@ TASK = 'CodePierAgent'
 
 
 def managed_service_name(base, kind, scope):
-    # Bootstrap runs before shared modules are installed. Keep this discovery
-    # standard-library-only, and validate ownership before any service action.
-    names = {'launchd': ('com.codepier.agent', 'com.liangchanghua.remote-dev-agent'),
-             'systemd': ('codepier-agent.service', 'remote-dev-agent.service'),
-             'schtasks': ('CodePierAgent', 'RemoteDevAgent')}.get(kind)
-    if not names: return ''
-    metadata_path = base/'management.json'
-    metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.is_file() else {}
-    name = metadata.get('service_name')
-    if name:
-        if name not in names: raise ValueError('Unrecognized managed service name')
-        return name
-    if kind == 'schtasks':
-        target = base/'service.xml'
-        if target.is_file():
-            text = target.read_text(encoding='utf-16')
-            return names[0] if 'CodePierAgent' in text or '.codepier-agent' in text else names[1]
-        return names[0]
-    folder = (Path.home()/'Library/LaunchAgents' if kind == 'launchd' else
-              Path('/etc/systemd/system') if scope == 'system' else Path.home()/'.config/systemd/user')
-    owned = []
-    for name in names:
-        target = folder/(name+'.plist' if kind == 'launchd' else name)
-        if target.is_symlink(): raise ValueError('Managed service definition must not be a symlink')
-        if not target.is_file(): continue
-        if kind == 'launchd':
-            value = plistlib.loads(target.read_bytes())
-            matches = value.get('Label') == name and value.get('WorkingDirectory') == str(base/'runtime')
-        else:
-            matches = 'WorkingDirectory='+str(base/'runtime').replace('%','%%') in target.read_text(encoding='utf-8').splitlines()
-        if matches: owned.append(name)
-    if len(owned)>1: raise ValueError('Both legacy and CodePier services exist; inspect before updating')
-    return owned[0] if owned else names[0]
+    # This file is copied for bootstrap/handoff and must stay stdlib-only.
+    # No service-name discovery or adoption of an older installation occurs.
+    expected={'launchd':'com.codepier.agent','systemd':'codepier-agent.service',
+              'schtasks':'CodePierAgent'}.get(kind)
+    if not expected:return ''
+    allowed_scopes={'launchd':{'user'},'systemd':{'user','system'},'schtasks':{'user'}}
+    if scope not in allowed_scopes[kind]:raise ValueError('Unsupported managed service scope')
+    metadata_path=base/'management.json'
+    if metadata_path.is_symlink():raise ValueError('Managed service metadata must not be a symlink')
+    metadata=json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.is_file() else {}
+    if not isinstance(metadata,dict) or metadata.get('service_name') not in (None,'',expected):
+        raise ValueError('Unsupported service identity; initialize a current CodePier installation')
+    if kind=='schtasks':target=base/'service.xml'
+    else:
+        folder=(Path.home()/'Library/LaunchAgents' if kind=='launchd' else
+                Path('/etc/systemd/system') if scope=='system' else Path.home()/'.config/systemd/user')
+        target=folder/(expected+'.plist' if kind=='launchd' else expected)
+    if target.is_symlink():raise ValueError('Managed service definition must not be a symlink')
+    return expected
 
 
 def default_install_base():
-    new, old = Path.home()/'.codepier-agent', Path.home()/'.remote-dev-agent'
-    if new.exists() and old.exists() and new.resolve()!=old.resolve():
-        raise ValueError('Both CodePier and legacy installations exist; no merge attempted')
-    if new.is_symlink() or old.is_symlink() and old.resolve()!=new:
-        raise ValueError('Unrecognized installation symlink')
-    return new if new.exists() or not old.exists() else old
+    # An old directory is neither a default nor an alias to adopt.
+    return validate_install_base(Path.home()/'.codepier-agent')
 
 
 def run(args, **kwargs):
@@ -207,14 +189,14 @@ def service_preflight(base):
     kind, scope = service_identity()
     if kind == 'launchd':
         old = Path.home()/'Library/LaunchAgents/com.liangchanghua.remote-dev-agent.plist'
-        if old.exists() or old.is_symlink(): raise ValueError('A legacy Agent service exists; update its original installation instead.')
+        if old.exists() or old.is_symlink(): raise ValueError('An unsupported old Agent service exists; explicitly retire it before installing. No service was changed.')
     elif kind == 'systemd':
         folder = Path('/etc/systemd/system') if scope == 'system' else Path.home()/'.config/systemd/user'
         old = folder/'remote-dev-agent.service'
-        if old.exists() or old.is_symlink(): raise ValueError('A legacy Agent service exists; update its original installation instead.')
+        if old.exists() or old.is_symlink(): raise ValueError('An unsupported old Agent service exists; explicitly retire it before installing. No service was changed.')
     elif kind == 'schtasks':
         if subprocess.run(['schtasks.exe','/Query','/TN','RemoteDevAgent'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode == 0:
-            raise ValueError('A legacy Agent task exists; update its original installation instead.')
+            raise ValueError('An unsupported old Agent task exists; explicitly retire it before installing. No task was changed.')
     if sys.platform == 'darwin':
         if os.geteuid() == 0:
             raise ValueError('Run this command in the Mac desktop account, without sudo.')
@@ -493,9 +475,8 @@ def read_installed_config(base):
 
 
 def validate_install_base(base):
-    # Accept only the precise migration alias, never arbitrary symlinks.
-    if base.name == '.remote-dev-agent' and (base.is_symlink() or getattr(base, 'is_junction', lambda: False)()) and base.resolve() == base.with_name('.codepier-agent'):
-        base = base.resolve()
+    if base.name=='.remote-dev-agent':
+        raise ValueError('Unsupported old Agent directory; use a separate current installation')
     if (not base.is_absolute() or base.is_symlink() or getattr(base, 'is_junction', lambda: False)() or len(base.parts) < 3
             or any(ord(c) < 32 or ord(c) == 127 for c in str(base))):
         raise ValueError('Install directory must be a dedicated absolute directory, not a symlink or filesystem root')

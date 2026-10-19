@@ -8,11 +8,12 @@ import pytest
 from playwright.sync_api import expect, sync_playwright
 
 PAGES = {
-    'overview': '控制总览', 'devices': '资源', 'projects': '资源',
-    'workbench': '远程工作台', 'conversations': '操作审计', 'audit': '操作审计',
-    'connect': '访问', 'diagnostics': '运行诊断', 'artifacts': '产物交付',
-    'settings': '系统设置',
+    'overview':'控制总览', 'resources/devices':'资源库', 'resources/projects':'资源库',
+    'workbench':'远程工作台', 'audit/sessions':'操作审计', 'audit/operations':'操作审计',
+    'spaces':'工作空间', 'diagnostics':'运行诊断', 'artifacts':'产物交付',
+    'settings':'系统设置',
 }
+
 OUT = Path(os.getenv('CODEPIER_UI_SCREENSHOTS', 'docs/evidence/ui-20260913/screenshots'))
 
 
@@ -24,23 +25,13 @@ def login(page, stack, route='overview'):
 
 
 def navigate(page, name):
-    area, tab = {'projects':('resources','projects'), 'devices':('resources','devices'),
-                 'connect':('access','connections'), 'conversations':('audit',None)}.get(name,(name,None))
-    if name == 'artifacts':
-        page.evaluate("navigate('artifacts')")  # authorized secondary cross-project overview
-        expect(page.locator('#page h1')).to_have_text(PAGES[name])
-        return
-    if page.viewport_size['width'] <= 900:
-        page.click('.mobile-menu')
-        expect(page.locator('.sidebar')).to_have_class('sidebar open')
-    page.locator(f'.nav [data-nav="{area}"]').click()
-    if name == 'conversations':
-        assert not page.locator('.nav [data-nav="conversations"]').count()
-        page.locator('[data-action="audit-mode"][data-mode="sessions"]').click()
-        expect(page.locator('#audit-sessions')).to_be_visible()
-    if tab:
-        page.locator(f'[data-product-area="{area}"][data-product-tab="{tab}"]').click()
+    assert name in PAGES
+    # Canonical routes only. The production handler still applies dirty-form,
+    # resource identity and private-history boundaries; no old route translation.
+    page.evaluate('(route)=>navigate(route)',name)
     expect(page.locator('#page h1')).to_have_text(PAGES[name])
+    if name=='audit/sessions':expect(page.locator('#audit-sessions')).to_be_visible()
+
 
 
 def layout(page, label):
@@ -72,8 +63,8 @@ def test_all_pages_layout_and_screenshots(stack, width, height):
         page.screenshot(path=str(OUT/f'{width}-login.png'),full_page=True,animations='disabled')
         page.fill('#username', 'admin');page.fill('#password', stack.password)
         page.click('#login-form button')
-        # Fresh login starts with the primary Resources area.
-        expect(page.locator('#resources-page')).to_be_visible(timeout=15000)
+        # Fresh login opens the workspace inventory, not a mutable active Space.
+        expect(page.locator('#workspace-page')).to_be_visible(timeout=15000)
         measurements={}
         for name in PAGES:
             navigate(page,name)
@@ -88,7 +79,7 @@ def test_all_pages_layout_and_screenshots(stack, width, height):
                 expect(page.locator('.mobile-work-tabs')).to_be_hidden()
             assert 'undefined' not in page.locator('#page').inner_text()
             measurements[name]=layout(page,name)
-            page.screenshot(path=str(OUT/f'{width}-{name}.png'),full_page=True,animations='disabled')
+            page.screenshot(path=str(OUT/f'{width}-{name.replace(chr(47),chr(45))}.png'),full_page=True,animations='disabled')
         (OUT/f'{width}-layout.json').write_text(json.dumps(measurements,ensure_ascii=False,indent=2))
         assert not errors,errors
         browser.close()
@@ -162,33 +153,31 @@ def test_project_search_disclosure_tools_and_modal_focus(stack):
         browser=pw.chromium.launch()
         page=browser.new_page(viewport={'width':390,'height':844})
         errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-        login(page,stack,'projects')
+        login(page,stack,'resources/projects')
         page.fill('#project-query','Nexus')
         expect(page.locator('[data-project-row]:visible')).to_have_count(1)
         page.fill('#project-query','missing-name')
         expect(page.locator('#project-no-match')).to_be_visible()
         page.click('[data-action="refresh"]')
         expect(page.locator('#project-query')).to_have_value('missing-name')
-        navigate(page,'connect')
-        page.locator('[data-product-tab="advanced"]').click()
-        page.get_by_text('原固定授权与技术接入',exact=True).click()
-        expect(page.get_by_role('button',name='复制核心地址')).to_be_visible()
-        assert page.evaluate('codingEndpoint()').endswith('/mcp?profile=core')
-        expect(page.locator('.tool-chip').first).to_be_hidden()
-        page.locator('summary').filter(has_text='工具目录').click()
-        page.fill('#tool-query','workspace')
-        expect(page.locator('.tool-chip:visible')).to_have_count(1)
-        expect(page.locator('.tool-chip:visible')).to_contain_text('workspace')
-        layout(page,'expanded-tools')
+        page.evaluate('(route)=>navigate(route)','spaces/'+stack.space_id+'/profiles')
+        expect(page.locator('#workspace-page h2')).to_have_text('Profiles')
+        page.locator('[data-ws-action="new-profiles"]').click()
+        expect(page.locator('#workspace-form [data-policy-kind="projects"]')).not_to_have_count(0)
+        expect(page.locator('#workspace-form [name="role_id"], #workspace-form [name="scopes"]')).to_have_count(0)
+        assert page.locator('#app').evaluate('(el)=>el.inert')
+        layout(page,'workspace-profile-policy')
+        page.keyboard.press('Escape')
+        assert not page.locator('#app').evaluate('(el)=>el.inert')
         navigate(page,'workbench')
         page.locator('.tool-menu summary').click()
         page.click('[data-resource-detail][data-resource-type="project"]')
-        expect(page.locator('#modal-title')).to_have_text('资源 · Imago')
-        expect(page.locator('[data-detail-pane="configuration"]')).to_contain_text(stack.project['root'])
-        expect(page.locator('[data-project-tools]')).to_have_attribute('data-project-tools',stack.project['id'])
+        expect(page.locator('#modal-title')).to_have_text('Project · Imago')
+        expect(page.locator('.modal-body')).to_contain_text(stack.must(stack.client.get('/api/projects/'+stack.project['id']))['root'])
+        expect(page.locator('[data-ws-project-tools]')).to_be_visible()
         assert page.locator('#app').evaluate('(el)=>el.inert')
         # Hidden buttons in closed details must not receive trapped focus.
-        page.locator('.modal [data-action="close-modal"]').focus()
+        page.locator('.modal [data-action="close-modal"]').first.focus()
         page.keyboard.press('Shift+Tab')
         focused=page.evaluate('document.activeElement.getClientRects().length>0')
         assert focused
@@ -226,7 +215,7 @@ def test_live_refresh_preserves_filter_focus_and_disclosure(stack):
     with sync_playwright() as pw:
         browser=pw.chromium.launch()
         page=browser.new_page(viewport={'width':1440,'height':1000})
-        login(page,stack,'projects')
+        login(page,stack,'resources/projects')
         page.locator('.page-help summary').click()
         page.fill('#project-query','Nex')
         page.evaluate("renderPage(false)")

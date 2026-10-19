@@ -1,8 +1,7 @@
 """F19/F20/F21/F27: truthful recovery, cleanup and readable exports."""
 import asyncio
 import json
-from pathlib import Path
-import subprocess
+import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +12,7 @@ from tests.test_devtools_flow import tools_page  # noqa: F401
 from tests.test_integrations_stack import integrated_stack  # noqa: F401
 from tests.test_project_cleanup_and_recovery import records_fixture
 
-ROOT=Path(__file__).resolve().parents[1]
+from tests.test_workspace_browser import workspace_server,workspace_browser,open_workspace  # noqa: F401
 
 
 @pytest.mark.asyncio
@@ -59,29 +58,42 @@ def test_project_stop_skips_legacy_closed_receipts_but_rechecks_explicit_cleanup
     finally:db.close()
 
 
-def test_terminal_vps_error_is_queried_then_allows_an_explicit_new_check():
-    code=r'''
-const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
-const elements=Object.fromEntries(['#vps-check-run','#vps-check-state','#vps-check-output','#vps-check-project'].map(k=>[k,{value:'ProjectA',textContent:'',disabled:false}]));
-const calls=[];let serial=0;
-const context={S:{session:'fixture-session',page:'vps'},api:async()=>({id:'v',name:'fixture',host:'example.invalid',port:22,username:'root',enabled:true,projects:[{id:'ProjectA',alias:'A',device_name:'D',online:true,mode:'write',allow_tasks:true}]}),
-modal:()=>({isConnected:true}),$:s=>elements[s],esc:String,icon:()=>'',notice:String,stateNames:{},uid:()=>String(++serial),busy:async(_,fn)=>fn(),document:{addEventListener(){}},
-tool:async(name,args)=>{calls.push({name,args});if(name==='operations_wait')return {state:'failed',pending:false,result:{error:{message:'fixture dependency missing'}}};throw Object.assign(new Error('fixture dependency missing'),{code:'SSH_DEPENDENCY_MISSING',operation_id:'fixture-operation',retryable:false});}};
-vm.createContext(context);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);
-(async()=>{
- await context.vpsCheck('v');await elements['#vps-check-run'].onclick();
- assert.equal(elements['#vps-check-run'].textContent,'恢复本次检查');
- await elements['#vps-check-run'].onclick();
- assert.equal(elements['#vps-check-run'].textContent,'重新检查');
- assert.equal(elements['#vps-check-project'].disabled,false);
- await elements['#vps-check-run'].onclick();
- assert.deepEqual(calls.map(c=>c.name),['exec','operations_wait','exec']);
- assert.equal(calls[1].args.operation_id,'fixture-operation');
- assert.notEqual(calls[0].args.idempotency_key,calls[2].args.idempotency_key);
-})().catch(error=>{console.error(error);process.exitCode=1;});
-'''
-    result=subprocess.run(['node','-e',code,str(ROOT/'web/vps.js')],capture_output=True,text=True,timeout=15)
-    assert result.returncode==0,result.stdout+result.stderr
+def test_failed_vps_receipt_is_observed_before_an_explicit_new_command(workspace_server,workspace_browser):
+    server=workspace_server;context,errors=workspace_browser
+    page=open_workspace(context,server,'spaces/alice/vps');calls=[]
+    page.on('request',lambda request:calls.append(request.post_data_json)
+        if request.method=='POST' and request.url.endswith('/api/tools/call') else None)
+    marker=server.directory/'command-receipt-count'
+    button=page.locator('[data-ws-action="vps-command"][data-id="'+'a'*32+'"]')
+    button.click();form=page.locator('#workspace-form')
+    form.locator('[name="command"]').fill('sleep 2; printf failed >> '+shlex.quote(str(marker))+'; exit 7')
+    page.get_by_role('button',name='保存',exact=True).click()
+    expect(form.locator('[data-validation-result]')).to_be_visible(timeout=30000)
+    submitted=[call for call in calls if call['tool']=='exec']
+    observed=[call for call in calls if call['tool']=='operations_wait']
+    assert len(submitted)==1 and observed
+    original=observed[0]['arguments']['operation_id']
+    assert all(call['arguments']['operation_id']==original for call in observed)
+    assert marker.read_text()=='failed'
+    receipt=server.must(server.client.get('/api/operations/'+original))
+    assert receipt['state']=='failed' and receipt['result']['data']['exit_code']==7
+    form.locator('[data-validation-result]').click()
+    expect(page.locator('.modal-body')).to_contain_text(original)
+    assert len([call for call in calls if call['tool']=='exec'])==1
+    page.keyboard.press('Escape')
+    button.click()
+    form.locator('[name="command"]').fill('printf success >> '+shlex.quote(str(marker))+'; printf fresh-result')
+    page.get_by_role('button',name='保存',exact=True).click()
+    expect(page.locator('#modal-title')).to_have_text('SSH 结果',timeout=30000)
+    expect(page.locator('.modal-body')).to_contain_text('fresh-result')
+    submitted=[call for call in calls if call['tool']=='exec']
+    assert len(submitted)==2
+    assert submitted[0]['arguments']['idempotency_key']!=submitted[1]['arguments']['idempotency_key']
+    assert all(call['arguments']['target']=='vps:'+'a'*32 for call in submitted)
+    assert all('project' not in call['arguments'] for call in submitted)
+    assert marker.read_text()=='failedsuccess'
+    assert server.must(server.client.get('/api/operations/'+original))['state']=='failed'
+    assert errors==[]
 
 
 def test_definite_browser_rejection_is_not_persisted_as_an_unknown_request(browser_page):

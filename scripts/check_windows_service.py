@@ -78,13 +78,15 @@ def main():
         (runtime/'scripts').mkdir()
         (runtime/'scripts/__init__.py').write_text('')
         shutil.copyfile(ROOT/'scripts/agent_lifecycle.py', runtime/'scripts/agent_lifecycle.py')
+        shutil.copyfile(ROOT/'scripts/acceptance_io.py', runtime/'scripts/acceptance_io.py')
         (runtime/'agent/__init__.py').write_text('')
         shutil.copyfile(ROOT/'agent/service_watchdog.py', runtime/'agent/service_watchdog.py')
         (base/'task-name').write_text(name)
-        (runtime/'agent/__main__.py').write_text('''import asyncio,json,os,time
+        (runtime/'agent/__main__.py').write_text('''import asyncio,os,time
 from pathlib import Path
 from agent import service_watchdog
 from scripts.agent_lifecycle import set_windows_task_enabled
+from scripts.acceptance_io import publish_progress
 original = service_watchdog.Watchdog
 service_watchdog.Watchdog = lambda: original(timeout=12, interval=.5)
 base = Path(__file__).resolve().parents[2]
@@ -92,9 +94,7 @@ def main():
     async def run():
         with service_watchdog.watch_event_loop():
             while True:
-                temporary = base/'progress.tmp'
-                temporary.write_text(json.dumps({'pid':os.getpid(),'at':time.time()}))
-                temporary.replace(base/'progress.json')
+                publish_progress(base/'progress.json', {'pid':os.getpid(),'at':time.time()})
                 if (base/'check-maintenance').exists():
                     (base/'check-maintenance').unlink()
                     for enabled in (False, True):

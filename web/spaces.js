@@ -142,6 +142,38 @@ window.CodePierSpaces = (() => {
     return d;
   }
 
+  function projectCollection(projects, { editable = false, workspaceLabels = false } = {}) {
+    if (!projects.length) return empty('进入工作空间，先添加 Folder 再建立 Project。');
+    const cards = projects
+      .map((p) => {
+        const search = [
+          p.alias,
+          p.description,
+          p.root,
+          p.device_name,
+          workspaceLabels ? p.workspace?.label : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLocaleLowerCase();
+        return `<article class="panel workspace-project-row" data-cp-key="project:${esc(p.id)}" data-project-row data-project-search="${esc(search)}">
+        <header class="workspace-project-head"><span class="project-index" aria-hidden="true">${icon('folder')}</span><div><span class="project-cover-label">PROJECT</span><h3>${esc(p.alias)}</h3>${p.description ? `<p>${esc(p.description)}</p>` : ''}</div>${onlineBadge(p.online)}</header>
+        <div class="workspace-project-path"><span>工作空间目录</span><code title="${esc(p.root || '')}">${esc(p.root || '来源不可用')}</code></div>
+        <dl class="workspace-project-facts"><div><dt>来源设备</dt><dd>${esc(p.device_name || '未解析')}</dd></div><div><dt>文件权限</dt><dd>${p.mode === 'write' ? '可编辑' : '只读'}</dd></div><div><dt>工作空间</dt><dd>${workspaceLabels ? esc(p.workspace?.label || '') : '当前页面的工作空间'}</dd></div></dl>
+        <footer class="workspace-project-actions"><div class="actions"><button class="btn" data-project-detail="${esc(p.id)}">项目详情</button><button class="btn primary" data-action="open-project" data-id="${esc(p.id)}">工作台 ${icon('arrow')}</button></div>${editable ? button('project', '目录 / 设置', p.id, `aria-label="编辑 ${esc(p.alias)} 的工作空间目录"`) : ''}</footer>
+      </article>`;
+      })
+      .join('');
+    return (
+      `<div class="project-search workspace-project-search"><label for="project-query">${icon('search')}<input id="project-query" type="search" aria-label="筛选项目" placeholder="搜索项目、设备或路径"></label><small id="project-count" role="status"></small></div>
+      <section class="workspace-project-collection">${cards}<div class="empty panel" id="project-no-match" hidden><p>没有匹配的项目</p><button type="button" class="btn ghost small" data-ui="clear-project-query">清除筛选</button></div></section>` +
+      uiHelp(
+        '工作空间目录与权限',
+        'Project 引用工作空间中的一个 Folder 及其根目录或子目录。可选执行设备来自该来源的映射；权限由成员和 Profile 决定，默认设备不可用时不会自动换机。',
+      )
+    );
+  }
+
   async function html() {
     const address = route(),
       login = S.session,
@@ -188,16 +220,7 @@ window.CodePierSpaces = (() => {
           ? button('new-' + address.tab, '添加 ' + titles[address.tab]) +
             (address.tab === 'members' && editable ? button('invite', '建立邀请') : '')
           : '';
-      if (address.tab === 'projects')
-        content = rows
-          .map((x) =>
-            row(
-              x.alias,
-              `${esc(x.description)}<br><code>${esc(x.root)}</code> · ${x.online ? '在线' : '离线'}`,
-              `<button class="btn" data-project-detail="${esc(x.id)}">项目详情</button>${editable ? button('project', '目录 / 设置', x.id) : ''}`,
-            ),
-          )
-          .join('');
+      if (address.tab === 'projects') content = projectCollection(rows, { editable });
       if (address.tab === 'folders')
         content = rows
           .map((x) =>
@@ -493,7 +516,13 @@ window.CodePierSpaces = (() => {
       field('alias', '项目名称', old?.alias, 'required maxlength="100"') +
         field('description', '说明', old?.description, 'maxlength="2000"') +
         select('folder_id', '工作空间 Folder', options(folders), old?.folder_id, 'required') +
-        field('subpath', '根目录或相对子目录', old?.subpath || '.', 'required maxlength="4096"') +
+        field(
+          'subpath',
+          '根目录或相对子目录',
+          old?.subpath || '.',
+          'required maxlength="4096" aria-describedby="project-subpath-help"',
+        ) +
+        '<p class="form-note" id="project-subpath-help">使用工作空间 Folder 的相对子目录；“.” 使用 Folder 根目录，不能越出范围。</p>' +
         '<div data-folder-preview class="form-note"></div>' +
         notice('每个 Project 只引用一个 Folder。使用 “.” 绑定根目录；不能越出 Folder 范围。'),
       (f, key) =>
@@ -1539,6 +1568,7 @@ window.CodePierSpaces = (() => {
     newSpace,
     projectEditor,
     projectDetail,
+    projectCollection,
     newConnection,
     consent,
     inventoryHTML,

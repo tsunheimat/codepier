@@ -201,12 +201,13 @@ function uiFilterProjects() {
   const query = input.value.trim().toLocaleLowerCase();
   S.uiProjectQuery = input.value;
   let count = 0;
-  $$('[data-project-row]').forEach((row) => {
+  const rows = $$('[data-project-row]');
+  rows.forEach((row) => {
     row.hidden = !row.dataset.projectSearch.includes(query);
     if (!row.hidden) count++;
   });
   const status = $('#project-count');
-  if (status) status.textContent = `${count} / ${S.projects.length} 个项目`;
+  if (status) status.textContent = `${count} / ${rows.length} 个项目`;
   const empty = $('#project-no-match');
   if (empty) empty.hidden = count > 0;
 }
@@ -299,6 +300,9 @@ function uiPageReady(animate = false, presentation = null) {
   uiLabelFields(page);
   const projectInput = $('#project-query');
   if (projectInput) {
+    // The search is a page draft, not a global active-workspace selector.
+    if (S.uiProjectQueryScope !== location.hash) S.uiProjectQuery = '';
+    S.uiProjectQueryScope = location.hash;
     projectInput.value = S.uiProjectQuery || '';
     projectInput.oninput = uiFilterProjects;
     uiFilterProjects();

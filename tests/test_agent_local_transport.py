@@ -73,7 +73,6 @@ async def test_local_run_handshakes_once_never_dials_or_watches_config(local_age
 
     monkeypatch.setattr("agent.runner.websockets.connect", forbidden)
     monkeypatch.setattr(agent, "watch_config", forbidden)
-    monkeypatch.setattr("agent.brand_upgrade.watch", forbidden)
     await asyncio.wait_for(agent.run(local_transport=socket), 3)
     assert socket.receives == 2 and socket.hello["type"] == "hello"
     assert socket.hello["journal_id"]

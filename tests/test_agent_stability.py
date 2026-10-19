@@ -85,10 +85,10 @@ async def test_slow_cleanup_does_not_hold_journal_or_stop_lease_guard(tmp_path, 
 
 
 @pytest.mark.parametrize('service,enabled,expected', [
-    ('com.codepier.agent', '', True), ('com.liangchanghua.remote-dev-agent', '', True),
+    ('com.codepier.agent', '', True), ('com.liangchanghua.remote-dev-agent', '', False),
     ('', '1', True), ('unrelated.app', '', False), ('', '', False),
 ])
-def test_existing_service_enables_watchdog(monkeypatch, service, enabled, expected):
+def test_only_current_service_identity_enables_watchdog(monkeypatch, service, enabled, expected):
     monkeypatch.setenv('XPC_SERVICE_NAME', service)
     monkeypatch.setenv('CODEPIER_SUPERVISED', enabled)
     assert is_supervised() is expected

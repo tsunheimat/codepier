@@ -15,7 +15,7 @@ def complete(state, version='1.11.0'):
                             'target_version': version, 'message': '更新成功', 'events': []})
 
 
-@pytest.mark.parametrize('dirty_field', ['address', 'password', 'access', 'draft'])
+@pytest.mark.parametrize('dirty_field', ['address', 'password', 'draft'])
 def test_auto_refresh_defers_unsaved_values_and_resumes_after_resolution(update_browser, stack, dirty_field):
     browser, _ = update_browser
     state = ready()
@@ -25,8 +25,6 @@ def test_auto_refresh_defers_unsaved_values_and_resumes_after_resolution(update_
             page.fill('#settings-form [name="public_url"]', stack.url + '/unsaved')
         elif dirty_field == 'password':
             page.fill('#password-form [name="current_password"]', 'unsaved-password')
-        elif dirty_field == 'access':
-            page.locator('#access-settings-form [name="all_projects"]').check()
         else:
             page.evaluate('S.work.dirty=true')
         complete(state)
@@ -39,9 +37,6 @@ def test_auto_refresh_defers_unsaved_values_and_resumes_after_resolution(update_
         elif dirty_field == 'password':
             expect(page.locator('#password-form [name="current_password"]')).to_have_value('unsaved-password')
             page.fill('#password-form [name="current_password"]', '')
-        elif dirty_field == 'access':
-            expect(page.locator('#access-settings-form [name="all_projects"]')).to_be_checked()
-            page.locator('#access-settings-form [name="all_projects"]').uncheck()
         else:
             page.evaluate('S.work.dirty=false')
         expect(page).to_have_url(re.compile(r'_codepier_updated=.*#settings$'), timeout=12000)
@@ -60,17 +55,17 @@ def test_no_early_reload_and_monitor_survives_navigation_and_service_recovery(up
     try:
         expect(page.locator('#panel-update-note')).to_contain_text('等待目标版本')
         assert '_codepier_updated=' not in page.url
-        page.evaluate("navigate('devices')")
-        expect(page.locator('#page h1')).to_have_text('资源')
-        expect(page.locator('[data-product-tab="devices"]')).to_have_attribute('aria-pressed','true')
+        page.evaluate("navigate('resources/devices')")
+        expect(page.locator('#page h1')).to_have_text('资源库')
+        expect(page.locator('[data-nav="resources/devices"]')).to_have_attribute('aria-pressed','true')
         # A successful HTTP response with unavailable updater is not an update failure.
         state.update(enabled=False, code='UPDATER_UNAVAILABLE')
         page.wait_for_timeout(2400)
         assert '_codepier_updated=' not in page.url
         complete(state)
         expect(page).to_have_url(re.compile(r'_codepier_updated=.*#resources/devices$'), timeout=12000)
-        expect(page.locator('#page h1')).to_have_text('资源')
-        expect(page.locator('[data-product-tab="devices"]')).to_have_attribute('aria-pressed','true')
+        expect(page.locator('#page h1')).to_have_text('资源库')
+        expect(page.locator('[data-nav="resources/devices"]')).to_have_attribute('aria-pressed','true')
         assert not calls and not errors, errors
     finally:
         page.close()
@@ -130,3 +125,32 @@ def test_already_current_document_does_not_reload_for_historic_success(update_br
         assert not calls and not errors, errors
     finally:
         page.close()
+
+
+def test_auto_refresh_keeps_an_unsaved_workspace_profile_until_explicit_discard(update_browser,stack):
+    browser,_=update_browser;state=ready()
+    page,calls,errors=open_settings(browser,stack,state)
+    path='/api/spaces/'+stack.space_id+'/profiles'
+    before=stack.must(stack.client.get(path))['profiles']
+    try:
+        page.evaluate('(route)=>navigate(route)','spaces/'+stack.space_id+'/profiles')
+        page.locator('[data-ws-action="new-profiles"]').click()
+        form=page.locator('#workspace-form')
+        form.locator('[name="label"]').fill('UNSAVED_PROFILE_DRAFT')
+        complete(state)
+        # The persistent update monitor must actually observe completion, not
+        # merely be asleep during this assertion. No production updater runs.
+        for _ in range(2):
+            with page.expect_response(lambda response:'/api/panel-update/' in response.url and
+                                      response.request.method=='GET') as response:
+                pass
+            assert response.value.json()['operation']['state']=='succeeded'
+        expect(form.locator('[name="label"]')).to_have_value('UNSAVED_PROFILE_DRAFT')
+        assert '_codepier_updated=' not in page.url
+        page.once('dialog',lambda dialog:dialog.accept())
+        page.keyboard.press('Escape')
+        expect(page).to_have_url(re.compile(r'_codepier_updated=.*#spaces/'+stack.space_id+'/profiles$'),timeout=12000)
+        expect(page.locator('#workspace-page h2')).to_have_text('Profiles')
+        assert stack.must(stack.client.get(path))['profiles']==before
+        assert not calls and not errors,errors
+    finally:page.close()

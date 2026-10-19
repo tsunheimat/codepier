@@ -23,7 +23,7 @@ const context={console,URLSearchParams,encodeURIComponent,Promise,Map,Set,JSON,D
  document:{addEventListener:()=>{}},
  esc:(x)=>String(x??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
  heading:(a,b,c='',d='')=>'<h1>'+a+'</h1><p>'+b+'</p><p>'+c+'</p>'+d,
- notice:(s)=>'<aside>'+s+'</aside>',empty:(s)=>'<p>'+s+'</p>',icon:()=>'',timeText:String,shortTime:String,
+ notice:(s)=>'<aside>'+s+'</aside>',empty:(s)=>'<p>'+s+'</p>',icon:()=>'',timeText:String,shortTime:String,onlineBadge:(online)=>online?'在线':'离线',
  CodePierIdentity:{admin:()=>true},CodePierAgentInstall:{},uiHelp:(title,body)=>body,
  $:()=>null,$$:()=>[],
  api:async(path)=>{if(!(path in payload.responses))throw Error('Unmatched explicit endpoint: '+path);return payload.responses[path];}

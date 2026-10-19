@@ -433,7 +433,7 @@ def test_native_and_management_share_theme_without_transcript_scans(stack):
         try:
             page.goto(stack.url, wait_until="domcontentloaded")
             expect(page.locator('#login-form')).to_be_visible()
-            page.evaluate("localStorage.setItem('codepier-chat-appearance','dark');localStorage.removeItem('codepier-appearance')")
+            page.evaluate("localStorage.setItem('codepier-appearance','dark')")
             page.reload(wait_until="domcontentloaded")
             expect(page.locator('[data-ui-appearance]')).to_have_value('dark')
             assert page.evaluate("localStorage.getItem('codepier-appearance')") == 'dark'

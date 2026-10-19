@@ -33,7 +33,5 @@ def public_management(value: object) -> dict:
         "reason": str(value.get("reason", ""))[:300],
         "last_error": str(value.get("last_error", ""))[:500],
     }
-    states={'pending','migrating','completed','rollback','error','recovery_required'}
     result['product']='CodePier' if value.get('product')=='CodePier' else ''
-    result['brand_migration']=value.get('brand_migration') if value.get('brand_migration') in states else ''
     return result

@@ -121,17 +121,14 @@ def uninstall(config_path,apply=False):
     if not receipt_path.exists():return {'changed':False,'state':'not_installed'}
     if receipt_path.is_symlink():raise ValueError('安装回执不能为链接')
     receipt=json.loads(receipt_path.read_text())
+    if not isinstance(receipt,dict) or 'legacy_registry' in receipt:
+        raise ValueError('旧版浏览器迁移回执不受支持；没有修改注册或文件')
     if receipt['config']!=str(config_path):raise ValueError('安装回执属于另一配置')
     for name,digest in receipt['files'].items():
         path=Path(name)
         if path.is_symlink() or not path.is_file() or sha(path)!=digest:raise ValueError('受管文件已被修改，未删除：'+name)
     if value.get('integrations',{}).get('browser')!=receipt['browser_after']:raise ValueError('浏览器设置已修改，拒绝覆盖后续配置')
     if os.name=='nt' and registry(receipt['browser'])!=receipt['manifest']:raise ValueError('宿主注册已修改，拒绝删除')
-    if os.name=='nt':
-        from shared.brand_browser import _registry_key, _registry_get, OLD_NAME
-        for old in receipt.get('legacy_registry', []):
-            if old.get('key')!=_registry_key(receipt['browser'],OLD_NAME) or _registry_get(old['key'])!=old.get('value'):
-                raise ValueError('旧版宿主注册已改变；没有删除任何注册')
     if not apply:return {'changed':False,'planned':'remove_owned_registration','files':list(receipt['files'])}
     with InstanceLock(config_path.parent/'.integration-setup.lock'):
         updated={**value,'integrations':dict(value.get('integrations',{}))}
@@ -139,9 +136,6 @@ def uninstall(config_path,apply=False):
         else:updated['integrations']['browser']=receipt['browser_before']
         backup=write_config(config_path,before,updated)
         registry(receipt['browser'],None)
-        if os.name=='nt':
-            from shared.brand_browser import _registry_write
-            for old in receipt.get('legacy_registry',[]):_registry_write(old['key'],None)
         for name in receipt['files']:Path(name).unlink()
         receipt_path.unlink()
     return {'changed':True,'state':'uninstalled','backup':backup,'browser_profile_preserved':True,'service_restarted':False}

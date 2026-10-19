@@ -28,9 +28,10 @@ def test_production_boot_cannot_load_the_retired_terminal(stack, chat_browser_po
         expect(page.locator('#login-form')).to_be_visible()
         page.fill('#username', 'admin');page.locator('#password').fill(stack.password)
         page.locator('#login-form button[type=submit]').click()
-        expect(page.locator('#chat-root')).to_be_visible()
-        assert page.evaluate('S.page')=='native'
-        assert page.evaluate('location.hash')=='#native'
+        # The retired terminal URL is not a native-session compatibility alias.
+        expect(page.locator('#workspace-page')).to_be_visible()
+        assert page.evaluate('S.page')=='spaces'
+        assert page.locator('#chat-root').count()==0
     finally:
         page.context.close()
     assert '高级终端' not in chat and 'data-nav="terminal"' not in chat
