@@ -19,6 +19,7 @@ window.CodePierCallLog = (() => {
       next: null,
       project: '',
       tool: '',
+      searchDraft: null,
       live: true,
       rows: [],
       incoming: false,
@@ -450,9 +451,18 @@ window.CodePierCallLog = (() => {
     update('#call-tool', (v) => {
       st().tool = v;
     });
+    // A filter request may finish after the user starts typing in Search.
+    // Preserve that input in this private component's memory, independently
+    // from the submitted query. Clear()/owner change discards it as usual.
+    const search = root.querySelector('#audit-query');
+    if (st().searchDraft !== null) search.value = st().searchDraft;
+    search.oninput = () => {
+      st().searchDraft = search.value;
+    };
     root.querySelector('#call-search').onsubmit = (e) => {
       e.preventDefault();
-      S.auditQuery = root.querySelector('#audit-query').value.trim();
+      S.auditQuery = search.value.trim();
+      st().searchDraft = S.auditQuery;
       reset().catch((err) => toast(err.message, true));
     };
     bindEntries();

@@ -245,3 +245,31 @@ def test_project_colors_are_distinct_stable_and_readable(log_page):
     for theme in ['light', 'dark']:
         page.evaluate('(theme)=>document.documentElement.dataset.appearance=theme', theme)
         page.locator('.call-log').screenshot(path=str(screenshots/f'project-colors-{theme}.png'))
+
+
+def test_filter_response_preserves_search_typed_while_request_is_pending(log_page):
+    page,_,_,requests=log_page
+    page.evaluate("""() => {
+      const original=window.readCallLog;
+      window.holdNextCallLog=true;
+      window.readCallLog=async(path)=>{
+        const data=await original(path);
+        if(holdNextCallLog && path.startsWith('/api/call-log?')){
+          holdNextCallLog=false;
+          await new Promise(resolve=>{window.releaseFilterResponse=resolve;});
+        }
+        return data;
+      };
+    }""")
+    page.select_option('#call-tool','fs_read')
+    page.wait_for_function('typeof releaseFilterResponse==="function"')
+    page.fill('#audit-query','README pending draft')
+    page.evaluate('releaseFilterResponse()')
+    page.wait_for_function('!!document.querySelector("#call-search")?.onsubmit')
+    from playwright.sync_api import expect
+    expect(page.locator('#audit-query')).to_have_value('README pending draft')
+    page.locator('#call-search button').click()
+    page.wait_for_function('S.auditQuery==="README pending draft"')
+    assert any(parse_qs(urlsplit(path).query).get('q')==['README pending draft'] for path in requests)
+    page.evaluate('CodePierCallLog.clear()')
+    assert page.evaluate('S.callLog===null')
