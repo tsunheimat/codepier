@@ -248,6 +248,7 @@ window.CodePierExternalPlugins = (() => {
     const row = data.integrations.find((r) => r.id === id);
     if (!row) throw new Error('集成已变化，请刷新');
     const attachments = (await api(base + '/' + id + '/projects')).attachments;
+    const availableProjects = (await api(workspaceRoot() + '/projects')).projects;
     if (!valid()) return;
     const manifest = data.catalog.find((i) => i.manifest.id === row.plugin_id)?.manifest;
     if (!manifest) throw new Error('插件尚未安装');
@@ -256,8 +257,7 @@ window.CodePierExternalPlugins = (() => {
       `<p>${esc(row.alias)} · 只配置外部资源 ID，不移动文件，也不授予权限。</p>${select(
         'project',
         'CodePier 项目',
-        (S.projects || [])
-          .filter((p) => p.workspace?.id === workspaceId)
+        availableProjects
           .map((p) => option(p.id, p.alias, p.id === selectedProject))
           .join(''),
         'required',
@@ -293,7 +293,8 @@ window.CodePierExternalPlugins = (() => {
   async function profile(id) {
     const valid = intent(),
       data = await inventory(),
-      profiles = (await api(workspaceRoot() + '/profiles')).profiles;
+      profiles = (await api(workspaceRoot() + '/profiles')).profiles,
+      availableProjects = (await api(workspaceRoot() + '/projects')).projects;
     if (!valid()) return;
     const row = data.integrations.find((r) => r.id === id),
       manifest = data.catalog.find((i) => i.manifest.id === row?.plugin_id)?.manifest;
@@ -306,8 +307,7 @@ window.CodePierExternalPlugins = (() => {
       `${select('profile', 'Profile', profiles.map((r) => option(r.id, r.label)).join(''), 'required')}${select(
         'target',
         '动作作用范围',
-        (S.projects || [])
-          .filter((p) => p.workspace?.id === workspaceId)
+        availableProjects
           .map((p) => option(p.id, p.alias))
           .join('') + scopeOption,
         'required',
@@ -382,14 +382,15 @@ window.CodePierExternalPlugins = (() => {
         }),
     );
   }
-  async function consent(grant) {
+  async function consent(grant, spaceId) {
+    if (!spaceId) throw new Error('从连接所属的明确工作空间审阅插件同意。');
     const valid = intent(),
-      path = base + '/grants/' + encodeURIComponent(grant) + '/consent',
+      path = '/api/spaces/' + encodeURIComponent(spaceId) + '/external-integrations/grants/' + encodeURIComponent(grant) + '/consent',
       preview = await api(path);
     if (!valid()) return;
     form(
       '插件动作与目标同意',
-      `${preview.routes.map((r) => `<article class="grant-row"><div><h3>${esc(r.integration_alias)} · ${esc(r.action)} · ${esc(r.effect)}</h3><p>CodePier 项目：${esc(r.project_id || '空间范围')}；后端账号：${esc(r.backend_account.label)}；工具：${esc(r.backend_tool)}</p>${json({ project: r.project_config, space: r.space_config })}${r.broader_direct_access.length ? '<p class="error-text">此连接另有同账号的原始 MCP 工具权限，可绕过插件范围限制。请在角色中移除不需要的直接权限。</p>' : ''}</div></article>`).join('') || '<p>没有可同意的动作。请检查项目绑定、角色规则、后端账号和外部 MCP 同意。</p>'}${select('mode', '操作', (preview.routes.length ? option('approve', '明确同意以上当前动作与目标') : '') + (preview.has_consent ? option('revoke', '撤回全部插件动作同意') : ''), 'required')}<label class="check"><input type="checkbox" required>我已阅读动作、外部目标与账号。插件或绑定改变后不会自动扩展本次同意。</label>`,
+      `${preview.routes.map((r) => `<article class="grant-row"><div><h3>${esc(r.integration_alias)} · ${esc(r.action)} · ${esc(r.effect)}</h3><p>CodePier 项目：${esc(r.project_id || '空间范围')}；后端账号：${esc(r.backend_account.label)}；工具：${esc(r.backend_tool)}</p>${json({ project: r.project_config, space: r.space_config })}${r.broader_direct_access.length ? '<p class="error-text">此连接另有同账号的原始 MCP 工具权限，可绕过插件范围限制。请在工作空间 Profile 中移除不需要的直接权限。</p>' : ''}</div></article>`).join('') || '<p>没有可同意的动作。请检查工作空间项目绑定、成员与 Profile 权限、后端账号和外部 MCP 同意。</p>'}${select('mode', '操作', (preview.routes.length ? option('approve', '明确同意以上当前动作与目标') : '') + (preview.has_consent ? option('revoke', '撤回全部插件动作同意') : ''), 'required')}<label class="check"><input type="checkbox" required>我已阅读动作、外部目标与账号。插件或绑定改变后不会自动扩展本次同意。</label>`,
       (node) =>
         node.elements.mode.value === 'revoke'
           ? api(path, { method: 'DELETE' })
@@ -408,7 +409,7 @@ window.CodePierExternalPlugins = (() => {
     if (!node || node.disabled) return;
     const actions = { configure, projects, profile, toggle, consent };
     const action = actions[node.dataset.extAction];
-    if (action) action(node.dataset.extId).catch((error) => toast(error.message, true));
+    if (action) action(node.dataset.extId, node.dataset.extSpace).catch((error) => toast(error.message, true));
   });
   return { html, consent, configFields, configValue };
 })();

@@ -30,7 +30,7 @@ def test_panel_indexes_cover_counts_and_recent_activity_without_privacy_change(t
         db.execute("CREATE INDEX op_recent ON operations(created DESC)")
         rows = 36470
         db.executemany("INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?)", (
-            (str(i), 'other' if i % 13 == 0 else 'legacy', float(i),
+            (str(i), 'other' if i % 13 == 0 else 'benchmark-space', float(i),
              'running' if i % 503 == 0 else 'succeeded', 'owner' if i % 3 else 'someone',
              'space' if i % 17 == 0 else 'private', 'grant' if i % 2 else 'another',
              'project', 'x' * 4096) for i in range(rows)))
@@ -53,14 +53,14 @@ def test_panel_indexes_cover_counts_and_recent_activity_without_privacy_change(t
                     'result': result, 'plan': plan}
         queries = {}
         for name, principal in (
-            ('instance', SimpleNamespace(space_id='legacy', grant_id=None, instance_admin=True)),
-            ('owner', SimpleNamespace(space_id='legacy', grant_id=None, instance_admin=False, user_id='owner')),
-            ('grant', SimpleNamespace(space_id='legacy', grant_id='grant', instance_admin=False)),
+            ('instance', SimpleNamespace(space_id='benchmark-space', grant_id=None, instance_admin=True)),
+            ('owner', SimpleNamespace(space_id='benchmark-space', grant_id=None, instance_admin=False, user_id='owner')),
+            ('grant', SimpleNamespace(space_id='benchmark-space', grant_id='grant', instance_admin=False)),
         ):
             clause, args = iam.private_sql(principal)
             queries[name + '_today'] = ("SELECT state,count(*) FROM operations WHERE " + clause + " AND created>=? GROUP BY state", [*args, rows - 1000])
             queries[name + '_active'] = ("SELECT count(*) FROM operations WHERE " + clause + " AND state IN ('running','queued','reconnecting','cancelling')", args)
-        queries['recent'] = ("SELECT id FROM operations WHERE space_id=? ORDER BY created DESC LIMIT 8", ['legacy'])
+        queries['recent'] = ("SELECT id FROM operations WHERE space_id=? ORDER BY created DESC LIMIT 8", ['benchmark-space'])
         before = {name: measure(*query) for name, query in queries.items()}
         for definition in definitions:
             db.execute(definition['sql'])
@@ -74,7 +74,7 @@ def test_panel_indexes_cover_counts_and_recent_activity_without_privacy_change(t
             assert after[name]['vm_steps_approx'] < before[name]['vm_steps_approx'] / 5, name
         print("PANEL_DB_BENCHMARK=" + json.dumps({'rows': rows, 'payload_bytes_per_row': 4096, 'before': before, 'after': after}))
         db.close()
-        # A second startup reuses additive indexes and preserves existing data.
+        # A second startup reuses current indexes and preserves existing data.
         store.execute("INSERT INTO meta VALUES ('panel-benchmark-preserve','yes')")
     finally:
         store.close()
@@ -149,7 +149,7 @@ def event_page(chat_browser_pool):
     page = chat_browser_pool('chromium').new_page()
     page.set_content('<div id="page"></div>')
     page.evaluate("""() => {
-      window.S={session:{user_id:'fixture'},space_id:'fixture-personal',page:'resources',resourceTab:'projects',work:{}};
+      window.S={session:{user_id:'fixture'},page:'resources',resourceTab:'projects',work:{}};
       window.$=s=>document.querySelector(s);
       window.networkState=()=>{};window.toast=()=>{};
       window.CodePierIdentity={refresh:async()=>{}};
@@ -230,7 +230,8 @@ def test_basics_inflight_reads_are_shared_and_never_cross_identity(event_page):
     }""")
     assert page.evaluate('requests') == 2
     page.evaluate("""() => {
-      S.space_id='other';
+      // Only authenticated identity changes invalidate these global reads.
+      S.session={user_id:'other-account'};
       window.newest=loadBasics();
       pending[2].resolve({devices:['new-device']});pending[3].resolve({projects:['new-project']});
     }""")

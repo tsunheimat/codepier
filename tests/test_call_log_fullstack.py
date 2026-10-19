@@ -133,7 +133,16 @@ def test_real_panel_navigation_live_details_export_themes_and_logout(call_stack)
             page.wait_for_function('() => S.callLog.tool==="fs_write"')
             page.locator('#audit-query').fill('call-log-browser.txt')
             page.locator('#call-search button').click()
-            page.wait_for_function('() => S.auditQuery==="call-log-browser.txt" && document.querySelectorAll("[data-call-id]").length===1')
+            try:
+                page.wait_for_function('() => S.auditQuery==="call-log-browser.txt" && document.querySelectorAll("[data-call-id]").length===1')
+            except Exception:
+                # Only this disposable fixture state, never user credentials.
+                print(page.evaluate('''() => ({query:S.auditQuery,tool:S.callLog?.tool,
+                  draft:document.querySelector("#audit-query")?.value,
+                  rows:[...document.querySelectorAll("[data-call-id]")].map(x=>x.dataset.callId),
+                  heading:document.querySelector("#page h1")?.textContent,
+                  form:!!document.querySelector("#call-search")?.onsubmit})'''))
+                raise
             page.evaluate('endSession(true)')
             page.locator('#login-form').wait_for()
             assert page.evaluate('S.callLog===null')

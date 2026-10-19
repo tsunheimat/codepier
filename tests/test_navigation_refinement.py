@@ -6,7 +6,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.test_integrations_stack import integrated_stack, resolved
-from tests.test_iam_integration import team as team
+from tests.identity_fixtures import team  # noqa: F401
 
 
 @pytest.mark.parametrize('engine', ['chromium', 'webkit'])
@@ -36,32 +36,33 @@ def test_sidebar_subtabs_follow_routes_and_page_tabs(stack, chat_browser_pool, t
         expect(page.locator('#resources-page')).to_be_visible()
         selected('resources', 'projects')
         sidebar_click('resources/devices')
-        expect(page.locator('[data-product-tab=devices]')).to_have_attribute('aria-pressed', 'true')
+        expect(page.locator('#resources-page [data-nav="resources/devices"]')).to_have_attribute('aria-pressed', 'true')
         expect(page).to_have_url(stack.url + '/#resources/devices')
-        page.locator('[data-product-tab=mcp]').click()
+        page.locator('#resources-page [data-nav="resources/mcp"]').click()
         selected('resources', 'mcp')
         page.go_back()
-        expect(page.locator('[data-product-tab=devices]')).to_have_attribute('aria-pressed', 'true')
+        expect(page.locator('#resources-page [data-nav="resources/devices"]')).to_have_attribute('aria-pressed', 'true')
         selected('resources', 'devices')
         page.go_forward()
-        expect(page.locator('[data-product-tab=mcp]')).to_have_attribute('aria-pressed', 'true')
+        expect(page.locator('#resources-page [data-nav="resources/mcp"]')).to_have_attribute('aria-pressed', 'true')
         selected('resources', 'mcp')
         sidebar_click('resources/vps')
-        expect(page.locator('#vps-query')).to_be_visible()
+        expect(page.get_by_role('heading',name='VPS 资源库',exact=True)).to_be_visible()
         page.reload()
-        expect(page.locator('#vps-query')).to_be_visible()
+        expect(page.get_by_role('heading',name='VPS 资源库',exact=True)).to_be_visible()
         selected('resources', 'vps')
         sidebar_click('resources/projects')
-        expect(page.locator('#project-query')).to_be_visible()
-        page.locator('#project-query').fill('retained-sidebar-filter')
-        page.evaluate('window.sidebarRenderSeq = S.renderSeq')
+        expect(page.locator('[data-project-detail]')).to_have_count(3)
+        page.evaluate('window.sidebarRenderSeq=S.renderSeq;window.retainedCard=document.querySelector("[data-project-detail]")')
         sidebar_click('resources/projects')
-        expect(page.locator('#project-query')).to_have_value('retained-sidebar-filter')
-        assert page.evaluate('S.renderSeq === sidebarRenderSeq')
-        for tab in ('roles', 'connections', 'members', 'advanced'):
-            sidebar_click('access/' + tab)
-            expect(page.locator(f'[data-product-area=access][data-product-tab={tab}]')).to_have_attribute('aria-pressed', 'true')
-            selected('access', tab)
+        assert page.evaluate('S.renderSeq===sidebarRenderSeq && retainedCard.isConnected')
+        sidebar_click('spaces')
+        page.locator('a[href="#spaces/'+stack.space_id+'"]').click()
+        for tab in ('profiles','connections','members','folders','shell'):
+            link=page.locator('#workspace-page .product-tabs a[href="#spaces/'+stack.space_id+'/'+tab+'"]')
+            link.click();expect(link).to_have_attribute('aria-current','page')
+            expect(page).to_have_url(stack.url+'/#spaces/'+stack.space_id+'/'+tab)
+        assert page.locator('#iam-active-space,[data-nav="access/roles"]').count()==0
         for tab in ('account', 'users', 'sso'):
             sidebar_click('identity/' + tab)
             expect(page.locator(f'[data-identity-tab={tab}]')).to_have_attribute('aria-pressed', 'true')
@@ -137,7 +138,7 @@ def test_resources_devices_project_tools_artifacts_and_access_members(integrated
     s=integrated_stack; page=chat_browser_pool('chromium').new_page(viewport={'width':width,'height':height})
     errors=[]; page.on('pageerror',lambda e:errors.append(str(e)))
     try:
-        page.goto(s.url+'/#devices');page.fill('#username','admin');page.fill('#password',s.password);page.click('#login-form button')
+        page.goto(s.url+'/#resources/devices');page.fill('#username','admin');page.fill('#password',s.password);page.click('#login-form button')
         expect(page.locator('#resources-page')).to_be_visible()
         expect(page.locator('[data-device-state]')).to_have_count(1)
         assert page.evaluate('S.page')=='resources' and page.evaluate('S.resourceTab')=='devices'
@@ -146,17 +147,18 @@ def test_resources_devices_project_tools_artifacts_and_access_members(integrated
         node.locator('[data-action=device-detail]').click()
         expect(page.locator('.modal-body')).to_contain_text(s.device)
         page.locator('.modal [data-action=close-modal]').first.click()
-        page.locator('[data-product-tab=projects]').click()
+        page.locator('#resources-page [data-nav="resources/projects"]').click()
         # Resource details carry this exact project, even when the workbench
         # currently points at another project.
         ws=resolved(s,'worktrees_create',{'label':'Navigation '+uuid.uuid4().hex[:8]},panel=True)
         page.evaluate('(other)=>{S.work.project=other;S.work.workspace_id="";}',s.projects[1]['id'])
         page.evaluate('(args)=>CodePierProduct.resourceDetail("project",args.project,args.workspace)',
                       {'project':s.project['id'],'workspace':ws['workspace_id']})
-        page.locator('[data-project-tools]').click()
+        page.locator('[data-ws-project-tools]').click()
         expect(page.locator('#integration-center')).to_be_visible()
         expect(page.locator('#i-project')).to_have_value(s.project['id'])
-        expect(page.locator('#i-workspace')).to_have_value(ws['workspace_id'])
+        # Project details start from the one bound source, not an ambient worktree.
+        expect(page.locator('#i-workspace')).to_have_value('')
         page.evaluate('(id)=>location.hash="project/"+id+"/tools?workspace_id=&tab=overview"',s.projects[1]['id'])
         expect(page.locator('#i-project')).to_have_value(s.projects[1]['id'])
         expect(page.locator('#i-workspace')).to_have_value('')
@@ -184,8 +186,8 @@ def test_resources_devices_project_tools_artifacts_and_access_members(integrated
         prior=s.call('artifacts_list',{'project':s.project['id']})['artifacts']
         total_before=len(s.call('artifacts_list',{})['artifacts'])
         page.evaluate("navigate('resources/projects')")
-        page.locator('[data-resource-detail="'+s.project['id']+'"]').click()
-        page.locator('[data-project-artifacts]').click()
+        page.locator('[data-project-detail="'+s.project['id']+'"]').click()
+        page.locator('[data-ws-project-artifacts]').click()
         expect(page.locator('#artifact-project')).to_have_value(s.project['id'])
         assert '/artifacts' in page.url
         page.locator('[data-insight=register]').click()
@@ -194,7 +196,7 @@ def test_resources_devices_project_tools_artifacts_and_access_members(integrated
         expect(page.locator('#artifact-form')).to_have_count(0,timeout=20000)
         expect(page.locator('.modal')).to_contain_text(filename)
         link=page.locator('.modal a[download]')
-        href=link.get_attribute('href');assert 'space_id=' in href
+        href=link.get_attribute('href');assert 'space_id=' not in href
         with page.expect_download() as downloaded:link.click()
         assert open(downloaded.value.path()).read()==body
         page.locator('.modal [data-action=close-modal]').first.click()
@@ -204,13 +206,13 @@ def test_resources_devices_project_tools_artifacts_and_access_members(integrated
         page.evaluate('(id)=>location.hash="project/"+id+"/artifacts"',s.projects[1]['id'])
         expect(page.locator('#artifact-project')).to_have_value(s.projects[1]['id'])
         page.locator('[data-artifact-overview]').click();expect(page.locator('.artifact-card')).to_have_count(total_before+1)
-        page.evaluate("navigate('members')")
-        expect(page.locator('#access-page')).to_be_visible()
-        expect(page.locator('[data-iam=invite]')).to_be_visible()
-        page.locator('[data-iam=invite]').click()
-        page.locator('button[form=iam-form]').click()
-        expect(page.locator('.modal')).to_contain_text('邀请')
-        assert page.evaluate('S.page')=='access' and page.evaluate('S.accessTab')=='members'
+        page.evaluate('route=>navigate(route)','spaces/'+s.space_id+'/members')
+        expect(page.locator('#workspace-page')).to_be_visible()
+        page.locator('[data-ws-action=invite]').click()
+        expect(page.locator('#workspace-form [data-policy-kind]:checked')).to_have_count(0)
+        page.get_by_role('button',name='保存',exact=True).click()
+        expect(page.locator('[data-copy-invitation]')).to_be_visible()
+        assert page.evaluate('S.page')=='spaces' and page.evaluate('S.space_id === undefined')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
         page.screenshot(path=str(tmp_path/f'navigation-{width}.png'),full_page=True)
         assert not errors,errors
@@ -244,7 +246,7 @@ def test_tools_refresh_after_real_project_unmapping_keeps_context_and_draft(stac
         page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
         expect(page.locator('#i-project')).to_have_value(stack.project['id'])
         page.locator('[name=command]').fill('printf keep-original-project-draft')
-        assert stack.client.delete('/api/projects/'+stack.project['id']).status_code==200
+        assert stack.client.delete('/api/projects/'+stack.project['id'],params={'expected_version':stack.project['version']}).status_code==200
         page.locator('.topbar [data-action=refresh]').click()
         expect(page.locator('#page')).to_contain_text('无权访问')
         expect(page.locator('#integration-center')).to_have_count(0)
@@ -310,7 +312,7 @@ def test_existing_project_search_opens_paged_current_source_without_workflow(int
         page.locator('.modal-footer [data-insight=source]').click()
         expect(page.locator('.modal-body')).to_contain_text('第 402–452 行')
         assert 'scoped_source_marker' not in page.locator('.modal .code-box').inner_text()
-        assert s.client.get('/api/iam/me').json()['default_space_id']
+        assert 'default_space_id' not in s.client.get('/api/iam/me').json()
     finally:page.close()
 
 
@@ -347,7 +349,7 @@ def test_members_entry_is_admin_only_and_membership_assignment_gates_remain_real
     from urllib.parse import urlsplit
     app,b=team
     page=chat_browser_pool('chromium').new_page()
-    page.add_init_script("sessionStorage.setItem('codepier-space:alice','team');window.EventSource=class extends EventTarget{close(){}};")
+    page.add_init_script("window.EventSource=class extends EventTarget{close(){}};")
     def route(request_route):
         req=request_route.request
         if urlsplit(req.url).hostname!='127.0.0.1':request_route.abort();return
@@ -355,26 +357,24 @@ def test_members_entry_is_admin_only_and_membership_assignment_gates_remain_real
         request_route.fulfill(status=response.status_code,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding'}},body=response.content)
     page.route('**/*',route)
     try:
-        page.goto('http://127.0.0.1:8765/#members')
+        page.goto('http://127.0.0.1:8765/#spaces/team/members')
         page.fill('#username','alice');page.fill('#password','fixture-password-only');page.click('#login-form button')
-        expect(page.locator('#access-page')).to_be_visible()
-        expect(page.locator('#page')).to_contain_text('只有空间管理员')
+        expect(page.locator('#page')).to_contain_text('没有提供该管理页面')
         assert not page.locator('[data-product-area=access][data-product-tab=members]').count()
         assert not page.locator('.sidebar [data-nav="access/members"]').count()
         assert not page.locator('[data-iam=invite],[data-iam=assign-role]').count()
-        assert b['alice'].get('/api/iam/spaces/team/members').status_code==403
-        assert b['alice'].post('/api/iam/spaces/team/invites',json={'level':'admin','days':1}).status_code==403
+        assert b['alice'].get('/api/spaces/team/members').status_code==403
+        assert b['alice'].post('/api/spaces/team/invites',json={'policy':{'manage':['workspace']},'days':1}).status_code==403
     finally:page.close()
 
 
 @pytest.mark.parametrize('saved',['team','legacy','own_personal','other_personal'])
-def test_saved_selection_keeps_authorized_space_and_never_adopts_another_users_personal(team,chat_browser_pool,saved):
+def test_old_saved_selection_is_ignored_not_used_as_authority(team,chat_browser_pool,saved):
     from urllib.parse import urlsplit
     app,b=team;store=app.state.store
-    personal=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='owner'")['personal_space_id']
-    other=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='alice'")['personal_space_id']
+    personal=store.one("SELECT id FROM spaces WHERE owner_user_id='owner' AND kind='personal'")['id']
+    other=store.one("SELECT id FROM spaces WHERE owner_user_id='alice' AND kind='personal'")['id']
     selected={'team':'team','legacy':'legacy','own_personal':personal,'other_personal':other}[saved]
-    expected=selected if saved in ('team','legacy') else personal
     page=chat_browser_pool('chromium').new_page()
     page.add_init_script('sessionStorage.setItem("codepier-space:owner",'+json.dumps(selected)+');window.EventSource=class extends EventTarget{close(){}};')
     def route(request_route):
@@ -386,36 +386,11 @@ def test_saved_selection_keeps_authorized_space_and_never_adopts_another_users_p
     try:
         page.goto('http://127.0.0.1:8765/#resources/projects')
         page.fill('#username','owner');page.fill('#password','fixture-password-only');page.click('#login-form button')
-        expect(page.locator('#iam-active-space')).to_have_value(expected)
-        page.reload();expect(page.locator('#iam-active-space')).to_have_value(expected)
-        assert page.evaluate('S.space_id')!=other
-        assert b['owner'].get('/api/projects',headers={'X-CodePier-Space':other}).status_code==403
+        expect(page.locator('#resources-page')).to_be_visible()
+        expect(page.locator('#iam-active-space')).to_have_count(0)
+        assert page.evaluate('S.space_id === undefined')
+        page.reload();expect(page.locator('#resources-page')).to_be_visible()
+        expect(page.locator('#iam-active-space')).to_have_count(0)
+        assert b['owner'].get('/api/projects',headers={'X-CodePier-Space':other}).status_code==400
+        assert other not in b['owner'].get('/api/spaces/'+other+'/projects').text
     finally:page.close()
-
-
-def test_retired_legacy_saved_selection_enters_same_existing_personal(tmp_path,monkeypatch,chat_browser_pool):
-    from fastapi.testclient import TestClient
-    from urllib.parse import urlsplit
-    from hub.app import create_app
-    from tests.test_personal_spaces import old_empty_shape
-    store,personal,session=old_empty_shape(tmp_path/'upgrade-ui');store.close()
-    monkeypatch.setenv('HUB_PUBLIC_URL','http://testserver');monkeypatch.setenv('MCP_PUBLIC_URL','')
-    app=create_app(str(tmp_path/'upgrade-ui'))
-    with TestClient(app) as client:
-        client.cookies.set('rd_session',session['cookie'])
-        page=chat_browser_pool('chromium').new_page()
-        page.add_init_script('sessionStorage.setItem("codepier-space:owner","legacy");window.EventSource=class extends EventTarget{close(){}};')
-        def route(request_route):
-            req=request_route.request
-            if urlsplit(req.url).hostname!='127.0.0.1':request_route.abort();return
-            response=client.request(req.method,req.url,headers=req.all_headers(),content=req.post_data_buffer,follow_redirects=False)
-            request_route.fulfill(status=response.status_code,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding'}},body=response.content)
-        page.route('**/*',route)
-        try:
-            page.goto('http://127.0.0.1:8765/#resources/projects')
-            expect(page.locator('#iam-active-space')).to_have_value(personal)
-            assert not page.locator('#iam-active-space option[value=legacy]').count()
-            assert page.evaluate('S.session.user_id')=='owner'
-            page.reload();expect(page.locator('#iam-active-space')).to_have_value(personal)
-            assert app.state.store.one("SELECT count(*) AS n FROM spaces WHERE kind='personal'")['n']==1
-        finally:page.close()

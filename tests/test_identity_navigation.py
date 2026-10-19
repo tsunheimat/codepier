@@ -100,7 +100,8 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
         assert page.locator('[data-identity-tab]').count() == (3 if user == 'owner' else 1)
         assert page.locator('.sidebar [data-nav-subtabs=identity] button').count() == (3 if user == 'owner' else 1)
         expect(page.locator('.sidebar [data-nav="identity/account"]')).to_have_attribute('aria-current', 'page')
-        expect(page.locator('[data-iam=new-space]')).to_be_visible()
+        expect(page.get_by_role('button',name='管理工作空间',exact=True)).to_be_visible()
+        expect(page.locator('[data-iam=new-space],#iam-active-space')).to_have_count(0)
         expect(page.locator('[data-iam=accept-invite]')).to_be_visible()
         expect(page.locator('[data-iam-session]').first).to_be_visible()
         shot('account')
@@ -109,7 +110,7 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
             # Space ownership is not instance administration. No admin data is
             # even requested by the UI, including an old identity bookmark.
             start = len(requests)
-            for route_name in ('identity/users', 'identity/sso', 'identity-admin'):
+            for route_name in ('identity/users', 'identity/sso'):
                 page.goto(origin + '/#' + route_name)
                 expect(page.locator('.permission-state')).to_be_visible()
                 assert not page.locator('[data-iam-user],[data-iam-provider],[data-iam=sync]').count()
@@ -186,7 +187,7 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
             assert app.state.store.one('SELECT group_name,space_id FROM group_mappings') == {'group_name': 'developers', 'space_id': 'team'}
             page.locator('[data-iam=sync]').click()
             expect(page.locator('.toast').last).to_contain_text('权限同步已完成')
-            page.goto(origin + '/#identity-admin')
+            page.goto(origin + '/#identity/sso')
             expect(page.locator('[data-identity-tab=sso]')).to_have_attribute('aria-pressed', 'true')
             expect(page).to_have_url(origin + '/#identity/sso')
 

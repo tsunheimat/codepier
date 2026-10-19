@@ -1069,6 +1069,10 @@ async function renderPage(showLoading = true) {
   window.CodePierPanelUpdate?.detach();
   window.CodePierIntegrations?.detach();
   if (!S.session || !$('#page')) return;
+  // Root URL -> #spaces is still a new view lease even though the canonical
+  // page name stays 'spaces'. Remember the concrete URL actually being read,
+  // not productHash(S.page), which can already describe the destination.
+  S.renderHash = location.hash;
   if (S.page === 'native') {
     const seq = ++S.renderSeq;
     try {
@@ -2650,7 +2654,7 @@ window.addEventListener('hashchange', () => {
   if (nav.some((n) => n[0] === page) && location.hash.slice(1) !== productHash(page))
     history.replaceState(null, '', location.pathname + location.search + '#' + productHash(page));
   if (
-    (page !== S.page ||
+    (location.hash !== S.renderHash || page !== S.page ||
       (['integrations', 'artifacts', 'audit', 'spaces'].includes(page) &&
         location.hash.slice(1) !== previousContext) ||
       before !== JSON.stringify([S.resourceTab, S.accessTab, S.identityTab])) &&

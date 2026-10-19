@@ -96,13 +96,13 @@ def test_failed_chat_load_cannot_overwrite_a_new_panel_page(stack):
               window.loadingChat=navigate('native');
             }''')
             page.wait_for_function('typeof failChatLoad === "function"')
-            _navigate(page, 'projects')
+            _navigate(page, 'resources/projects')
             page.evaluate('''async () => {
               failChatLoad(new Error('A late failed chat load'));
               await loadingChat;
               chatPage=savedChatPage;
             }''')
-            expect(page.locator('.workspace-project-row').first).to_be_visible()
+            expect(page.locator('#page').get_by_role('heading',name='Imago',exact=True)).to_be_visible()
             expect(page.get_by_text('A late failed chat load')).to_have_count(0)
             assert page.evaluate('S.page') == 'resources'
             assert page.evaluate('S.resourceTab') == 'projects'

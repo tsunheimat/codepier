@@ -11,8 +11,8 @@
       "bytes": 28999
     },
     "app.js": {
-      "sha256": "cfe67a4fddcd6e1384e7aadbf853b767d2245e91e685b665417d9063c10af130",
-      "bytes": 121811
+      "sha256": "2d2391234b457cac2304ddaa3bc7b1dfce599bc877ddfe230cb99fdcc8bf4309",
+      "bytes": 122106
     },
     "appearance.js": {
       "sha256": "7fc8e8ffa85a4bb5836b8919cdf6ff12813cfb4a9e4736709f5858e5d8782bb1",
@@ -71,12 +71,12 @@
       "bytes": 17301
     },
     "core/bundle.js": {
-      "sha256": "38904ceeef2043233a14460892941aee3bda3ab33e32a7b745654ab2cf33457b",
-      "bytes": 24085
+      "sha256": "1858f1cb37d5d8a98b0145277a17fe2219859b703a4f0fc9b2fda05fe052e582",
+      "bytes": 24052
     },
     "external-plugins.js": {
-      "sha256": "8841876abf65b3c561a0c6cc742af6b4f3933e9c55f239039f64cfdf2474ef8b",
-      "bytes": 20838
+      "sha256": "c60d05da40ece3767afc1f6384be28ae90054c0b1c449816e096339d59993c3e",
+      "bytes": 21111
     },
     "favicon.svg": {
       "sha256": "f99761d39d805b7f995e20bb44df1b1adfe17fc9cef8caf47c965e1af713032f",
@@ -139,8 +139,8 @@
       "bytes": 1498
     },
     "product.js": {
-      "sha256": "7fd5b8e196949234b6ca65a6fd428f71dd94413c96c1e0d6d7324110d74a4156",
-      "bytes": 2707
+      "sha256": "e93eeaad0c0fb466b120118ae8a775c6858e987e1be93e66a5b2b652c10e8b2e",
+      "bytes": 2789
     },
     "project-routing.css": {
       "sha256": "e7ddb60e7f3b37460fcdd0acc166138b74cf60ee60dd02ce1c54e200bdd84875",
@@ -155,8 +155,8 @@
       "bytes": 1267
     },
     "spaces.js": {
-      "sha256": "7b84f84ae3327db7b6fc3df8b9da0eadb788db5863b9dcd199d96a3f5bfec649",
-      "bytes": 58547
+      "sha256": "7fe4d39b7ef62cd0bb9822f52d6b214215498910162cd032b0f9071ed5d90f68",
+      "bytes": 62437
     },
     "styles.css": {
       "sha256": "0f509e15056bc28b2e3af7652d94c53d6f51635bcb9f0a0bdc288e3a486805f4",

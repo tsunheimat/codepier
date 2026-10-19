@@ -59,10 +59,14 @@ window.CodePierSpaces = (() => {
     space.management?.includes(capability) || space.management?.includes('workspace');
   const newKey = () => 'workspace-' + uid();
 
+  function viewIntent() {
+    const login=S.session, page=location.hash, modalId=S.modalIntent || 0;
+    return () => login===S.session && page===location.hash && modalId===(S.modalIntent || 0);
+  }
   function form(title, body, submit, setup = null, done = null) {
     const login = S.session,
-      page = location.hash,
-      key = newKey();
+      page = location.hash;
+    let key = newKey();
     const d = modal(
       title,
       `<form id="workspace-form">${body}<p data-ws-status role="status"></p></form>`,
@@ -73,10 +77,16 @@ window.CodePierSpaces = (() => {
       status = $('[data-ws-status]', d),
       b = $('button[type="submit"]', d);
     const current = () => d.isConnected && login === S.session && page === location.hash;
-    let submitted = null;
+    let submitted = null, attemptedValues = null;
     f.onsubmit = (event) => {
       event.preventDefault();
-      if (!current() || f.dataset.saving || !f.reportValidity()) return;
+      if (!current() || f.dataset.saving || f.dataset.uncertain || !f.reportValidity()) return;
+      const values=JSON.stringify([...new FormData(f).entries()]);
+      if (attemptedValues !== null && attemptedValues !== values) {
+        status.textContent='原保存结果尚未核实；不能使用原保存键提交修改后的配置。请先核对原校验回执。';
+        return;
+      }
+      attemptedValues=values;
       f.dataset.saving = 'true';
       void busy(b, async () => {
         try {
@@ -103,9 +113,13 @@ window.CodePierSpaces = (() => {
           } else {
             status.textContent =
               error.message + (error.operation_id ? ' · ' + error.operation_id : '');
-            if (error.code === 'NETWORK_UNCERTAIN') {
+            if (error.code === 'NETWORK_UNCERTAIN' || [408,500,502,503,504].includes(error.status)) {
               f.dataset.uncertain = 'true';
               status.textContent += '。结果不确定：关闭并刷新列表核对，不自动重新创建。';
+            } else {
+              // Definite rejection is not an accepted mutation. The next
+              // explicit save receives a fresh key; no background replay.
+              attemptedValues=null; submitted=null; key=newKey();
             }
           }
         } finally {
@@ -162,7 +176,8 @@ window.CodePierSpaces = (() => {
       );
       const add =
         address.tab === 'connections' || editable
-          ? button('new-' + address.tab, '添加 ' + titles[address.tab])
+          ? button('new-' + address.tab, '添加 ' + titles[address.tab]) +
+            (address.tab === 'members' && editable ? button('invite', '建立邀请') : '')
           : '';
       if (address.tab === 'projects')
         content = rows
@@ -234,11 +249,13 @@ window.CodePierSpaces = (() => {
             row(
               x.name,
               `${esc(x.profile?.label || '')} · ${esc(x.status)} · ${x.consent_mode === 'live' ? '明确同意跟随 Profile' : '固定同意范围'} · 到期 ${esc(timeText(x.expires))}<details><summary>有效权限 / 连接身份</summary><code>${esc(x.id)}</code>${pretty(x.permissions)}</details>${x.unavailable_reason ? '<p>' + esc(x.unavailable_reason) + '</p>' : ''}`,
-              x.status !== 'revoked' ? button('revoke', '撤销', x.id) : '',
+              x.status !== 'revoked'
+                ? button('plugin-consent', '外部插件动作同意', x.id) + button('revoke', '撤销', x.id)
+                : '',
             ),
           )
           .join('');
-      if (address.tab === 'members')
+      if (address.tab === 'members') {
         content = rows
           .map((x) =>
             row(
@@ -254,6 +271,16 @@ window.CodePierSpaces = (() => {
             ),
           )
           .join('');
+        if (editable) {
+          const invited = await api(root(space.id) + '/invites');
+          data.invitations = invited.invitations;
+          content += '<h3>工作空间邀请</h3>' + invited.invitations.map((invite) => row(
+            invite.used_by ? '已使用的邀请' : '待接受的邀请',
+            `到期 ${esc(timeText(invite.expires))}<details><summary>邀请授予的直接权限</summary>${pretty(invite.policy)}</details>`,
+            invite.used_by ? '' : button('revoke-invite', '撤销邀请', invite.id, `data-ws-invite="${esc(invite.id)}"`),
+          )).join('');
+        }
+      }
       content = panel(titles[address.tab], content || empty('尚无项目。'), add);
     }
     if (login !== S.session || page !== location.hash) return '';
@@ -423,17 +450,20 @@ window.CodePierSpaces = (() => {
     );
   }
   async function projectEditor(id = null, spaceId = '') {
+    const current=viewIntent();
     if (!id && !spaceId)
       return chooseSpace('Project 所属工作空间', (chosen) => projectEditor(null, chosen));
     let old = null;
     if (id) {
       await loadBasics();
+      if (!current()) return;
       old = S.projects.find((p) => p.id === id);
       if (!old) throw new Error('Project 不存在或不可访问。');
       spaceId = old.workspace?.id;
     }
     if (!spaceId) throw new Error('无法定位 Project 的工作空间；请从工作空间打开该项目。');
     const folders = (await api(root(spaceId) + '/folders')).folders.filter((x) => x.enabled);
+    if (!current()) return;
     if (!folders.length) throw new Error('先在这个工作空间添加 Folder，再建立 Project。');
     form(
       old ? '编辑 Project' : '新建 Project',
@@ -471,10 +501,13 @@ window.CodePierSpaces = (() => {
     );
   }
   async function projectDetail(id) {
+    const current=viewIntent();
     await loadBasics();
+    if (!current()) return;
     const old = S.projects.find((x) => x.id === id);
     if (!old) throw new Error('Project 不可访问。');
     const result = await api('/api/projects/' + enc(id) + '/vps');
+    if (!current()) return;
     const d = modal(
       'Project · ' + old.alias,
       `<p>${esc(old.description)}</p><dl class="kv"><dt>工作目录</dt><dd><code>${esc(old.root)}</code></dd><dt>工作空间</dt><dd>${esc(old.workspace?.label || '')}</dd></dl>` +
@@ -490,16 +523,20 @@ window.CodePierSpaces = (() => {
             )
             .join('') || empty('没有在这个 Project 类别显示的 VPS。'),
         ),
-      `<button class="btn" data-ws-project-folder>Folder</button><button class="btn" data-ws-project-shell>Shell</button><button class="btn primary" data-ws-project-tools>开发工具</button>`,
+      `<button class="btn" data-ws-project-folder>Folder</button><button class="btn" data-ws-project-shell>Shell</button><button class="btn" data-ws-project-artifacts>产物 / 下载</button><button class="btn primary" data-ws-project-tools>开发工具</button>`,
       true,
     );
-    $('[data-ws-project-folder]', d).onclick = () => {
-      closeModal(d);
-      void projectEditor(id);
+    $('[data-ws-project-folder]', d).onclick = async () => {
+      await closeModal(d);
+      await projectEditor(id);
     };
-    $('[data-ws-project-shell]', d).onclick = () => {
-      closeModal(d);
-      void shellEditor(old.workspace?.id, id);
+    $('[data-ws-project-shell]', d).onclick = async () => {
+      await closeModal(d);
+      await shellEditor(old.workspace?.id, id);
+    };
+    $('[data-ws-project-artifacts]', d).onclick = async () => {
+      await closeModal(d);
+      await navigate('project/' + enc(id) + '/artifacts');
     };
     $('[data-ws-project-tools]', d).onclick = async () => {
       await closeModal(d);
@@ -955,6 +992,37 @@ window.CodePierSpaces = (() => {
       $('[data-ws-status]', d).textContent = e.message;
     }
   }
+  async function invitationEditor(space) {
+    const d = form(
+      '建立工作空间邀请',
+      field('days', '有效天数', 7, 'type="number" min="1" max="30" required') +
+        policyEditorHTML({}, true) +
+        notice('邀请直接授予所选工作空间权限，不分配 Role；默认不增加资源权限。'),
+      (f) => post(root(space.id) + '/invites', {
+        days: Number(f.elements.days.value), policy: readPolicy(f, true),
+      }),
+      null,
+      async (result) => {
+        const saved = modal(
+          '保存工作空间邀请',
+          notice('邀请只显示一次，不写入浏览器存储。接受者仍需使用自己的账号登录。') +
+            `<div class="code-box secret">${esc(result.invitation)}</div>`,
+          '<button class="btn ghost" data-action="close-modal">完成</button><button class="btn primary" data-copy-invitation>复制邀请</button>',
+        );
+        $('[data-copy-invitation]', saved).onclick = () => copy(result.invitation);
+      },
+    );
+    const submit = $('button[type="submit"]', d);
+    submit.disabled = true;
+    try {
+      await bindPolicy($('form', d), space, {});
+      if (d.isConnected) submit.disabled = false;
+    } catch (e) {
+      $('[data-ws-status]', d).textContent = e.message;
+    }
+    return d;
+  }
+
   async function newConnection(spaceId = '') {
     if (!spaceId) return chooseSpace('建立 MCP 连接：选择工作空间', newConnection);
     const out = await api(root(spaceId) + '/profiles');
@@ -1371,6 +1439,14 @@ window.CodePierSpaces = (() => {
                 return profileEditor(space);
               case 'profile':
                 return profileEditor(space, old);
+              case 'invite':
+                return invitationEditor(space);
+              case 'revoke-invite':
+                if (confirm('撤销这个尚未使用的工作空间邀请？')) {
+                  await api(root(space.id) + '/invites/' + enc(id), { method: 'DELETE' });
+                  await renderPage(false);
+                }
+                return;
               case 'new-members':
                 return memberEditor(space);
               case 'member':
@@ -1384,6 +1460,8 @@ window.CodePierSpaces = (() => {
                 return renderPage(false);
               case 'new-connections':
                 return newConnection(space.id);
+              case 'plugin-consent':
+                return CodePierExternalPlugins.consent(id, space.id);
               case 'revoke':
                 if (confirm('撤销这条 MCP 连接？已经执行的外部副作用不会回滚。')) {
                   await post(root(space.id) + '/connections/' + enc(id) + '/revoke');

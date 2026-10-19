@@ -526,6 +526,12 @@ class Runtime:
                     continue
                 folders.append(folder)
             return {'folders':folders}
+        elif name in {'artifacts_list','diagnostics_get'} and principal.space_id is None and not principal.grant_id:
+            # A logged-in panel overview has no ambient workspace. These two
+            # read-only aggregators enumerate live memberships and recheck each
+            # returned resource and its exact Folder mapping themselves.
+            # MCP Connections still follow the bound-workspace gate below.
+            pass
         else:
             self.authorize(principal,'read')
             if args.get('project') and not (name in {'exec','session'} and args.get('target','agent')!='agent'):

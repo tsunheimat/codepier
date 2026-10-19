@@ -11,6 +11,7 @@ window.CodePierProduct = (() => {
       body = devicesHTML();
     } else if (tab === 'storage' || tab === 'vps') body = await CodePierSpaces.inventoryHTML(tab);
     else if (tab === 'mcp') body = await CodePierGateway.inventoryHTML();
+    body = body.replace(/<h1(\s[^>]*)?>/g, '<h2$1>').replace(/<\/h1>/g, '</h2>');
     return `<div id="resources-page">${heading('资源库', 'RESOURCES', '登记基础资源；具体使用、映射和权限在工作空间配置。')}<nav class="product-tabs" aria-label="资源类别">${navigationTabs(
       'resources',
     )

@@ -17,6 +17,7 @@ from hub.gateway.remote import RemotePool
 from tests.current_model import CurrentModel
 from tests.identity_fixtures import set_member
 from shared.mcp_protocol import MODERN
+from shared.crypto import password_hash
 
 
 @dataclass
@@ -118,7 +119,8 @@ def plugin_env(tmp_path, monkeypatch):
     store = app.state.store
     model=CurrentModel(store);sessions={}
     for user in ('owner','viewer','other'):
-        model.user(user,instance_admin=user=='owner')
+        model.user(user,instance_admin=user=='owner',
+            password_hash=password_hash('isolated-plugin-browser-password'))
         sessions[user]=model.session(user=user)
     model.workspace('team',owner='owner',label='Plugin tests')
     for user in ('viewer','other'):model.member('team',user,{})
