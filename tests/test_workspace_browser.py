@@ -291,31 +291,47 @@ def test_vps_display_form_and_mcp_share_one_resource(workspace_server, workspace
 
 def test_navigation_during_revalidation_preserves_url_without_old_content(workspace_server,workspace_browser):
     server=workspace_server;context,errors=workspace_browser
-    page=open_workspace(context,server,'spaces/alice/projects');held=[];reads=[]
+    page=open_workspace(context,server,'spaces/alice/projects');reads=[];writes=[]
     assert page.evaluate('!S.work.project && !ChatUI.project && ChatUI.views.size===0')
-    page.on('request',lambda request:reads.append(urlparse(request.url).path) if request.method=='GET' else None)
+    page.on('request',lambda request:(reads if request.method=='GET' else writes).append(urlparse(request.url).path))
     url=server.url+'/api/iam/me'
-    def hold_identity(route):
-        held.append(route)
-        page.evaluate('document.documentElement.dataset.heldIdentityRead="yes"')
-    context.route(url,hold_identity,times=1)
+    # Delay delivery of one authentic response, not the browser's transport.
+    # Installing/removing network interception while the real SSE reconnects
+    # also changes unrelated requests. This barrier controls only the identity
+    # promise; cookies, response bytes, workspace reads and SSE remain real.
+    page.evaluate('''() => {
+        const original = window.fetch;
+        const gate = window.identityResponseGate = { original, status: null, count: 0 };
+        const released = new Promise(resolve => { gate.release = resolve; });
+        window.fetch = async function(...args) {
+            const response = await original.apply(this, args);
+            if (args[0] === '/api/iam/me' && gate.count === 0) {
+                gate.count++;
+                gate.status = response.status;
+                window.fetch = original;
+                await released;
+            }
+            return response;
+        };
+    }''')
     try:
         with page.expect_request(url):page.evaluate('void recoverPanelAccess()')
-        page.wait_for_function('document.documentElement.dataset.heldIdentityRead==="yes"')
-        assert len(held)==1
+        page.wait_for_function('identityResponseGate.status !== null')
+        assert page.evaluate('identityResponseGate.status')==200
+        assert page.evaluate('identityResponseGate.count')==1
         expect(page.locator('#breadcrumb-page')).to_have_count(0)
         page.evaluate('navigate("spaces/alice/folders")')
         expect(page).to_have_url(server.url+'/#spaces/alice/folders')
         expect(page.locator('#workspace-page')).to_have_count(0)
-        original=held.pop()
-        response=original.fetch()
-        assert response.status==200
-        original.fulfill(response=response)
+        page.evaluate('identityResponseGate.release()')
         expect(page.locator('#workspace-page h2')).to_have_text('Folders',timeout=15000)
         assert '/api/spaces/alice/folders' in reads
         assert '/api/devices' not in reads and '/api/projects' not in reads
         assert page.evaluate('Object.hasOwn(S,"space_id")') is False
-        assert errors==[]
+        assert writes==[] and errors==[]
     finally:
-        for request in held:request.abort()
-        context.unroute(url,hold_identity)
+        page.evaluate('''() => {
+            window.fetch = identityResponseGate.original;
+            identityResponseGate.release();
+            delete window.identityResponseGate;
+        }''')

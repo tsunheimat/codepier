@@ -1,6 +1,6 @@
 # 开发、构建与验证
 
-从 GitHub Release 下载源码开发时使用 `codepier-VERSION-source-full.zip`。`source.zip` 供旧面板更新器安装，省略了 8 个开发专用顶层文件，不能替代完整开发源码进行回归验收。
+CodePier 2.0 只提供一份完整 `codepier-VERSION-source.zip`。开发、公开源码回归和当前面板更新器使用相同归档及清单；旧精简兼容包和旧更新器已移除。旧应用数据库不能通过源码更新转换，评估 2.0 必须使用独立的新数据目录。
 
 ## 依赖与单一版本源
 
@@ -54,7 +54,7 @@ browser/integration/slow 由实际导入及 fixture 依赖分类，smoke 和独�
   --output .work/regression-final --workers 4 --timeout 1200 --coverage
 ```
 
-运行器先完整收集，再按模块隔离进程；独立主题/视口案例各有自己的进程、临时目录、截图和报告。不会为变绿重试失败用例。耗时上限用于识别卡死，不是跳过结果。执行期间不能改源码。任意失败、跳过、丢失阶段、重复阶段、非零进程退出或源码变化都会使 verified=false。
+运行器先完整收集，再按模块隔离进程；独立主题/视口案例各有自己的进程、临时目录、截图和报告。不会为变绿重试失败用例。耗时上限用于识别卡死，不是跳过结果。执行期间不能改源码。任意失败、一般跳过、丢失阶段、重复阶段、非零进程退出或源码变化都会使 verified=false。唯一明确的平台适用性例外是十项 Windows 原生 Session 测试：Linux/macOS 收集并记录其精确 setup guard 为 `not_applicable`，不计入通过数；完整聚合仍要求相同来源的真实 Windows 全部通过证据。没有该证据的单平台运行不代表完整跨平台验收。
 
 ## CI 分片与完整证明
 
@@ -67,12 +67,13 @@ Linux/macOS 每个平台各自分成四份。每个 shard 都保存完整收集�
 .venv/bin/python scripts/merge_regression.py \
   .work/shard-0/summary.json .work/shard-1/summary.json \
   .work/shard-2/summary.json .work/shard-3/summary.json \
+  --native-windows .work/native-windows/native-proof.json \
   --output .work/complete.json
 ```
 
 覆盖率采集包括 Python 子进程，保存 XML/JSON 和可合并的数据。diff coverage 仅报告新增/修改的可执行 Python 行、未测量文件和未覆盖行，不设置旧代码全仓 80% 门槛，也不把没有数据说成 100%。分片先合并覆盖数据，再计算整个变更的覆盖率。
 
-Windows CI 运行明确选出的核心 pytest 文件、真实 PowerShell 参数行为和临时计划任务恢复验收，不只是解析脚本文本。Windows 核心子集与 Linux/macOS 全量证明分别报告；本机未执行的远端作业不能写成已通过。临时任务验证不重启电脑，不等于完成未登录启动的目标机演练。
+Windows CI 运行明确选出的核心 pytest 文件、全部十项真实 PowerShell/ConPTY Session 案例、真实 PowerShell 参数行为和临时计划任务恢复验收，不只是解析脚本文本。`scripts/check_native_execution.py` 保存原生案例与来源指纹；Linux/macOS 聚合通过 `--native-windows` 核对该记录，缺失、跳过或来源不同都拒绝完整验证。Windows 原生结果与 Linux/macOS 通过数分别报告；本机未执行的远端作业不能写成已通过。临时任务验证不重启电脑，不等于完成未登录启动的目标机演练。
 
 ## 证据、归档和隐私
 

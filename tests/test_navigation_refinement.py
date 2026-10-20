@@ -246,18 +246,18 @@ def test_tools_refresh_after_real_project_unmapping_keeps_context_and_draft(stac
         page.fill('#username','admin');page.fill('#password',stack.password);page.click('#login-form button')
         expect(page.locator('#i-project')).to_have_value(stack.project['id'])
         page.locator('[name=command]').fill('printf keep-original-project-draft')
-        # The tools page may still be observing read-only Runner operations
-        # after the editor becomes visible. Respect the real deletion guard:
-        # wait for those original receipts, then issue one versioned deletion.
-        # Do not force-remove a busy project or retry a mutation on an unknown
-        # response just to make the slower macOS test finish.
-        from tests.support import wait_for
+        # An empty server inventory is not a barrier: the browser may not yet
+        # have submitted its initial validations_list request. Wait for the
+        # rendered result of that exact real read, while pumping Playwright's
+        # request handlers, before checking receipts and deleting once.
+        records=page.locator('#i-validations')
+        expect(records).to_have_attribute('aria-busy','false',timeout=30000)
+        expect(records).to_contain_text('还没有版本绑定验收')
+        assert any(call['tool']=='validations_list' for call in calls)
         active={'queued','running','reconnecting','cancelling','needs_review'}
-        def reads_finished():
-            value=stack.must(stack.client.get('/api/operations',params={'project':stack.project['id'],'limit':100}))
-            assert value['next_offset'] is None
-            return not any(row['state'] in active for row in value['operations'])
-        wait_for(reads_finished,timeout=30)
+        value=stack.must(stack.client.get('/api/operations',params={'project':stack.project['id'],'limit':100}))
+        assert value['next_offset'] is None
+        assert not any(row['state'] in active for row in value['operations']),value
         current=stack.must(stack.client.get('/api/projects/'+stack.project['id']))
         removed=stack.client.delete('/api/projects/'+stack.project['id'],params={'expected_version':current['version']})
         assert removed.status_code==200,removed.text
