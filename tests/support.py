@@ -10,6 +10,19 @@ from shared.util import atomic_json
 
 BASE = Path(__file__).resolve().parent.parent
 
+
+def control_client(url):
+    """Independent fixture setup/assertions, not the browser's HTTP transport.
+
+    These observations pause while real browser actions run. Keep authentication
+    cookies, but not idle TCP sockets that can race the server's keep-alive close.
+    No request retry is installed: a reset after a submitted mutation still fails
+    immediately rather than sending the mutation again or fabricating a result.
+    """
+    return httpx.Client(base_url=url, timeout=35, trust_env=False,
+                        limits=httpx.Limits(max_keepalive_connections=0))
+
+
 def wait_for(fn, timeout=12):
     end=time.monotonic()+timeout
     last=None
@@ -95,7 +108,7 @@ class Stack:
         self.env={**os.environ,'HUB_PUBLIC_URL':self.url,'MCP_PUBLIC_URL':self.url,'HUB_DATA_DIR':str(self.hubdir),'PYTHONUNBUFFERED':'1'}
         self.hub=None; self.agent=None
         self.start_hub()
-        self.client=httpx.Client(base_url=self.url,timeout=35,trust_env=False)
+        self.client=control_client(self.url)
         self.login()
         # Test accounts have no ambient workspace. Select an explicit fresh
         # resource container and use it in each setup URL, never in a header.
