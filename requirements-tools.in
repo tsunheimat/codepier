@@ -2,3 +2,4 @@
 pip==26.2.1
 ruff==0.16.9
 pip-audit==2.10.1
+certifi==2026.10.19

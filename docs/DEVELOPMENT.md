@@ -19,6 +19,8 @@ Linux 还需 Playwright 对应系统依赖，可在隔离 CI 运行 install --wi
 
 依赖更新时修改 `.in`，显式运行 `python scripts/lock_requirements.py --exclude-newer YYYY-MM-DD`，审阅六份锁文件，再在新环境安装并测试。解析只允许 wheel，不执行源代码发行包的构建脚本。`--check` 仅对比，不覆盖。版本源是 `shared/util.py` 的 VERSION；RELEASE.json、README 当前版本、Compose 与 k3s 清单镜像、支持分支与生成资源由发布检查核对。LOCAL_RELEASE.json 仅是本地历史记录，不是当前源码或部署状态的权威。
 
+仅修复指定传递依赖时，加 `--upgrade-package 包名` 保留其他兼容的已锁定版本；可重复此参数。用相同参数加 `--check` 验证锁文件可重现。
+
 ## 前端构建与格式
 
 ```bash

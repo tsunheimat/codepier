@@ -4,6 +4,8 @@ uvicorn==0.54.0
 websockets==17.1
 cryptography==50.0.2
 httpx==0.28.1
+# Remove compromised emSign trust roots (GHSA-6q48-6c7w-9gw2).
+certifi==2026.10.19
 pydantic==2.13.5
 tzdata==2026.4
 # 0.26.0 Point getters corrupt references; see py-tree-sitter#487.

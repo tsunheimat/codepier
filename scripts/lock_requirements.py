@@ -22,6 +22,8 @@ POLICY = "--require-hashes\n--only-binary=:all:\n"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exclude-newer", default="2026-09-24", help="PyPI upload-date cutoff, updated explicitly with reviewed pins")
+    parser.add_argument("--upgrade-package", action="append", default=[],
+                        help="Update only this package, retaining compatible existing transitive pins; repeatable")
     parser.add_argument("--check", action="store_true", help="Resolve and compare; do not overwrite checked-in locks")
     args = parser.parse_args()
     uv = shutil.which("uv")
@@ -33,10 +35,14 @@ def main():
     with tempfile.TemporaryDirectory(prefix="codepier-lock-") as temporary:
         staging = Path(temporary)
         for name in NAMES:
+            if args.upgrade_package:
+                shutil.copyfile(ROOT / (name + ".txt"), staging / (name + ".txt"))
             command = [uv, "--no-config", "pip", "compile", str(ROOT / (name + ".in")),
                        "--universal", "--python-version", "3.13", "--generate-hashes", "--no-build",
                        "--default-index", "https://pypi.org/simple", "--exclude-newer", args.exclude_newer,
                        "--no-annotate", "--no-header", "--output-file", str(staging / (name + ".txt"))]
+            for package in args.upgrade_package:
+                command += ["--upgrade-package", package]
             # Share transitive versions with the developer/test environment.
             # The official MCP SDK deliberately keeps its independent dependency graph.
             if name not in {"requirements-dev", "requirements-compat"}:
