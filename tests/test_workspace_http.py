@@ -57,10 +57,10 @@ def test_startup_and_explicit_workspace_pages(web):
     assert client.get('/api/projects/project').status_code==200
     assert client.get('/api/settings').status_code==200
     assert client.get('/api/spaces/alice/projects').status_code==200
-    assert client.get('/api/spaces/alice/folders').status_code==200
+    assert client.get('/api/spaces/alice/sources').status_code==200
     assert client.get('/api/spaces/alice/members').status_code==200
-    assert client.get('/api/spaces/alice/shell').status_code==200
-    assert client.get('/api/spaces/alice/storage').status_code==200
+    assert client.get('/api/spaces/alice/shell').status_code==404
+    assert client.get('/api/spaces/alice/storage').status_code==404
     assert client.get('/api/spaces/alice/vps').status_code==200
     assert client.get('/api/spaces/alice/mcp-gateway').status_code==200
     assert client.get('/api/spaces/alice/external-integrations').status_code==200
@@ -72,6 +72,35 @@ def test_legacy_routes_are_not_registered(web):
     paths={getattr(route,'path','') for route in app.routes}
     assert not paths & {'/api/access-roles','/api/access-profiles','/api/grants','/api/source-roots','/api/project-routing'}
     assert not any('role-assignment' in p or 'current-space' in p for p in paths)
+
+
+@pytest.mark.parametrize('change,available', [
+    ("UPDATE devices SET info='{\"shell_enabled\":false}' WHERE id='b'", True),
+    ("UPDATE storage_mappings SET writable=0 WHERE id='map_b'", True),
+    ("UPDATE devices SET enabled=0 WHERE id='b'", False),
+])
+def test_mapping_choices_report_live_shell_capability_without_device_allocation(web,change,available):
+    client,app=web
+    app.state.store.execute('DELETE FROM space_devices')
+    app.state.store.execute(change)
+    response=client.get('/api/storage-pools/pool/mappings')
+    assert response.status_code==200,response.text
+    rows={row['device_id']:row for row in response.json()['mappings']}
+    assert rows['b']['available'] is available and not rows['b']['shell_capable']
+    assert rows['a']['available'] and rows['a']['shell_capable']
+    assert not {'info','secret','owner_user_id'} & rows['b'].keys()
+
+
+def test_pool_mapping_choices_do_not_require_ownership_of_technical_device(web):
+    client,app=web
+    app.state.store.execute('DELETE FROM space_devices')
+    app.state.store.execute("UPDATE iam_users SET instance_admin=0 WHERE user_id='alice'")
+    app.state.store.execute("UPDATE devices SET owner_user_id='bob' WHERE id='b'")
+    response=client.get('/api/storage-pools/pool/mappings')
+    assert response.status_code==200,response.text
+    row=next(row for row in response.json()['mappings'] if row['device_id']=='b')
+    assert row['available'] and row['shell_capable']
+    assert 'b' not in {device['id'] for device in client.get('/api/devices').json()['devices']}
 
 
 def test_new_connection_mandatory_profile_and_private_identity(web):

@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import Field
 from shared.workspace_contracts import WorkspaceModel, ProjectInput
 
-WORKSPACE_TOOLS=frozenset({'folders_list','projects_create','get_execution_options'})
+WORKSPACE_TOOLS=frozenset({'sources_list','projects_create','get_execution_options'})
 
 
 class ProjectCreate(ProjectInput):
@@ -17,11 +17,11 @@ class ExecutionOptions(WorkspaceModel):
 
 
 def register(Tool,Empty,Model,tools,schemas):
-    tools['folders_list']=Tool(Empty,'read',
-        'List only source folders this connection may use when the user requests project creation. '
+    tools['sources_list']=Tool(Empty,'read',
+        'List only workspace sources this connection may use when the user requests project creation. '
         'This is not required for ordinary project discovery, file access or command execution.',local=True)
     tools['projects_create']=Tool(ProjectCreate,'projects.create',
-        'Create one new Project from an authorized source folder and bounded relative subpath. Root dot is allowed. '
+        'Create one new Project from an authorized workspace source and bounded relative subpath. Root dot is allowed. '
         'Cannot select global devices, add mounts, create filesystem directories or modify permissions. '
         'Resume a pending validation with the same arguments and idempotency key.',True,True)
     tools['get_execution_options']=Tool(ExecutionOptions,'execute',
@@ -29,7 +29,7 @@ def register(Tool,Empty,Model,tools,schemas):
         'list this project source’s allowed execution devices and structured path mappings. '
         'Do NOT call as a preflight for ordinary commands or automatically after failure. '
         'Ordinary exec omits execution_device_id and uses the configured default without this call.',False,True)
-    schemas['folders_list']={'type':'object','properties':{'folders':{'type':'array','items':{'type':'object'}}},'required':['folders']}
+    schemas['sources_list']={'type':'object','properties':{'sources':{'type':'array','items':{'type':'object'}}},'required':['sources']}
     schemas['projects_create']={'type':'object','properties':{'id':{'type':'string'},'alias':{'type':'string'},
         'description':{'type':'string'},'version':{'type':'integer'},'accessible':{'type':'boolean'}},'required':['id','alias']}
     schemas['get_execution_options']={'type':'object','properties':{'project':{'type':'string'},'action':{'type':'string'},

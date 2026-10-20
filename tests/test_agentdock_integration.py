@@ -49,7 +49,7 @@ def test_retired_calls_are_unavailable_after_actual_hub_restart_and_receipts_sur
     store = Store(stack.hubdir)
     try:
         assert not store.all("SELECT name FROM sqlite_master WHERE name LIKE 'workflow%'")
-        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-2'
         durable_result = store.one('SELECT result FROM operations WHERE id=?', (completed['id'],))
     finally: store.close()
     stack.hub.terminate(); stack.hub.wait(timeout=12); stack.start_hub()

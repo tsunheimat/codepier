@@ -185,8 +185,8 @@ def test_workspace_navigation_executes_real_page_scripts(workspace_server, works
     context, errors = workspace_browser
     page = open_workspace(context, server, 'spaces/alice')
     for tab, heading in [
-        ('folders', 'Folders'), ('storage', 'Shared Storage'), ('devices', 'Devices'),
-        ('vps', 'VPS'), ('shell', 'Shell 继承'), ('profiles', 'Profiles'),
+        ('sources', 'Folder / Storage Pool'), ('devices', 'Devices'),
+        ('vps', 'VPS'), ('profiles', 'Profiles'),
         ('connections', 'MCP Connections'), ('members', '成员与权限'),
         ('projects', 'Projects'),
     ]:
@@ -332,12 +332,12 @@ def test_navigation_during_revalidation_preserves_url_without_old_content(worksp
         assert page.evaluate('accountResponseGate.status')==200
         assert page.evaluate('accountResponseGate.count')==1
         expect(page.locator('#breadcrumb-page')).to_have_count(0)
-        page.evaluate('navigate("spaces/alice/folders")')
-        expect(page).to_have_url(server.url+'/#spaces/alice/folders')
+        page.evaluate('navigate("spaces/alice/sources")')
+        expect(page).to_have_url(server.url+'/#spaces/alice/sources')
         expect(page.locator('#workspace-page')).to_have_count(0)
         page.evaluate('accountResponseGate.release()')
-        expect(page.locator('#workspace-page h2')).to_have_text('Folders',timeout=15000)
-        assert '/api/spaces/alice/folders' in reads
+        expect(page.locator('#workspace-page h2')).to_have_text('Folder / Storage Pool',timeout=15000)
+        assert '/api/spaces/alice/sources' in reads
         assert '/api/devices' not in reads and '/api/projects' not in reads
         assert page.evaluate('Object.hasOwn(S,"space_id")') is False
         assert writes==[] and errors==[]

@@ -10,7 +10,7 @@ launches local tools and opens SSH connections.
 ## Workspace abstraction — 2.0 hard cutoff
 
 **CodePier 2.0 uses a fresh-start model, not an in-place upgrade.** Initialize a
-separate empty `HUB_DATA_DIR` with the `workspace-1` schema and create new workspace
+separate empty `HUB_DATA_DIR` with the `workspace-2` schema and create new workspace
 bindings, Profiles and Connections. Older or mixed-model databases are refused,
 never converted or deleted. Do not point the new Hub at a previous data volume.
 Shared folders and VPS files are independent of Hub database state and remain
@@ -20,9 +20,8 @@ Hub; deployment is a separate explicit operation.
 Resources → Workspace bindings → Projects / Profiles → MCP Connections.
 
 A workspace contains assigned resources, mappings, members and direct policies.
-There are no Roles or mutable “Current Space”. A Project uses one workspace Folder
-and a root/subdirectory. Its execution devices come only from that folder's
-provided source. Shared Storage maps existing shared bytes on multiple Devices;
+There are no Roles or mutable “Current Space”. A Project uses one workspace source (Folder or Storage Pool)
+and a root/subdirectory. Its execution devices come only from that source. Shared Storage maps existing shared bytes on multiple Devices;
 ordinary commands use the configured default without a discovery preflight or
 silent fallback. Files and shell can use different mapped devices.
 
@@ -40,8 +39,8 @@ outcomes are reported explicitly.
 ## Setup and development
 
 Read [Workspace setup and contracts](docs/WORKSPACES.md) before initializing this
-branch. Register Devices and Storage, assign resources to a workspace, create
-Folders/Projects, configure direct member policies and Profiles, then authorize
+branch. Register Devices and Folder/Storage Pool resources, import sources into a workspace, create
+Projects, configure direct member policies and Profiles, then authorize
 an MCP Connection. Filesystem mappings must already exist on the Devices.
 
 ```bash
@@ -64,9 +63,9 @@ python scripts/build_web_assets.py --check
 python scripts/check_release.py
 ```
 
-The full older suite still needs its deleted Role/schema fixtures ported. Template
-checks are not browser acceptance. New execution-session Windows ConPTY support,
-production NFS/VPS and live-IdP acceptance are not certified by this checkpoint.
+Use the complete regression workflow for source acceptance; template checks alone
+are not browser acceptance. Native Windows, production NFS/VPS and live identity
+provider acceptance require their own platform and deployment checks.
 
 [Resources](docs/RESOURCE_MODEL.md) · [Profiles and connections](docs/ACCESS_PROFILES.md)
 · [Storage and execution](docs/PROJECT_ROUTING.md) · [SSH / VPS](docs/VPS.md)

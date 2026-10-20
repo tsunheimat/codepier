@@ -41,7 +41,7 @@ async def test_local_output_error_after_rch_launch_is_not_a_safe_retry(tmp_path,
     root = tmp_path / 'source'
     root.mkdir()
     project = {'id': 'p', 'alias': 'P', 'root': str(root), 'mode': 'write', 'allow_tasks': True,
-        '_integration_owner': 'grant:test', '_route_context': {'source_key':'pool:original','folder_id':'source-folder','device_id':'launcher'},
+        '_integration_owner': 'grant:test', '_route_context': {'source_key':'pool:original','source_id':'source-folder','device_id':'launcher'},
         '_execution_plan': {'hook_protocol': 1, 'provider': 'rch', 'rch': {}}}
     agent = SimpleNamespace(
         state_dir=tmp_path, cancelled=set(), stop_event=asyncio.Event(),
@@ -64,7 +64,7 @@ async def test_local_output_error_after_rch_launch_is_not_a_safe_retry(tmp_path,
     assert agent.run_process.await_count == 1
     retained = json.loads((tmp_path / 'rch-operations' / identifier / 'codepier.json').read_text())
     assert retained['owner'] == 'grant:test'
-    assert retained['route'] == {'source_key':'pool:original','folder_id':'source-folder','device_id':'launcher'}
+    assert retained['route'] == {'source_key':'pool:original','source_id':'source-folder','device_id':'launcher'}
     # Re-entering the same launch is refused even without a wrapper result.
     with pytest.raises(DevError) as repeated:
         await routed_execution.execute(agent, identifier, project, args)

@@ -38,7 +38,7 @@ class WorkspaceStack:
         secret = 'integration-device-secret-' + uuid.uuid4().hex
         with seed.store.transaction():
             seed.store.db.execute('UPDATE storage_mappings SET path=?', (str(self.root),))
-            seed.store.db.execute("UPDATE space_storage SET files_device_id='a'")
+            seed.store.db.execute("UPDATE storage_pools SET default_fs_device_id='a'")
             seed.store.db.execute("UPDATE devices SET secret=? WHERE id='a'", (seed.store.encrypt(secret),))
             seed.store.db.execute('''INSERT INTO vps_connections(id,name,name_key,host,owner_user_id,created,updated)
                 VALUES(?,?,?,?,?,?,?)''', ('server', 'Saved test SSH server', 'saved test ssh server', 'fixture.invalid', 'alice', time.time(), time.time()))

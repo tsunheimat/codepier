@@ -27,7 +27,7 @@ def projects(store, count):
     with store.transaction():
         for n in range(count):
             store.db.execute('''INSERT OR IGNORE INTO projects
-                (id,alias,alias_key,folder_id,subpath,space_id,owner_user_id,created)
+                (id,alias,alias_key,source_id,subpath,space_id,owner_user_id,created)
                 VALUES(?,?,?,'folder-team',?,'team','owner',?)''',
                 (f'load-{n}',f'load-{n}',f'load-{n}',f'load-{n}',time.time()))
 

@@ -41,7 +41,7 @@ def device_rows(store, runtime, principal):
         row["can_configure_roots"] = bool(row["builtin"] and principal.instance_admin and row["can_manage"])
         row["info"] = info
         row["online"] = runtime.online(row["id"])
-        row["project_count"] = store.one("SELECT count(DISTINCT p.id) AS n FROM projects p JOIN space_folders f ON f.id=p.folder_id LEFT JOIN space_storage_mappings sm ON sm.storage_binding_id=f.storage_binding_id WHERE (f.device_id=? OR sm.device_id=?) AND (? IS NULL OR p.space_id=?)", (row["id"], row["id"], principal.space_id, principal.space_id))["n"]
+        row["project_count"] = store.one("SELECT count(DISTINCT p.id) AS n FROM projects p JOIN space_sources f ON f.id=p.source_id LEFT JOIN folders r ON r.id=f.folder_resource_id LEFT JOIN space_source_mappings sm ON sm.source_id=f.id WHERE (r.device_id=? OR sm.device_id=?) AND (? IS NULL OR p.space_id=?)", (row["id"], row["id"], principal.space_id, principal.space_id))["n"]
         management = info.get("management") if isinstance(info.get("management"), dict) else {}
         actions = info.get("device_actions") if isinstance(info.get("device_actions"), list) else []
         actions = sorted(set(actions) & DEVICE_ACTIONS)
@@ -216,7 +216,7 @@ def make_devices_router(context: HubContext):
             with store.lock, store.db:
                 principal = auth.panel(request, True)
                 iam.require_device(store, principal, id, manage=True)
-                if store.one("SELECT device_id FROM space_devices WHERE device_id=? UNION SELECT device_id FROM storage_mappings WHERE device_id=? LIMIT 1", (id,id)):
+                if store.one("SELECT device_id FROM space_devices WHERE device_id=? UNION SELECT device_id FROM storage_mappings WHERE device_id=? UNION SELECT device_id FROM folders WHERE device_id=? UNION SELECT runner_device_id FROM space_vps WHERE runner_device_id=? LIMIT 1", (id,id,id,id)):
                     raise DevError("DEVICE_HAS_PROJECTS", "Remove this device from workspace bindings and storage mappings first", 409)
                 store.execute("DELETE FROM devices WHERE id=?", (id,))
                 store.audit(principal.actor, "device.deleted", id)

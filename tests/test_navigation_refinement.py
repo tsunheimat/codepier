@@ -58,10 +58,11 @@ def test_sidebar_subtabs_follow_routes_and_page_tabs(stack, chat_browser_pool, t
         assert page.evaluate('S.renderSeq===sidebarRenderSeq && retainedCard.isConnected')
         sidebar_click('spaces')
         page.locator('a[href="#spaces/'+stack.space_id+'"]').click()
-        for tab in ('profiles','connections','members','folders','shell'):
+        for tab in ('profiles','connections','members','sources'):
             link=page.locator('#workspace-page .product-tabs a[href="#spaces/'+stack.space_id+'/'+tab+'"]')
             link.click();expect(link).to_have_attribute('aria-current','page')
             expect(page).to_have_url(stack.url+'/#spaces/'+stack.space_id+'/'+tab)
+        expect(page.locator('#workspace-page .product-tabs a[href$="/shell"]')).to_have_count(0)
         assert page.locator('#iam-active-space,[data-nav="access/roles"]').count()==0
         for tab in ('account', 'users', 'sso'):
             sidebar_click('identity/' + tab)

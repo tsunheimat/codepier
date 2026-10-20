@@ -156,8 +156,8 @@ def panel_access_snapshot(store, principal):
                 result.update((space,selector,action) for action in rule.actions)
         for rule in policy.device_rules:
             result.update((space,'device:'+device,action) for device in rule.devices for action in rule.actions)
-        for rule in policy.folder_rules:
-            result.update((space,'folder:'+folder,action) for folder in rule.folders for action in rule.actions)
+        for rule in policy.source_rules:
+            result.update((space,'source:'+folder,action) for folder in rule.sources for action in rule.actions)
         for rule in policy.vps_rules:
             result.update((space,'vps:'+vps,action) for vps in rule.vps for action in rule.actions)
             if rule.all_vps:result.update((space,'vps:*',action) for action in rule.actions)
@@ -169,9 +169,23 @@ def panel_access_snapshot(store, principal):
                 result.update((space,selector,action) for action in rule.actions)
         # Resource revisions invalidate stale mappings/editors even if the
         # account's action names have not changed.
-        for table in ('space_folders', 'space_storage', 'space_vps', 'access_profiles', 'projects'):
+        for table in ('space_sources', 'space_vps', 'access_profiles', 'projects'):
             for row in store.all('SELECT id,version FROM '+table+' WHERE space_id=?', (scoped.space_id,)):
                 result.add((scoped.space_id, table+':'+row['id'], str(row['version'])))
+        # Imports inherit live inventory settings. A changed Folder path, Pool
+        # default or selected mapping must invalidate an open panel even when
+        # its workspace binding and action names have not changed.
+        for row in store.all('''
+            SELECT 'folder:'||f.id AS resource,f.version FROM space_sources s
+                JOIN folders f ON f.id=s.folder_resource_id WHERE s.space_id=?
+            UNION
+            SELECT 'pool:'||p.id,p.version FROM space_sources s
+                JOIN storage_pools p ON p.id=s.pool_id WHERE s.space_id=?
+            UNION
+            SELECT 'mapping:'||m.id,m.version FROM space_source_mappings sm
+                JOIN storage_mappings m ON m.id=sm.mapping_id WHERE sm.space_id=?
+            ''', (scoped.space_id,scoped.space_id,scoped.space_id)):
+            result.add((scoped.space_id,row['resource'],str(row['version'])))
     result.add(('@', 'instance_admin', str(bool(principal.instance_admin))))
     return frozenset(result)
 
@@ -232,7 +246,7 @@ def require_device(store, principal, device_id, *, manage=False, creation=None):
     if principal.space_id:
         from hub.permissions import require_access
         if creation:
-            require_access(store, principal, 'projects.create', folder_id=creation.get('folder_id'))
+            require_access(store, principal, 'projects.create', source_id=creation.get('source_id'))
         else:
             require_access(store, principal, 'devices.read', device_id=device_id)
     elif principal.grant_id or not (principal.instance_admin or row['owner_user_id'] == principal.user_id):

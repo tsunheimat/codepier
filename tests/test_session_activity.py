@@ -16,7 +16,8 @@ from tests.current_model import CurrentModel
 
 
 def execution_connection(app,client):
-    app.state.store.execute("UPDATE space_folders SET allow_tasks=1 WHERE id='audit-folder'")
+    app.state.store.execute("UPDATE folders SET allow_tasks=1 WHERE id='audit-folder'")
+    app.state.store.execute("UPDATE space_sources SET allow_tasks=1 WHERE id='audit-folder'")
     app.state.store.execute("UPDATE devices SET info=? WHERE id='device'",(json.dumps({'shell_enabled':True}),))
     profile=make_profile(client,{'project_rules':[{'projects':['project'],'actions':['read','execute']}]},space='audit-space')
     return make_connection(client,profile,space='audit-space')

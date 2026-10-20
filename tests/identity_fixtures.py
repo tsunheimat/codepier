@@ -144,9 +144,9 @@ def team(tmp_path, monkeypatch):
                 (device, device, store.encrypt('fixture-device-secret-'+'x'*32), 'owner',
                  json.dumps({'shell_enabled': True}), now))
             store.db.execute('INSERT INTO space_devices(space_id,device_id) VALUES(?,?)', (space,device))
-            store.db.execute('''INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode,allow_tasks)
-                VALUES(?,?,?,'device',?,?,'write',1)''', ('folder-'+space, space, 'Source', device, str(root)))
-            store.db.execute('''INSERT INTO projects(id,space_id,alias,alias_key,folder_id,subpath,owner_user_id,created)
+            from tests.current_model import CurrentModel
+            CurrentModel(store).folder('folder-'+space,space=space,device=device,path=root)
+            store.db.execute('''INSERT INTO projects(id,space_id,alias,alias_key,source_id,subpath,owner_user_id,created)
                 VALUES(?,?,'same-alias','same-alias',?,'.','owner',?)''', ('project-'+space,space,'folder-'+space,now))
         for user in ('alice', 'bob'):
             store.db.execute('INSERT INTO memberships(space_id,user_id,policy) VALUES(?,?,?)', ('team',user,'{}'))

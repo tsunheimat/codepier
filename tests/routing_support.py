@@ -70,24 +70,19 @@ class RoutingFixture:
         wait_for(lambda: self.get(f'/api/devices/{self.builtin}/roots')['status'] == 'applied', timeout=45)
         assert saved
         self.space_path='/api/spaces/'+stack.space_id
-        self.put(self.space_path+'/devices/'+self.builtin,{'expected_version':0,'idempotency_key':uuid.uuid4().hex})
+        self.put(self.space_path+'/devices/'+stack.device,{'enabled':False,'expected_version':1,'idempotency_key':uuid.uuid4().hex})
         self.pool=self.post('/api/storage-pools',{'name':'Shared test storage','abstract_base':'/storage/shared-test',
+            'default_fs_device_id':self.builtin,'default_shell_device_id':stack.device,
+            'confirmed_same_storage':True,'mappings':[{'device_id':d,'path':str(stack.root)} for d in (self.builtin,stack.device)],
             'expected_version':0,'idempotency_key':uuid.uuid4().hex})
-        self.mappings={}
-        for device in (self.builtin,stack.device):
-            self.mappings[device]=self.post('/api/storage-pools/'+self.pool['id']+'/mappings',{
-                'device_id':device,'path':str(stack.root),'confirmed_same_storage':True,
-                'expected_version':0,'idempotency_key':uuid.uuid4().hex})
-        self.binding=self.post(self.space_path+'/storage',{'pool_id':self.pool['id'],'name':'Workspace shared sources',
-            'mapping_ids':[m['id'] for m in self.mappings.values()],'default_device_id':stack.device,
-            'files_device_id':self.builtin,'allowed_device_ids':[],
-            'expected_version':0,'idempotency_key':uuid.uuid4().hex})
-        self.folder=self.post(self.space_path+'/folders',{'name':'Shared project folder','source_kind':'storage',
-            'storage_binding_id':self.binding['id'],'subpath':'.','mode':'write','allow_tasks':True,
+        self.mappings={m['device_id']:m for m in self.get('/api/storage-pools/'+self.pool['id']+'/mappings')['mappings']}
+        self.folder=self.post(self.space_path+'/sources',{'pool_id':self.pool['id'],'name':'Workspace shared sources',
+            'source_kind':'storage','mapping_ids':[m['id'] for m in self.mappings.values()],
+            'subpath':'.','mode':'write','allow_tasks':True,
             'expected_version':0,'idempotency_key':uuid.uuid4().hex})
         self.execution=self.put(self.space_path+'/execution',{'expected_version':0,'idempotency_key':uuid.uuid4().hex,
             'settings':{'hooks':[{'name':'remote-tests','actions':['test'],'handler':'require_rch'}]}})
-        self.project_requests=[{'alias':alias,'folder_id':self.folder['id'],'subpath':subpath,
+        self.project_requests=[{'alias':alias,'source_id':self.folder['id'],'subpath':subpath,
             'idempotency_key':uuid.uuid4().hex} for alias,subpath in [('Routed','Imago'),('Routed-Nexus','Nexus')]]
         self.projects=[self.post(self.space_path+'/projects',body) for body in self.project_requests]
         self.project=self.projects[0]

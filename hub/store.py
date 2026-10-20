@@ -165,7 +165,7 @@ class Store:
         # Conservative invalidation is safe even if the transaction rolls back.
         # No SQL text or bound value is retained in this process-local revision.
         import re
-        if re.search(r"\b(?:sessions|session_security|users|iam_users|spaces|memberships|membership_blocks|external_identities|oidc_providers|access_profiles|grants|tokens|projects|devices|external_integrations|project_integrations|external_plugin_consents|space_devices|storage_pools|storage_mappings|space_storage|space_storage_mappings|space_folders|space_vps|vps_projects|space_shell_settings|project_shell_settings|space_execution_settings|project_execution_settings|gateway_[a-z_]+)\b", sql, re.I):
+        if re.search(r"\b(?:sessions|session_security|users|iam_users|spaces|memberships|membership_blocks|external_identities|oidc_providers|access_profiles|grants|tokens|projects|devices|external_integrations|project_integrations|external_plugin_consents|space_devices|storage_pools|storage_mappings|folders|space_source_mappings|space_sources|space_vps|vps_projects|project_shell_settings|space_execution_settings|project_execution_settings|gateway_[a-z_]+)\b", sql, re.I):
             self.session_revision += 1
 
     def after_commit(self, callback):

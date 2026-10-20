@@ -52,7 +52,7 @@ def test_many_concurrent_openers_share_one_current_schema_and_key(tmp_path,exist
     with closing(Store(directory)) as store:
         assert all(store.decrypt(value)=='same-key' for value in encrypted)
         assert store.one("SELECT count(*) AS n FROM audit WHERE action='concurrent-open'")['n']==8
-        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-2'
         assert 'resource' in {r['name'] for r in store.all('PRAGMA table_info(grants)')}
         assert not store.all('PRAGMA foreign_key_check')
         if existing:assert store.one("SELECT action FROM audit WHERE action='before-restart'")
@@ -109,7 +109,7 @@ def test_interrupted_fresh_initialization_rolls_back_without_partial_authority(t
     with closing(sqlite3.connect(directory/'hub.sqlite3')) as db:
         assert not db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
     with closing(Store(directory)) as store:
-        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-2'
         assert not store.all('PRAGMA foreign_key_check')
         assert not store.all('SELECT id FROM grants')
 

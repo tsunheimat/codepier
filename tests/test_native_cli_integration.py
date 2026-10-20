@@ -107,10 +107,10 @@ def test_admin_csrf_mapping_permissions_and_upload(cli_stack):
     chunk={'file':fid,'offset':0,'data':base64.b64encode(raw).decode(),'sha256':sha}
     r=s.must(call(s,'upload_chunk',chunk));assert r['ready'];assert s.must(call(s,'upload_chunk',chunk))['received']==len(raw)
     assert Path(r['path']).name==fid+'.png'
-    folder_path='/api/spaces/'+s.space_id+'/folders'
+    folder_path='/api/spaces/'+s.space_id+'/sources'
     def folder_tasks(allowed):
-        current=next(f for f in s.must(s.client.get(folder_path))['folders'] if f['id']==s.folder['id'])
-        values={key:current[key] for key in ('name','source_kind','device_id','device_path','mode')}
+        current=next(f for f in s.must(s.client.get(folder_path))['sources'] if f['id']==s.folder['id'])
+        values={key:current[key] for key in ('name','source_kind','folder_resource_id','subpath','mode')}
         values.update(allow_tasks=allowed,expected_version=current['version'],idempotency_key=uuid.uuid4().hex)
         path=folder_path+'/'+current['id']
         result=s.client.put(path,json=values)

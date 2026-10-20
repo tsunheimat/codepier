@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -41,14 +42,14 @@ for(const file of ['web/mcp-gateway.js','web/external-plugins.js','web/spaces.js
 '''
 
 
-@pytest.mark.parametrize('route', ['spaces','spaces/alice/projects','spaces/alice/folders','spaces/alice/storage',
-    'spaces/alice/devices','spaces/alice/shell','spaces/alice/vps','spaces/alice/profiles','spaces/alice/connections',
-    'spaces/alice/members','spaces/alice/mcp','resources/storage','resources/vps'])
+@pytest.mark.parametrize('route', ['spaces','spaces/alice/projects','spaces/alice/sources',
+    'spaces/alice/devices','spaces/alice/vps','spaces/alice/profiles','spaces/alice/connections',
+    'spaces/alice/members','spaces/alice/mcp','resources/folders','resources/storage','resources/vps'])
 def test_workspace_templates_use_real_explicit_http_projection(web, route):
     client,_=web
-    endpoints=['/api/spaces','/api/spaces/alice','/api/iam/me','/api/projects','/api/devices','/api/vps','/api/storage-pools',
+    endpoints=['/api/spaces','/api/spaces/alice','/api/iam/me','/api/projects','/api/devices','/api/folders','/api/vps','/api/storage-pools',
         '/api/spaces/alice/mcp-gateway','/api/spaces/alice/external-integrations','/api/external-plugins']
-    endpoints += ['/api/spaces/alice/'+tab for tab in ['projects','folders','storage','devices','shell','vps','profiles','connections','members','invites']]
+    endpoints += ['/api/spaces/alice/'+tab for tab in ['projects','sources','devices','vps','profiles','connections','members','invites']]
     responses={}
     for url in endpoints:
         response=client.get(url)
@@ -61,7 +62,7 @@ def test_workspace_templates_use_real_explicit_http_projection(web, route):
     result=subprocess.run([node,'-e',NODE_RENDER],input=json.dumps(payload),text=True,capture_output=True,cwd=ROOT,timeout=20)
     assert result.returncode==0,result.stderr
     assert '当前空间' not in result.stdout
-    assert 'data-ws-action' in result.stdout or 'Shared Storage' in result.stdout or 'MCP Gateway' in result.stdout
+    assert 'data-ws-action' in result.stdout or 'Storage Pool' in result.stdout or 'MCP Gateway' in result.stdout
 
 
 def test_panel_has_no_ambient_workspace_or_retired_access_scripts():
@@ -74,5 +75,5 @@ def test_panel_has_no_ambient_workspace_or_retired_access_scripts():
         assert 'S.space_id' not in text
         assert 'X-CodePier-Space' not in text
         assert 'switchSpace' not in text
-    generated=subprocess.run(['python','scripts/build_web_assets.py','--check'],cwd=ROOT,capture_output=True,text=True,timeout=20)
+    generated=subprocess.run([sys.executable,'scripts/build_web_assets.py','--check'],cwd=ROOT,capture_output=True,text=True,timeout=20)
     assert generated.returncode==0,generated.stdout+generated.stderr

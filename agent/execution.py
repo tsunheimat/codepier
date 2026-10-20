@@ -32,13 +32,12 @@ class LocalBackend:
         denial = shell_denial(self.agent.config, project, local)
         if denial:
             raise DevError(*denial, 403)
-        # Use the same bounded and realpath-checked directory semantics as files.
-        cwd = self.agent.engine.path(root, args.get('cwd', '.'))
-        if not cwd.is_dir():
-            raise DevError('INVALID_CWD', 'The selected working directory is not a directory')
         shell = self.agent.config['shell']
         requested = None
         if session:
+            cwd = self.agent.engine.path(root, args.get('cwd', '.'))
+            if not cwd.is_dir():
+                raise DevError('INVALID_CWD', 'The selected working directory is not a directory')
             requested = args.get('shell') or ('powershell' if os.name == 'nt' else 'sh')
             if requested not in {'sh', 'bash', 'zsh', 'powershell', 'cmd'}:
                 raise DevError('SESSION_SHELL_UNSUPPORTED', 'The selected Session shell is unsupported', 409)
@@ -57,8 +56,17 @@ class LocalBackend:
             else:
                 argv = [executable, '-i' if tty else '-s']
             env = {**shell['env'], **args.get('env', {})}
+        elif args.get('command'):
+            # Routed project calls already bound their structured cwd. The
+            # internal full-shell entry retains its explicit OS-account scope.
+            argv, cwd, env = prepare_shell(self.agent.config, project, local, root, args)
         else:
-            argv, _, env = prepare_shell(self.agent.config, project, local, root, args)
+            if args['timeout_seconds'] > shell['max_timeout_seconds']:
+                raise DevError('SHELL_TIMEOUT_LIMIT', 'Execution timeout exceeds the local limit', 400)
+            cwd = self.agent.engine.path(root, args.get('cwd', '.'))
+            if not cwd.is_dir():
+                raise DevError('INVALID_CWD', 'The selected working directory is not a directory')
+            argv, env = list(args['argv']), {**shell['env'], **args.get('env', {})}
         return CommandSpec(argv, cwd, env, shell['inherit_env'], shell=requested)
 
 
@@ -97,7 +105,15 @@ class ProcessSupervisor:
         result = await self.agent.run_process(operation_id, spec.argv, spec.cwd, args['timeout_seconds'],
             stream=True, task_env=spec.env, full_access=True, inherit_env=spec.inherit_env, execution_project=project)
         if spec.remote:
-            uncertain = bool(result.get('cancelled') or result.get('timed_out') or result.get('exit_code') in {None, 255})
+            code = result.get('exit_code')
+            # A killed local client (POSIX signal or Windows status) cannot
+            # report the remote command's exit status or prove it stopped.
+            uncertain = bool(result.get('cancelled') or result.get('timed_out')
+                             or code is None or code < 0 or code >= 255)
             result.update(ssh_error=ssh_error(result), outcome_uncertain=uncertain,
                           remote_execution_uncertain=uncertain)
+        else:
+            result['cwd'] = str(spec.cwd)
+            if args.get('command'):
+                result['shell'] = spec.argv[:-1]
         return result

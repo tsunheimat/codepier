@@ -16,7 +16,7 @@ SPACE='/api/spaces/audit-space'
 
 
 def mapping(**changes):
-    return {'alias':'NewMapping','folder_id':'audit-folder','subpath':'candidate',
+    return {'alias':'NewMapping','source_id':'audit-folder','subpath':'candidate',
         'idempotency_key':uuid.uuid4().hex,**changes}
 
 
@@ -32,7 +32,7 @@ def test_slow_validation_reuses_actual_operation_and_commits_only_once(api):
     assert not store.one("SELECT id FROM projects WHERE alias='NewMapping'")
     original=store.one('SELECT payload FROM operations WHERE id=?',(one['operation_id'],))
     request=json.loads(store.decrypt(original['payload']))
-    root=str(Path(store.one("SELECT device_path FROM space_folders WHERE id='audit-folder'")['device_path'])/'candidate')
+    root=str(Path(store.one("SELECT device_path FROM folders WHERE id='audit-folder'")['device_path'])/'candidate')
     assert request['project']['root']==root
     store.execute("UPDATE operations SET state='succeeded',result=? WHERE id=?",(
         json.dumps({'ok':True,'data':{'root':root,'writable':True,'allow_tasks':False}}),one['operation_id']))
@@ -102,7 +102,8 @@ def test_browser_offline_is_rejected_before_an_operation_exists(api,monkeypatch)
     app,client,_=api
     # A source may allow execution while the Runner is offline. Bypass only
     # browser-provider discovery in this fixture, not identity or admission.
-    app.state.store.execute("UPDATE space_folders SET allow_tasks=1 WHERE id='audit-folder'")
+    app.state.store.execute("UPDATE folders SET allow_tasks=1 WHERE id='audit-folder'")
+    app.state.store.execute("UPDATE space_sources SET allow_tasks=1 WHERE id='audit-folder'")
     app.state.store.execute("UPDATE devices SET info=? WHERE id='device'",(json.dumps({'shell_enabled':True}),))
     monkeypatch.setattr(app.state.runtime.integrations,'guard',lambda *_a,**_k:None)
     response=client.post('/api/tools/call',json={'tool':'browser_open','arguments':{

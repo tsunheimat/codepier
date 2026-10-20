@@ -9,7 +9,8 @@ window.CodePierProduct = (() => {
     } else if (tab === 'devices') {
       await loadBasics();
       body = devicesHTML();
-    } else if (tab === 'storage' || tab === 'vps') body = await CodePierSpaces.inventoryHTML(tab);
+    } else if (['folders', 'storage', 'vps'].includes(tab))
+      body = await CodePierSpaces.inventoryHTML(tab);
     else if (tab === 'mcp') body = await CodePierGateway.inventoryHTML();
     body = body.replace(/<h1(\s[^>]*)?>/g, '<h2$1>').replace(/<\/h1>/g, '</h2>');
     return `<div id="resources-page">${heading('资源库', 'RESOURCES', '登记基础资源；具体使用、映射和权限在工作空间配置。')}<nav class="product-tabs" aria-label="资源类别">${navigationTabs(
@@ -22,7 +23,7 @@ window.CodePierProduct = (() => {
       .join('')}</nav>${body}</div>`;
   }
   function bind() {
-    if (['storage', 'vps'].includes(S.resourceTab)) CodePierSpaces.bind();
+    if (['folders', 'storage', 'vps'].includes(S.resourceTab)) CodePierSpaces.bind();
     if (S.resourceTab === 'mcp') CodePierGateway.bind();
     $$('[data-project-detail]', $('#page')).forEach(
       (b) =>

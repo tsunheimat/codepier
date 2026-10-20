@@ -94,15 +94,15 @@ class DeviceRule(WorkspaceModel):
         return identifiers(value)
 
 
-class FolderRule(WorkspaceModel):
-    folders: list[str] = Field(min_length=1, max_length=500)
+class SourceRule(WorkspaceModel):
+    sources: list[str] = Field(min_length=1, max_length=500)
     actions: list[Literal['read', 'projects.create']] = Field(min_length=1, max_length=2)
 
     @model_validator(mode='after')
     def bounded(self):
-        identifiers(self.folders)
+        identifiers(self.sources)
         if 'read' not in self.actions or len(set(self.actions)) != len(self.actions):
-            raise ValueError('Folder rules must include read and have distinct actions')
+            raise ValueError('Source rules must include read and have distinct actions')
         return self
 
 
@@ -154,6 +154,16 @@ class StoragePoolInput(WorkspaceModel):
     name: str = Field(min_length=1, max_length=100)
     abstract_base: str = Field(min_length=1, max_length=4096)
     enabled: bool = True
+    default_fs_device_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    default_shell_device_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    shell_allowed_device_ids: list[str] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode='after')
+    def defaults(self):
+        identifiers(self.shell_allowed_device_ids)
+        if self.shell_allowed_device_ids and self.default_shell_device_id not in self.shell_allowed_device_ids:
+            raise ValueError('The shell default must be among the allowed mapped devices')
+        return self
 
     @field_validator('abstract_base')
     @classmethod
@@ -175,33 +185,44 @@ class StorageMappingInput(WorkspaceModel):
         return str(absolute_path(value))
 
 
-class SpaceStorageInput(WorkspaceModel):
-    pool_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
-    name: str = Field(min_length=1, max_length=100)
-    mapping_ids: list[str] = Field(min_length=1, max_length=500)
-    default_device_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
-    files_device_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
-    allowed_device_ids: list[str] = Field(default_factory=list, max_length=500)
-    enabled: bool = True
+class FilesSettings(WorkspaceModel):
+    mode: Literal['inherit', 'custom'] = 'inherit'
+    device_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,100}$')
 
     @model_validator(mode='after')
     def coherent(self):
-        identifiers(self.mapping_ids)
-        identifiers(self.allowed_device_ids)
-        if self.allowed_device_ids and self.default_device_id not in self.allowed_device_ids:
-            raise ValueError('The default must be in the selected allowed devices')
+        if (self.mode == 'custom') != (self.device_id is not None):
+            raise ValueError('Select a device only for a custom files override')
         return self
 
 
 class FolderInput(WorkspaceModel):
     name: str = Field(min_length=1, max_length=100)
-    source_kind: Literal['device', 'storage']
-    device_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,100}$')
-    device_path: str | None = Field(default=None, max_length=4096)
-    storage_binding_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    device_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    device_path: str = Field(min_length=1, max_length=4096)
+    mode: Literal['read', 'write'] = 'read'
+    allow_tasks: bool = False
+    enabled: bool = True
+
+    @model_validator(mode='after')
+    def source(self):
+        self.device_path = str(absolute_path(self.device_path))
+        if self.allow_tasks and self.mode != 'write':
+            raise ValueError('Commands require an explicitly writable folder')
+        return self
+
+
+class SourceInput(WorkspaceModel):
+    name: str = Field(min_length=1, max_length=100)
+    source_kind: Literal['folder', 'storage']
+    folder_resource_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    pool_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    mapping_ids: list[str] = Field(default_factory=list, max_length=500)
     subpath: str = Field(default='.', min_length=1, max_length=4096)
     mode: Literal['read', 'write'] = 'read'
     allow_tasks: bool = False
+    files: FilesSettings = Field(default_factory=FilesSettings)
+    shell: ShellSettings = Field(default_factory=ShellSettings)
     enabled: bool = True
 
     @field_validator('subpath')
@@ -211,21 +232,25 @@ class FolderInput(WorkspaceModel):
 
     @model_validator(mode='after')
     def source(self):
-        if self.source_kind == 'device':
-            if not self.device_id or not self.device_path or self.storage_binding_id is not None or self.subpath != '.':
-                raise ValueError('A device folder requires exactly one device and absolute path')
-            self.device_path = str(absolute_path(self.device_path))
-        elif not self.storage_binding_id or self.device_id is not None or self.device_path is not None:
-            raise ValueError('A storage folder requires exactly one workspace storage binding')
+        identifiers(self.mapping_ids)
+        if self.source_kind == 'folder':
+            if not self.folder_resource_id or self.pool_id is not None or self.mapping_ids:
+                raise ValueError('A Folder source binds exactly one inventory Folder')
+            if self.files.mode != 'inherit' or self.shell.mode == 'custom':
+                raise ValueError('A Folder uses only its own device')
+        elif not self.pool_id or self.folder_resource_id is not None:
+            raise ValueError('A Storage source binds exactly one inventory Pool')
         if self.allow_tasks and self.mode != 'write':
-            raise ValueError('Commands require an explicitly writable folder')
+            raise ValueError('Commands require an explicitly writable source')
+        if not self.allow_tasks and self.shell.mode == 'custom':
+            raise ValueError('A source without commands cannot carry a shell override')
         return self
 
 
 class ProjectInput(WorkspaceModel):
     alias: str = Field(min_length=1, max_length=100)
     description: str = Field(default='', max_length=2000)
-    folder_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    source_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
     subpath: str = Field(default='.', min_length=1, max_length=4096)
 
     @field_validator('subpath')

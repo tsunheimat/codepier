@@ -52,9 +52,9 @@ def runtime(tmp_path):
         store.db.execute('INSERT INTO devices(id,name,secret,created,owner_user_id,info) VALUES(?,?,?,?,?,?)',
                          ('dev', 'home', store.encrypt(token()), now, 'owner', json.dumps({'shell_enabled': True})))
         store.db.execute('INSERT INTO space_devices(space_id,device_id) VALUES(?,?)', ('fixture', 'dev'))
-        store.db.execute('INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode,allow_tasks) VALUES(?,?,?,?,?,?,?,?)',
-                         ('folder', 'fixture', 'Fixture folder', 'device', 'dev', str(root), 'write', 1))
-        store.db.execute('INSERT INTO projects(id,space_id,alias,alias_key,folder_id,owner_user_id,created) VALUES(?,?,?,?,?,?,?)',
+        from tests.current_model import CurrentModel
+        CurrentModel(store).folder('folder',space='fixture',device='dev',path=root,mode='write',allow_tasks=True)
+        store.db.execute('INSERT INTO projects(id,space_id,alias,alias_key,source_id,owner_user_id,created) VALUES(?,?,?,?,?,?,?)',
                          ('proj', 'fixture', 'Fixture', 'fixture', 'folder', 'owner', now))
     instance = Runtime(store)
     instance.wait_seconds = 0
@@ -96,7 +96,7 @@ def file_call(agent, name, **args):
 def test_catalog_compact_and_protocol_boundaries():
     core = tool_definitions('core')
     assert {t['name'] for t in core} == CORE_TOOLS | QUERY_TOOLS | {'get_profile', 'get_access_context',
-        'session', 'get_execution_options', 'folders_list', 'projects_create'}
+        'session', 'get_execution_options', 'sources_list', 'projects_create'}
     # The new Session/options/folder tools add schemas, not untyped catch-alls.
     assert len(json.dumps(core, ensure_ascii=False).encode()) < 110000
     assert {'browser', 'computer', 'exec', 'edit'} <= {t['name'] for t in tool_definitions('full')}
@@ -302,7 +302,7 @@ async def test_complete_capability_discovery_and_no_unmapped_public_tool(runtime
         'session', 'get_execution_options', 'project_routes_get'}
     for profile in ('core', 'coding', 'full'):
         assert {t['name'] for t in tool_definitions(profile)} == CORE_TOOLS | QUERY_TOOLS | {
-            'get_profile', 'get_access_context', 'session', 'get_execution_options', 'folders_list', 'projects_create'}
+            'get_profile', 'get_access_context', 'session', 'get_execution_options', 'sources_list', 'projects_create'}
     for name, operations in CORE_ACTIONS.items():
         for operation, backend in operations.items():
             help = await instance.invoke('workspace', {'operation': 'help', 'tool': name, 'action': operation}, principal)

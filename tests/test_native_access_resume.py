@@ -21,7 +21,7 @@ def test_native_resume_probe_rejects_other_space_and_disabled_mapping(team):
     denied=browsers['alice'].get('/api/native/access?project=project-other-team')
     assert denied.status_code in (403,404)
     assert 'allowed' not in denied.json()
-    app.state.store.execute("UPDATE space_folders SET allow_tasks=0 WHERE id='folder-team'")
+    app.state.store.execute("UPDATE space_sources SET allow_tasks=0 WHERE id='folder-team'")
     unavailable=browsers['alice'].get('/api/native/access?project=project-team')
     assert unavailable.status_code==409
     assert unavailable.json()['error']['code']=='DEFAULT_DEVICE_UNAVAILABLE'

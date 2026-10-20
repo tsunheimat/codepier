@@ -16,7 +16,7 @@ import tempfile
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from agent.shell import prepare_shell, shell_denial
+from agent.shell import shell_denial
 from shared.routing_contracts import RCHConfig, relative_source
 from shared.util import DevError, atomic_json
 
@@ -210,17 +210,13 @@ async def execute(agent, identifier, project, args):
     if args['command']:
         if plan.get('provider') != 'device' or args['action'] != 'shell':
             raise DevError('RCH_DIRECT_ARGV_REQUIRED', 'RCH does not accept an implicit shell command', 400)
-        command, cwd, environment = prepare_shell(agent.config, project, spec, root, args)
-    else:
-        # Git/test cwd is relative to the authorized view; no sibling-root inference.
-        cwd = agent.engine.path(root, relative_source(args['cwd']))
-        command, environment = list(args['argv']), {**agent.config['shell']['env'], **args['env']}
     if plan.get('provider') == 'device':
-        result = await agent.run_process(identifier, command, cwd, args['timeout_seconds'], stream=True,
-            task_env=environment, full_access=True, inherit_env=agent.config['shell']['inherit_env'], execution_project=project)
-        return {**result, 'route': project['_route_context'], 'provider': 'device', 'cwd': str(cwd)}
+        from agent.execution import ProcessSupervisor
+        result = await ProcessSupervisor(agent).run(identifier, project, args)
+        return {**result, 'route': project['_route_context'], 'provider': 'device'}
     if plan.get('provider') != 'rch' or args['action'] != 'test' or not args['argv']:
         raise DevError('ROUTE_PLAN_INVALID', 'Invalid RCH execution plan', 403)
+    cwd = agent.engine.path(root, relative_source(args['cwd']))
     executable = local_rch(agent)
     await probe_rch(agent, identifier, executable, root, project)
     if identifier in agent.cancelled or agent.journal.is_cancelled(identifier) or agent.stop_event.is_set():

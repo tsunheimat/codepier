@@ -47,11 +47,11 @@ def test_project_default_can_only_choose_its_source(ws):
 
 def test_workspace_restriction_cannot_be_undone_by_project(ws):
     with ws.store.transaction():
-        ws.store.db.execute('INSERT INTO space_shell_settings(space_id,settings) VALUES(?,?)',('alice',json.dumps({'mode':'custom','default_device_id':'a','allowed_device_ids':['a']})))
+        ws.store.db.execute('UPDATE space_sources SET shell=? WHERE space_id=?',(json.dumps({'mode':'custom','default_device_id':'a','allowed_device_ids':['a']}),'alice'))
     with pytest.raises(DevError):
         validate_project_shell(ws.store,ws.project,ShellSettings(mode='custom',default_device_id='b'))
     with ws.store.transaction():
-        ws.store.db.execute('UPDATE space_shell_settings SET settings=? WHERE space_id=?',(json.dumps({'mode':'disabled'}),'alice'))
+        ws.store.db.execute('UPDATE space_sources SET shell=? WHERE space_id=?',(json.dumps({'mode':'disabled'}),'alice'))
     with pytest.raises(DevError,match='disabled'):
         resolve_shell(ws.store,ws.project,project_override=ShellSettings(mode='custom',default_device_id='a'))
 

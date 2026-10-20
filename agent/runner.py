@@ -32,7 +32,7 @@ from shared.computer_diagnostics import safe_detail
 from shared.computer_contracts import COMPUTER_TOOLS
 from shared.build_info import BuildIdentity
 from agent.config import validate_config
-from agent.shell import execution_info, prepare_shell
+from agent.shell import execution_info
 from shared.contracts import TOOLS, MUTATING
 from shared.crypto import SecureChannel
 from shared.util import DevError, VERSION
@@ -709,10 +709,6 @@ class Agent:
                 from shared.contracts import Task
                 forwarded = Task.model_validate({k: v for k, v in args.items() if k in Task.model_fields}).model_dump()
                 result = await self.execute(id, 'tasks_run', project, forwarded)
-            elif args['target'] == 'agent':
-                from shared.contracts import ShellExec
-                forwarded = ShellExec.model_validate({k: v for k, v in args.items() if k in ShellExec.model_fields}).model_dump()
-                result = await self.execute(id, 'shell_exec', project, forwarded)
             else:
                 from agent.execution import ProcessSupervisor
                 result = await ProcessSupervisor(self).run(id, project, args)
@@ -739,12 +735,8 @@ class Agent:
             try:return await asyncio.shield(work)
             except asyncio.CancelledError:return await work
         if tool == "shell_exec":
-            root, spec = self.engine.root(project, True)
-            command, cwd, env = prepare_shell(self.config, project, spec, root, args)
-            result = await self.run_process(id, command, cwd, args["timeout_seconds"], stream=True,
-                                            task_env=env, full_access=True,
-                                            inherit_env=self.config["shell"]["inherit_env"], execution_project=project)
-            return {**result, "cwd": str(cwd), "shell": command[:-1]}
+            from agent.execution import ProcessSupervisor
+            return await ProcessSupervisor(self).run(id, project, args)
         if tool == "tasks_list":
             _, spec = self.engine.root(project)
             enabled = project.get("allow_tasks", False) and spec.get("allow_tasks", False)

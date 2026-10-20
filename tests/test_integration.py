@@ -12,7 +12,7 @@ def test_real_outbound_agent_online_and_alias(stack):
     devices=stack.client.get('/api/devices').json()['devices'];assert devices[0]['online']
     resolved=stack.mcp('workspace',{'operation':'resolve','project':'iMaGo'})['structuredContent']
     assert resolved['id']==stack.project['id']
-    assert stack.call('projects_resolve',{'project':stack.project['id']})['root']==f"/folders/{stack.folder['id']}/Imago"
+    assert stack.call('projects_resolve',{'project':stack.project['id']})['root']==f"/folders/{stack.folder_resource['id']}/Imago"
     assert len(stack.mcp('project_query',{'operation':'list'})['structuredContent']['projects'])==3
 
 
@@ -41,7 +41,7 @@ def test_read_tree_and_search_codepier(stack):
 
 def test_mapping_validation_alias_uniqueness(stack):
     path=f'/api/spaces/{stack.space_id}/projects'
-    body={'alias':'IMAGO','folder_id':stack.folder['id'],'subpath':'Imago','idempotency_key':ident()}
+    body={'alias':'IMAGO','source_id':stack.folder['id'],'subpath':'Imago','idempotency_key':ident()}
     assert stack.client.post(path,json=body).status_code==409
     for subpath in ('../outside','/absolute'):
         invalid={**body,'alias':'Outside','subpath':subpath,'idempotency_key':ident()}

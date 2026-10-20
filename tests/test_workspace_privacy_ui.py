@@ -227,11 +227,11 @@ def test_suspended_work_cannot_be_relabelled_to_another_account(privacy_page):
     assert page.evaluate('S.suspendedMappings') is None
 
 
-@pytest.mark.parametrize('changed',['folder_id','subpath','space_id','missing_snapshot'])
+@pytest.mark.parametrize('changed',['source_id','subpath','space_id','missing_snapshot'])
 def test_quarantined_draft_requires_the_same_folder_binding_not_just_same_path(privacy_page,changed):
     page=privacy_page
     page.evaluate("""async changed => {
-      const original={id:'p',space_id:'one',folder_id:'folder-a',subpath:'app',root:'/shared/app',device_id:'d'};
+      const original={id:'p',space_id:'one',source_id:'folder-a',subpath:'app',root:'/shared/app',device_id:'d'};
       S.projects=changed==='missing_snapshot'?[]:[original];
       Object.assign(S.work,{project:'p',content:'OLD_BINDING_DRAFT',dirty:true});
       suspendPanelContext(false,true);

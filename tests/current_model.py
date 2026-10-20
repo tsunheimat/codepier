@@ -22,7 +22,7 @@ from shared.crypto import digest, token
 class CurrentModel:
     def __init__(self, store):
         self.store=store
-        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-2'
 
     def user(self, identifier, *, username=None, password_hash='!isolated-fixture', instance_admin=None):
         with self.store.transaction():
@@ -60,19 +60,20 @@ class CurrentModel:
 
     def folder(self, identifier, *, space, device, path, mode='write', allow_tasks=True):
         assert Path(path).is_absolute()
-        assert self.store.one('SELECT 1 FROM space_devices WHERE space_id=? AND device_id=?',(space,device))
-        self.store.execute('''INSERT INTO space_folders
-            (id,space_id,name,source_kind,device_id,device_path,mode,allow_tasks)
-            VALUES(?,?,?,'device',?,?,?,?)''',(identifier,space,identifier,device,str(path),mode,int(allow_tasks)))
+        owner=self.store.one('SELECT owner_user_id FROM devices WHERE id=?',(device,))['owner_user_id']
+        self.store.execute('''INSERT INTO folders(id,name,device_id,device_path,owner_user_id,mode,allow_tasks,enabled,validated_at,created,updated)
+            VALUES(?,?,?,?,?,?,?,1,1,1,1)''',(identifier,identifier,device,str(path),owner,mode,int(allow_tasks)))
+        self.store.execute('''INSERT INTO space_sources(id,space_id,name,source_kind,folder_resource_id,mode,allow_tasks,validated_at)
+            VALUES(?,?,?,'folder',?,?,?,1)''',(identifier,space,identifier,identifier,mode,int(allow_tasks)))
         return identifier
 
     def project(self, identifier, *, space, folder, owner, alias=None, subpath='.'):
-        assert self.store.one('SELECT 1 FROM space_folders WHERE id=? AND space_id=?',(folder,space))
+        assert self.store.one('SELECT 1 FROM space_sources WHERE id=? AND space_id=?',(folder,space))
         from hub.workspace_mutations import label_key
         # Use the canonical name and index-key normalization.
         normalized,key=label_key(alias or identifier)
         self.store.execute('''INSERT INTO projects
-            (id,alias,alias_key,folder_id,subpath,space_id,owner_user_id,created)
+            (id,alias,alias_key,source_id,subpath,space_id,owner_user_id,created)
             VALUES(?,?,?,?,?,?,?,?)''',(identifier,normalized,key,folder,subpath,space,owner,time.time()))
         return identifier
 

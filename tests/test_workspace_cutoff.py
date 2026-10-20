@@ -53,7 +53,7 @@ def test_current_version_marker_does_not_admit_old_columns(table, column):
         assert list(db.iterdump()) == before
 
 
-@pytest.mark.parametrize('marker', [None, '6', '7', '10', 'workspace-0'])
+@pytest.mark.parametrize('marker', [None, '6', '7', '10', 'workspace-0', 'workspace-1'])
 def test_old_database_is_not_migrated_or_reset(marker):
     with closing(sqlite3.connect(':memory:')) as db:
         db.execute('CREATE TABLE preserved_payload(value TEXT)')
@@ -72,6 +72,7 @@ def test_removed_http_routes_have_no_alias_redirect_or_write_path(web):
     removed = [
         '/api/access-roles', '/api/access-profiles', '/api/grants',
         '/api/source-roots', '/api/action-routes', '/api/project-routing',
+        '/api/spaces/alice/folders', '/api/spaces/alice/storage', '/api/spaces/alice/shell',
         '/api/iam/spaces', '/api/iam/current-space',
         '/auth/oidc/fixture-provider/callback',
     ]

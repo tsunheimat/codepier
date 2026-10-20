@@ -177,7 +177,7 @@ def test_root_removal_keeps_project_and_files(panel, tmp_path):
     response = panel.client.put(url(panel), json={"roots": [], "revision": 1})
     assert response.json()["revision"] == 2 and response.json()["roots"] == []
     assert file.read_text() == "source"
-    assert panel.store.one("SELECT folder_id FROM projects WHERE id='project'")['folder_id']=='mounted-folder'
-    assert panel.store.one("SELECT device_path FROM space_folders WHERE id='mounted-folder'")['device_path']==str(workspace)
+    assert panel.store.one("SELECT source_id FROM projects WHERE id='project'")['source_id']=='mounted-folder'
+    assert panel.store.one("SELECT device_path FROM folders WHERE id='mounted-folder'")['device_path']==str(workspace)
     audit = panel.store.one("SELECT detail FROM audit WHERE action='device.builtin_roots_updated' ORDER BY id DESC")
     assert json.loads(audit["detail"])["revision"] == 2

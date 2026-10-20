@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from hub.workspace_schema import initialize
 from shared.workspace_contracts import (FolderInput, ProjectInput, ShellSettings,
-    SpaceStorageInput, VPSBindingInput, absolute_path, mapped_path, relative_path)
+    SourceInput, StoragePoolInput, VPSBindingInput, absolute_path, mapped_path, relative_path)
 
 
 @pytest.fixture
@@ -40,19 +40,23 @@ def test_platform_mapping():
 
 
 def test_project_has_one_source_and_root_is_valid():
-    assert ProjectInput(alias='codepier', folder_id='folder', subpath='.').subpath == '.'
+    assert ProjectInput(alias='codepier', source_id='folder', subpath='.').subpath == '.'
     with pytest.raises(ValidationError):
-        ProjectInput(alias='codepier', folder_id='folder', device_id='another-device')
+        ProjectInput(alias='codepier', source_id='folder', device_id='another-device')
     with pytest.raises(ValidationError):
-        ProjectInput(alias='codepier', folder_id='folder', root='/unrelated')
+        ProjectInput(alias='codepier', source_id='folder', root='/unrelated')
 
 
-def test_folder_is_exactly_one_source():
-    FolderInput(name='source', source_kind='device', device_id='dev', device_path='/source')
+def test_folder_and_pool_are_peer_sources():
+    FolderInput(name='folder', device_id='dev', device_path='/source')
+    SourceInput(name='direct',source_kind='folder',folder_resource_id='folder')
+    SourceInput(name='shared',source_kind='storage',pool_id='pool')
     with pytest.raises(ValidationError):
-        FolderInput(name='source', source_kind='device', device_id='dev', device_path='/source', storage_binding_id='pool')
+        SourceInput(name='both',source_kind='folder',folder_resource_id='folder',pool_id='pool')
     with pytest.raises(ValidationError):
-        FolderInput(name='source', source_kind='storage', storage_binding_id='pool', device_id='dev')
+        SourceInput(name='old',source_kind='storage',source_binding_id='binding')
+    with pytest.raises(ValidationError):
+        ProjectInput(alias='old',folder_id='folder')
 
 
 def test_shell_has_no_hidden_override():
@@ -66,11 +70,13 @@ def test_shell_has_no_hidden_override():
         ShellSettings(mode='custom')
 
 
-def test_storage_requires_default_and_files_device():
+def test_pool_requires_defaults_and_source_can_inherit():
     with pytest.raises(ValidationError):
-        SpaceStorageInput(pool_id='pool', name='share', mapping_ids=['mapping'], files_device_id='a')
-    value = SpaceStorageInput(pool_id='pool', name='share', mapping_ids=['mapping'], default_device_id='a', files_device_id='a')
-    assert value.allowed_device_ids == []
+        StoragePoolInput(name='share',abstract_base='/storage/share')
+    value=SourceInput(name='share',source_kind='storage',pool_id='pool')
+    assert value.files.mode==value.shell.mode=='inherit'
+    with pytest.raises(ValidationError):
+        SourceInput(name='share',source_kind='storage',pool_id='pool',files={'mode':'inherit','device_id':'a'})
 
 
 @pytest.mark.parametrize('mode', ['both', 'project_only'])
@@ -89,7 +95,7 @@ def test_schema_contains_no_role_or_dual_project_model(db):
     names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert not names & {'access_roles','role_assignments','source_roots','action_routes','project_action_routes'}
     cols={r[1] for r in db.execute('PRAGMA table_info(projects)')}
-    assert {'folder_id','subpath','space_id'} <= cols
+    assert {'source_id','subpath','space_id'} <= cols
     assert not cols & {'device_id','root','routing_managed','source_root_id'}
     assert 'level' not in {r[1] for r in db.execute('PRAGMA table_info(memberships)')}
 

@@ -408,15 +408,17 @@ def acceptance(output):
                     db.execute('PRAGMA foreign_keys=ON')
                     source=folder/'offline-source';source.mkdir()
                     with db:
-                        device='fixture-'+uuid.uuid4().hex;folder_id='folder-'+uuid.uuid4().hex
+                        device='fixture-'+uuid.uuid4().hex;source_id='folder-'+uuid.uuid4().hex
                         db.execute('INSERT INTO devices(id,name,secret,owner_user_id,created) VALUES(?,?,?,?,?)',
                             (device,'offline fixture','not-a-live-credential',identities[0]['id'],time.time()))
                         db.execute('INSERT INTO space_devices(space_id,device_id) VALUES(?,?)',(sid,device))
-                        db.execute('''INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode)
-                            VALUES(?,?,?,'device',?,?,'read')''',(folder_id,sid,'Isolated source',device,str(source)))
+                        db.execute("""INSERT INTO folders(id,name,device_id,device_path,owner_user_id,mode,allow_tasks,enabled,validated_at,created,updated)
+                            VALUES(?,?,?,?,?,'read',0,1,1,1,1)""",(source_id,'Isolated folder',device,str(source),identities[0]['id']))
+                        db.execute("""INSERT INTO space_sources(id,space_id,name,source_kind,folder_resource_id,mode,allow_tasks,validated_at)
+                            VALUES(?,?,?,'folder',?,'read',0,1)""",(source_id,sid,'Isolated source',source_id))
                         project_id='fixture-'+uuid.uuid4().hex
-                        db.execute('''INSERT INTO projects(id,alias,alias_key,folder_id,subpath,space_id,owner_user_id,created)
-                            VALUES(?,?,?,? ,'.',?,?,?)''',(project_id,'new-project','new-project',folder_id,sid,identities[0]['id'],time.time()))
+                        db.execute('''INSERT INTO projects(id,alias,alias_key,source_id,subpath,space_id,owner_user_id,created)
+                            VALUES(?,?,?,? ,'.',?,?,?)''',(project_id,'new-project','new-project',source_id,sid,identities[0]['id'],time.time()))
                     projects=required(rpc('project_query',arguments={'operation':'list'}))['result']['structuredContent']['projects']
                     assert project_id in {p['id'] for p in projects}
                     fresh = required(alice.post('/oauth/token', data={'grant_type':'refresh_token','refresh_token':tokens['refresh_token'],

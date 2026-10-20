@@ -72,7 +72,7 @@ async def test_metadata_coalescing_respects_receipt_boundaries(runtime, change):
             'project_rules':[{'projects':['proj'],'actions':['read']}]})
         _,p=model.connection(user=p.user_id,space=p.space_id,profile=profile)
     elif change == 'root':
-        r.store.execute("UPDATE space_folders SET device_path='/tmp/other',version=version+1 WHERE id='test-folder'")
+        r.store.execute("UPDATE folders SET device_path='/tmp/other',version=version+1 WHERE id='test-folder'")
     elif change == 'explicit':
         args['idempotency_key'] = 'intentional-new-query'
     second = await r.invoke('tasks_list', args, p)

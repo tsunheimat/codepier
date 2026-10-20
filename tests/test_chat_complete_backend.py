@@ -198,7 +198,7 @@ async def test_full_export_click_boundary_sanitized_and_mapping_auth(service,fmt
     assert 'line-349' in data and 'too-late' not in data and 'secret' not in data
     assert 'attachment;' in response.headers['content-disposition']
     if fmt=='json':assert len(json.loads(data))==350
-    obj.runtime.store.execute("UPDATE space_folders SET allow_tasks=0 WHERE id='native-folder'")
+    obj.runtime.store.execute("UPDATE space_sources SET allow_tasks=0 WHERE id='native-folder'")
     with pytest.raises(DevError) as denied:await endpoint(sid,request(),fmt)
     assert denied.value.code=='DEFAULT_DEVICE_UNAVAILABLE'
 
@@ -274,7 +274,7 @@ async def test_catalog_hub_rechecks_mapping_after_await(service):
     auth=native_auth(obj)
     endpoint=next(r.endpoint for r in make_native_router(auth,obj.runtime).routes if r.path=='/api/native/{action}')
     async def native_request(action,p,args,*,reauthenticate=None):
-        obj.runtime.store.execute("UPDATE space_folders SET device_path=device_path||'/changed',version=version+1 WHERE id='native-folder'")
+        obj.runtime.store.execute("UPDATE folders SET device_path=device_path||'/changed',version=version+1 WHERE id='native-folder'")
         return {'models':[]}
     obj.request=native_request
     req=request([(b'x-rd-csrf',b'valid')],json.dumps({'project':'project','args':{'cli':'pi'}}).encode())

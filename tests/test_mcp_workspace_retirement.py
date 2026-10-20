@@ -10,7 +10,7 @@ from shared.util import DevError
 def test_text_catalog_keeps_core_queries_identity_and_attachment_contract(profile):
     definitions = {item['name']: item for item in tool_definitions(profile)}
     assert set(definitions) == CORE_TOOLS | {'project_query', 'task_query', 'get_profile', 'get_access_context',
-        'session', 'get_execution_options', 'folders_list', 'projects_create'}
+        'session', 'get_execution_options', 'sources_list', 'projects_create'}
     for item in definitions.values():
         assert 'openai/ui' not in item['_meta']
         assert 'openai/outputTemplate' not in item['_meta']

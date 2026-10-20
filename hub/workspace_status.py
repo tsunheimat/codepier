@@ -31,7 +31,7 @@ def operation_summary(runtime, identifier, principal, project, workspace_id):
     if op.get('route_context'):
         import json
         route=json.loads(op['route_context'])
-        if route.get('folder_id')!=project['folder_id']:
+        if route.get('source_id')!=project['source_id']:
             return None
     elif op['device_id']!=project['device_id']:
         return None

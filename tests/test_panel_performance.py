@@ -289,7 +289,7 @@ def test_current_panel_indexes_survive_a_normal_restart(tmp_path):
     finally:store.close()
     store=Store(directory)
     try:
-        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-2'
         assert store.one("SELECT value FROM meta WHERE key='panel-current-preserve'")['value']=='yes'
         assert store.all("SELECT name,sql FROM sqlite_master WHERE name LIKE 'operations_panel_%' ORDER BY name")==before
     finally:store.close()

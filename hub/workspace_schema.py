@@ -4,16 +4,16 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 'workspace-1'
+SCHEMA_VERSION = 'workspace-2'
 SCHEMA = Path(__file__).with_name('schema.sql').read_text(encoding='utf-8')
 
 # These are rejection signatures, never migration inputs or supported tables.
 # Changing only a schema marker must not admit a mixed old/new runtime model.
 RETIRED_TABLES = frozenset({'access_roles', 'role_assignments', 'role_grants',
     'source_roots', 'source_mounts', 'action_routes', 'space_route_defaults',
-    'project_action_routes', 'workflows', 'workflow_events', 'workflow_replays'})
+    'project_action_routes', 'space_folders', 'space_storage', 'space_storage_mappings', 'space_shell_settings', 'workflows', 'workflow_events', 'workflow_replays'})
 RETIRED_COLUMNS = {
-    'projects': frozenset({'device_id', 'root', 'routing_managed', 'source_root_id'}),
+    'projects': frozenset({'device_id', 'root', 'routing_managed', 'source_root_id', 'folder_id'}),
     'access_profiles': frozenset({'role_id', 'user_id', 'scopes', 'projects'}),
     'grants': frozenset({'role_id', 'authorization_mode', 'scopes', 'projects'}),
     'memberships': frozenset({'level', 'role_id'}),

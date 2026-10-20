@@ -102,11 +102,11 @@ def test_http_inventory_idempotency_versions_csrf_and_bound_delete(web):
     assert must(client.delete('/api/vps/'+first['id'], params={'expected_version': saved['version']}))['remote_server_deleted'] is False
 
 
-def test_cross_workspace_device_project_and_resource_binding_rejected_atomically(web):
+def test_inactive_launcher_cross_workspace_project_and_duplicate_resource_rejected_atomically(web):
     client, app = web
     resource = must(client.post('/api/vps', json=input_body()))
     store = app.state.store
-    store.execute("DELETE FROM space_devices WHERE space_id='alice' AND device_id='c'")
+    store.execute("UPDATE devices SET enabled=0 WHERE id='c'")
     for changes, status, code in [
         (dict(runner_device_id='c'), 409, 'SOURCE_DEVICE_UNAVAILABLE'),
         (dict(display_mode='both', projects=['project', 'missing']), 404, 'PROJECT_NOT_FOUND'),
@@ -160,7 +160,7 @@ def test_read_only_profile_cannot_execute_or_discover_ungranted_vps(web):
 
 def test_whole_vps_execution_needs_no_project_or_source_mapping(inventory):
     runtime, owner, _, binding = inventory
-    runtime.store.execute("UPDATE space_folders SET enabled=0")
+    runtime.store.execute("UPDATE space_sources SET enabled=0")
     target = runtime.vps.execution_project({'target': 'vps:'+binding['id']}, owner)
     assert target['id'] is None and target['root'] == ''
     assert target['device_id'] == 'a'
@@ -188,7 +188,7 @@ def test_queued_transport_never_substitutes_another_resource(inventory, change):
     request = {'project': selected, 'args': {'target': 'vps:'+binding['id']}}
     statements = {
         'disable_binding': ('UPDATE space_vps SET enabled=0 WHERE id=?', (binding['id'],)),
-        'disable_device': ("UPDATE space_devices SET enabled=0 WHERE device_id='a' AND space_id='alice'", ()),
+        'disable_device': ("UPDATE devices SET enabled=0 WHERE id='a'", ()),
         'change_runner': ("UPDATE space_vps SET runner_device_id='b' WHERE id=?", (binding['id'],)),
         'change_reference': ("UPDATE space_vps SET connection_ref='another' WHERE id=?", (binding['id'],)),
         'remove_binding': ('DELETE FROM space_vps WHERE id=?', (binding['id'],)),
@@ -358,3 +358,12 @@ def test_profile_sharing_never_shares_original_vps_operation_receipts(tmp_path):
             assert 'private-vps-result' not in json.dumps(response)
         original = server.mcp('process', {'operation': 'get', 'operation_ids': [receipt['operation_id']]})
         assert 'private-vps-result' in json.dumps(original)
+
+
+def test_removing_independent_device_allocation_preserves_vps_launcher(inventory):
+    runtime,owner,_,binding=inventory
+    selected=runtime.vps.execution_project({'target':'vps:'+binding['id']},owner)
+    request={'project':selected,'args':{'target':'vps:'+binding['id']}}
+    runtime.store.execute("DELETE FROM space_devices WHERE device_id='a' AND space_id='alice'")
+    assert runtime.vps.permission_error(request,None,owner) is None
+    assert runtime.vps.transport(request,None)['project']['_ssh_target']['vps_id']==binding['id']

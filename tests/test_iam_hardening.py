@@ -47,7 +47,7 @@ def test_operation_key_is_scoped_to_immutable_connection_workspace(team):
     assert denied.json()['result']['isError'] is True
 
 
-@pytest.mark.parametrize('table,identifier',[('space_folders','folder-team'),('projects','project-team')])
+@pytest.mark.parametrize('table,identifier',[('space_sources','folder-team'),('projects','project-team')])
 def test_bound_resource_workspace_cannot_change_under_children(team, table, identifier):
     app,_=team
     with pytest.raises(sqlite3.IntegrityError,match='workspace identity is immutable'):

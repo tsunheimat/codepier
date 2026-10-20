@@ -16,7 +16,7 @@ from tests.identity_fixtures import (team, must, set_member, project_policy,
 
 
 def artifact(app, *, space='team', owner='owner', grant=None, created=None):
-    source=app.state.store.one('SELECT * FROM space_folders WHERE id=?',('folder-'+space,))
+    source=app.state.store.one('SELECT f.* FROM space_sources s JOIN folders f ON f.id=s.folder_resource_id WHERE s.id=?',('folder-'+space,))
     identifier=uuid.uuid4().hex
     now=time.time() if created is None else created
     app.state.store.execute('''INSERT INTO artifacts
@@ -90,7 +90,7 @@ def test_overview_rechecks_mapping_and_membership_before_disclosure(team,change)
     identifier=artifact(app,owner='alice')
     assert must(overview(b['alice']))['artifacts'][0]['artifact_id']==identifier
     if change=='folder':
-        app.state.store.execute("UPDATE space_folders SET device_path=device_path||'/changed',version=version+1 WHERE id='folder-team'")
+        app.state.store.execute("UPDATE folders SET device_path=device_path||'/changed',version=version+1 WHERE id='folder-team'")
     else:
         app.state.store.execute("UPDATE memberships SET active=0 WHERE space_id='team' AND user_id='alice'")
     assert must(overview(b['alice']))['artifacts']==[]

@@ -128,11 +128,12 @@ class Stack:
         atomic_json(self.config_path,self.config); self.start_agent()
         self.must(self.client.put(f'/api/spaces/{self.space_id}/devices/{self.device}',json={
             'expected_version':0,'idempotency_key':uuid.uuid4().hex}))
-        self.folder=self.create_folder({'name':'Integration sources','source_kind':'device',
+        self.folder_resource=self.create_folder({'name':'Integration sources',
             'device_id':self.device,'device_path':str(self.root),'mode':'write','allow_tasks':True})
+        self.folder=self.create_source({'name':'Integration sources','source_kind':'folder','folder_resource_id':self.folder_resource['id'],'mode':'write','allow_tasks':True})
         self.projects=[]
         for p in (self.imago,self.nexus,self.lumen):
-            self.projects.append(self.create_project({'alias':p.name,'folder_id':self.folder['id'],'subpath':p.name,
+            self.projects.append(self.create_project({'alias':p.name,'source_id':self.folder['id'],'subpath':p.name,
                 'description':p.name+' 本地联调示例'}))
         self.project=self.projects[0]
         self.profile=self.create_profile({'project_rules':[{'projects':[p['id'] for p in self.projects],
@@ -148,7 +149,7 @@ class Stack:
         # translation occurs in this fixture. Retry only the same saved request
         # after observing its original validation operation.
         body={'idempotency_key':uuid.uuid4().hex,**body}
-        path=f'/api/spaces/{self.space_id}/{kind}'
+        path='/api/folders' if kind=='inventory-folder' else f'/api/spaces/{self.space_id}/{kind}'
         response=self.client.post(path,json=body)
         if response.status_code==409 and response.json().get('error',{}).get('code')=='VALIDATION_PENDING':
             operation=self.poll(response.json()['error']['operation_id'],timeout=45)
@@ -156,7 +157,9 @@ class Stack:
             response=self.client.post(path,json=body)
         return self.must(response)
     def create_folder(self, body):
-        return self.validated_create('folders',body)
+        return self.validated_create('inventory-folder',body)
+    def create_source(self, body):
+        return self.validated_create('sources',body)
     def create_project(self, body):
         return self.validated_create('projects',body)
     def create_profile(self, policy, *, label=None):

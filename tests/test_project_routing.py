@@ -15,17 +15,17 @@ from shared.util import atomic_json
 from tests.routing_support import routing_stack  # noqa: F401
 
 
-def storage_settings(r, **changes):
-    return {'pool_id':r.pool['id'],'name':r.binding['name'],
-        'mapping_ids':[m['id'] for m in r.mappings.values()],
-        'default_device_id':r.s.device,'files_device_id':r.builtin,'allowed_device_ids':[],
-        'expected_version':r.binding['version'],'idempotency_key':uuid.uuid4().hex,**changes}
+def source_settings(r, **changes):
+    return {'pool_id':r.pool['id'],'name':r.folder['name'],'source_kind':'storage',
+        'mapping_ids':[m['id'] for m in r.mappings.values()], 'subpath':'.','mode':'write','allow_tasks':True,
+        'files':{'mode':'inherit'},'shell':{'mode':'inherit'},
+        'expected_version':r.folder['version'],'idempotency_key':uuid.uuid4().hex,**changes}
 
 
 def test_shared_project_files_git_rch_and_safe_disable(routing_stack):
     r=routing_stack
     p=next(p for p in r.get('/api/projects')['projects'] if p['id']==r.project['id'])
-    assert p['folder_id']==r.folder['id'] and p['root']=='/storage/shared-test/Imago'
+    assert p['source_id']==r.folder['id'] and p['root']=='/storage/shared-test/Imago'
     with closing(Store(r.s.hubdir)) as store:
         logical=store.one('SELECT * FROM projects WHERE id=?',(p['id'],))
         assert not {'device_id','root','routing_managed','source_root_id'} & logical.keys()
@@ -50,15 +50,15 @@ def test_shared_project_files_git_rch_and_safe_disable(routing_stack):
         assert r.post(r.space_path+'/projects',values)['id']==project['id']
     # Disabling a workspace source does not delete its Project, global pool or
     # physical bytes. There is no detached legacy device/root fallback.
-    r.put(r.space_path+'/storage/'+r.binding['id'],storage_settings(r,enabled=False))
+    r.put(r.space_path+'/sources/'+r.folder['id'],source_settings(r,enabled=False))
     after=next(p for p in r.get('/api/projects')['projects'] if p['id']==r.project['id'])
-    assert after['folder_id']==r.folder['id']
+    assert after['source_id']==r.folder['id']
     assert after['source_bound'] is False and not after.get('device_id')
-    assert after['source_error']=='STORAGE_BINDING_UNAVAILABLE'
+    assert after['source_error']=='PROJECT_SOURCE_UNAVAILABLE'
     assert (r.s.imago/'new.txt').read_text()=='uncommitted-shared-bytes'
     assert any(p['id']==r.pool['id'] for p in r.get('/api/storage-pools')['pools'])
     denied=r.s.call('read',{'project':p['id'],'path':'new.txt'},raw=True)
-    assert denied.status_code==409 and denied.json()['error']['code']=='STORAGE_BINDING_UNAVAILABLE'
+    assert denied.status_code==409 and denied.json()['error']['code']=='PROJECT_SOURCE_UNAVAILABLE'
 
 
 def test_space_recipes_hooks_and_unknown_rch_recovery(routing_stack):
@@ -92,7 +92,7 @@ def test_subfolder_traversal_symlink_and_disabled_project_shell(routing_stack):
     r=routing_stack
     r.s.nexus.joinpath('secret.txt').write_text('sibling')
     path=r.space_path+'/projects'
-    invalid={'alias':'escape','folder_id':r.folder['id'],'subpath':'../outside','idempotency_key':uuid.uuid4().hex}
+    invalid={'alias':'escape','source_id':r.folder['id'],'subpath':'../outside','idempotency_key':uuid.uuid4().hex}
     assert r.client.post(path,json=invalid).status_code==422
     r.s.root.joinpath('link').symlink_to(r.s.nexus,target_is_directory=True)
     invalid.update(alias='link',subpath='link',idempotency_key=uuid.uuid4().hex)
@@ -120,7 +120,7 @@ def test_fixed_connection_source_snapshot_never_follows_a_rebound_folder(routing
     assert result['structuredContent']['default_device_id']==r.s.device
     # Deliberately rebind the same Project into another existing subdirectory
     # using reviewed source validation. A fixed Connection cannot follow it.
-    r.put('/api/projects/'+r.project['id'],{'alias':r.project['alias'],'folder_id':r.folder['id'],
+    r.put('/api/projects/'+r.project['id'],{'alias':r.project['alias'],'source_id':r.folder['id'],
         'subpath':'Nexus','expected_version':r.project['version'],'idempotency_key':uuid.uuid4().hex})
     denied=r.s.mcp('exec',{'project':r.project['id'],'action':'test','argv':['echo','denied'],
         'idempotency_key':uuid.uuid4().hex},token_value=connection['token'])

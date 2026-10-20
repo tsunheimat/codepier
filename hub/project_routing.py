@@ -125,8 +125,8 @@ class ProjectRouting:
         try:
             view=select_view(self.store,project)
             require_target_consent(self.store,principal,project,view)
-            folder=self.store.one('SELECT mode,allow_tasks FROM space_folders WHERE id=? AND space_id=?',
-                                  (project['folder_id'],principal.space_id))
+            folder=self.store.one('SELECT mode,allow_tasks FROM space_sources WHERE id=? AND space_id=?',
+                                  (project['source_id'],principal.space_id))
             return {**project,'device_id':view['device_id'],'device_name':view['device_name'],'root':view['root'],
                     'logical_root':view['logical_root'],'device_enabled':1,'mode':view['mode'],
                     'allow_tasks':bool(folder['allow_tasks']),'source_bound':True}

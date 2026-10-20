@@ -30,7 +30,7 @@ def test_all_catalog_profiles_share_the_nine_core_tools():
     for profile in ('core', 'full', 'coding'):
         tools = tool_definitions(profile)
         assert {definition['name'] for definition in tools} == CORE_TOOLS | QUERY_TOOLS | {'get_profile','get_access_context',
-            'session','get_execution_options','folders_list','projects_create'}
+            'session','get_execution_options','sources_list','projects_create'}
         assert not CORE_TOOLS.intersection(REPLACED_MCP_TOOLS)
     assert next(item for item in tool_definitions() if item['name'] == 'process')['inputSchema']['properties']['output_limit']['default'] == 8000
 

@@ -175,7 +175,7 @@ function projectSourceSnapshot(project) {
   return {
     root: project.root,
     device_id: project.device_id,
-    folder_id: project.folder_id,
+    source_id: project.source_id,
     subpath: project.subpath,
     space_id: project.space_id ?? project.workspace?.id,
   };
@@ -567,7 +567,8 @@ function navigationTabs(page) {
     return [
       ['projects', 'Projects · 项目'],
       ['devices', 'Devices / Agents · 执行节点'],
-      ['storage', 'Shared Storage · 共享存储'],
+      ['folders', 'Folder · 设备目录'],
+      ['storage', 'Storage Pool · 共享存储'],
       ['mcp', 'MCP Services · 服务'],
       ['vps', 'VPS · SSH 连接'],
     ];
@@ -1040,7 +1041,7 @@ function canonicalPage(page) {
   if (page === 'identity') S.identityTab = 'account';
   const [area, tab] = page.split('/');
   const allowed = {
-    resources: ['projects', 'devices', 'storage', 'vps', 'mcp'],
+    resources: ['projects', 'devices', 'folders', 'storage', 'vps', 'mcp'],
     identity: ['account', 'users', 'sso'],
   };
   if (tab && allowed[area]?.includes(tab)) {

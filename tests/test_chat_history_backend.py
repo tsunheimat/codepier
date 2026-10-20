@@ -64,7 +64,7 @@ async def test_all_projects_search_names_paths_node_and_permissions(service):
         result=await read(request(),q=query,mode='chat')
         assert [r['id'] for r in result['sessions']]==[expected]
     assert (await read(request(),q='HIDDEN_RECORD_CANARY',mode='chat'))['total']==0
-    store.execute("UPDATE space_folders SET allow_tasks=0 WHERE id='native-folder'")
+    store.execute("UPDATE space_sources SET allow_tasks=0 WHERE id='native-folder'")
     assert (await read(request(),mode='chat'))['total']==1
 
 

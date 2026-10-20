@@ -1,6 +1,6 @@
 # Workspace abstraction — fresh-start model
 
-This build uses a fresh `workspace-1` database. It does not convert, open with
+This build uses a fresh `workspace-2` database. It does not convert, open with
 fallbacks, or delete the former database. Use a separate empty `HUB_DATA_DIR` and
 initialize new connections. Do not deploy this schema over an existing Hub
 data volume. Working folders, NFS exports and VPS files are not database state and
@@ -39,7 +39,7 @@ tests, and do not disable tests of retained features to conceal a regression.
 
 ## Objects and identities
 
-Global Resources register Devices, Shared Storage, VPS metadata and external MCP
+Global Resources register Devices, Folders, Storage Pools, VPS metadata and external MCP
 connectors. A Space is a workspace containing explicit bindings to those resources.
 Members receive paired resource/action policies directly; there is no Role table,
 Role editor or Role grant mode. Profiles are workspace-owned connection policies.
@@ -64,21 +64,38 @@ Project discovery remains `project_query`, with logical paths and ordinary actio
 
 1. Initialize a separate Hub database and pair Devices. Local root authorization
    is still configured on each Runner; a workspace binding cannot expand it.
-2. Open **Resources → Shared Storage**, register a pool and its logical base, then
-   register the existing mount on each Device. Confirm they expose the same files.
-   This is mapping, not mounting, copying or synchronizing separate Git clones.
-3. Open a workspace and assign Devices. Add a Shared Storage binding with the
-   selected mappings, a required shell default and a separate files Device.
-   These defaults/allowed machines belong to this workspace resource binding.
-4. Add Folders: either a Device plus absolute local path, or a workspace storage
-   binding plus relative subpath. Multiple folders on one Device are supported.
-5. Create each Project with exactly one Folder and one relative subpath; `.` uses
-   the Folder root. Select shell inheritance or an explicit permitted default.
+2. Under **Resources**, define a **Folder** (one Device and absolute directory)
+   or a **Storage Pool** (logical base and existing mount mappings). Pool creation
+   validates its mappings and required file/shell defaults atomically. Confirm
+   each mapping exposes the same files; this does not mount or synchronize data.
+3. In **Workspace → Folder / Storage Pool**, import either resource as one source.
+   Select a root/subdirectory, read/write/execute capabilities and, for a Pool,
+   the provided mappings. No wrapper Folder or separate Device assignment is needed.
+4. Pool imports independently inherit file and shell defaults or override them.
+   Excluding an inherited default requires an eligible override; it never imports
+   the missing Device or silently selects another mapping.
+5. Create each Project with exactly one `source_id` and relative `subpath`.
+   `.` uses the source root. Project shell overrides can only narrow its source.
 6. Configure direct member policy and Profiles, then create a Connection.
 
+Device allocation is independent. Importing a Folder/Pool authorizes only that
+source's scoped operations; it does not create `space_devices` entries or grant
+`devices.read`. Removing an import leaves global inventory, independent Device
+bindings and physical files intact. A VPS launcher is likewise a validated technical
+reference, not a prerequisite whole-Device grant. Only the inventory owner or
+instance administrator can select those resources during workspace configuration.
+
+Pool defaults are `default_fs_device_id`, `default_shell_device_id` and
+`shell_allowed_device_ids`. An import stores `files` and `shell` settings as
+`inherit` or `custom` (shell also supports `disabled`), rather than copied defaults.
+An empty extra shell allowlist includes all eligible mappings within that source.
+An omitted/empty mapping selection imports the Pool's currently enabled mappings;
+new mappings do not silently expand an existing import. The editor selects these
+explicitly and requires at least one mapping.
+
 Pool inventory membership does not make every mapping available in a workspace.
-A Project sees only devices provided by its selected Folder's workspace source.
-A device elsewhere in the same workspace without that folder's mapping is not an
+A Project sees only devices provided by its selected workspace source.
+A device elsewhere in the same workspace without that source's mapping is not an
 execution option. An empty additional allowed-device selection means all eligible
 provided mappings, not all devices in the Hub. Disable shell explicitly instead
 of using an ambiguous empty list. Every active shell source needs a valid default.
@@ -92,17 +109,19 @@ observe that operation and repeat the same save/key, not a newly created request
 
 ## Path and command resolution
 
-For logical base `/storage/dev`, Folder `team`, Project `codepier` and `cwd=tests`,
+For logical base `/storage/dev`, source subpath `team`, Project `codepier` and `cwd=tests`,
 Device A mounted at `/srv/dev` executes in `/srv/dev/team/codepier/tests`.
 The caller passes project-relative `cwd`; the Hub composes and validates it.
 An abstract path is not automatically an actual filesystem mount on every Runner.
 Do not rewrite arbitrary command strings or stdout using substring replacement.
 Programs in shell commands should normally use relative paths under resolved cwd.
 
-Default selection is Project custom → workspace custom → this Folder's source
-settings. Inherited storage defaults are evaluated per Project; two Projects in
-one Space can inherit different pools' defaults. An offline default yields an
-availability error, not another online machine. Ordinary calls omit
+Shell default precedence is **Project override → source override → Pool default**.
+Files use **source override → Pool default**. A direct Folder always uses its own
+Device. There is no workspace-wide shell override to bypass source restrictions.
+Defaults are resolved live; Pool edits that would invalidate an enabled import or
+Project are rejected atomically. File and shell availability are independent.
+An offline default fails its operation without failover. Ordinary calls omit
 `execution_device_id` and do not discover devices first.
 
 `get_execution_options(project, action)` returns only the authorized source's
@@ -223,9 +242,35 @@ return, and all three VPS display modes through actual HTTP/MCP calls. Browser
 runtime availability is reported separately; template tests are not browser passes.
 Native Windows Session acceptance runs on a Windows CI worker; browser cases run
 in both Chromium and WebKit. No production NFS, external VPS, live IdP or deployed
-upgrade acceptance is claimed by these disposable fixtures. See [validation record](WORKSPACE_REFACTOR_VALIDATION.md)
-for actual commands, results and remaining release blockers.
+upgrade acceptance is claimed by these disposable fixtures. The [earlier validation record](WORKSPACE_REFACTOR_VALIDATION.md)
+describes the original workspace refactor checkpoint, not subsequent source changes.
 
-The former repository-wide suite still includes tests for deleted Role/schema APIs
-and requires a deliberate fixture/test port; focused success is not full CI success.
-The branch is a development checkpoint, not a release or automatic database upgrade.
+The repository-wide regression suite uses current-schema fixtures. Run
+`scripts/check_full_regression.py` against the source being accepted; focused
+success is not full CI success. Development validation does not deploy a release
+or automatically upgrade a database.
+
+## Source API and local validation
+
+Inventory uses `/api/folders` and `/api/storage-pools`; Pool creation includes
+`mappings` and explicit defaults. Workspace imports use
+`/api/spaces/{space_id}/sources`, with `source_kind=folder|storage` and exactly
+one `folder_resource_id` or `pool_id`. Projects and delegated creation use
+`source_id`; scoped delegation uses `source_rules` with exact `sources` IDs.
+`project_query(operation="sources")` lists only authorized workspace sources.
+The former workspace `/folders`, `/storage` and `/shell` APIs, `folder_id`,
+`folder_rules` and `workspace-1` databases are rejected; there are no aliases or
+migrations. Versions, original validation receipts and fixed Connection target
+fingerprints still fence changes across asynchronous saves.
+
+A POSIX host with system OpenSSH can run the disposable real-SSH lab:
+
+```sh
+.venv/bin/python scripts/check_openssh_execution.py --output /tmp/new-openssh-proof.json
+```
+
+It creates temporary loopback sshd servers, keys, known_hosts and ssh-agent state,
+then exercises direct keys, ssh-agent and ProxyJump through Runner one-shot,
+persistent-shell and PTY execution. This proves those real transport paths locally;
+it does not certify production NFS mounts, a specific VPS or native Windows SSH.
+The optional CodePier-managed ControlMaster pool remains deferred.

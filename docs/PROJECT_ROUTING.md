@@ -1,16 +1,18 @@
 # Workspace folders, shared storage and execution
 
-Shared Storage inventory maps a logical base to existing per-Device mount paths.
-A workspace imports selected mappings with required default shell and files devices.
-Folders use direct Device directories or a workspace storage source/subpath.
-A Project has one Folder and `.` or a bounded descendant; there is no stored legacy
-Device/root alternative. Device-side realpath/symlink validation remains required.
+Folder inventory identifies one Device directory. Storage Pool inventory maps a
+logical base to existing per-Device mounts and owns required file/shell defaults.
+A workspace imports either as one source with a path scope, capabilities and
+selected mappings. A Project has one source and `.` or a bounded descendant;
+a Pool does not require a wrapper Folder. Runner realpath/symlink checks remain.
 
-Default shell inherits Project → workspace → this Project's source. Allowed
-options always come from that folder's provided workspace mappings. Unselected
-additional restrictions mean all those eligible mappings, not all global machines.
-Changing a default never retargets accepted work and offline defaults do not fail over.
-Structured cwd/file paths are mapped; arbitrary shell strings/stdout are not rewritten.
+Shell inherits Project → source → Pool. Files inherit source → Pool independently.
+Overrides can only narrow the selected source and Pool shell limits; excluding a
+required inherited default demands a valid override. Direct Folders only use their
+own Device. Empty extra allowlists mean all eligible provided mappings. Separate
+workspace Device bindings grant independent Device operations and are unnecessary
+for source routing or VPS launchers. Defaults never retarget accepted work or fail
+over. Structured cwd/file paths are mapped; arbitrary shell strings are not rewritten.
 
 Configured test recipes and before-dispatch RCH hooks remain separate from the
 chosen launcher. A normal shell string is not guessed to be a test by a regex.

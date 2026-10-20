@@ -11,8 +11,8 @@
       "bytes": 28999
     },
     "app.js": {
-      "sha256": "8849b66f59b0cd6d018e88daef73469ecee637f7dbddc0a2175ffbace75e431e",
-      "bytes": 121028
+      "sha256": "2ce83f576bc371e840054f330e39350076378046cf4e46ae89d88bf1ee8bbb01",
+      "bytes": 121082
     },
     "appearance.js": {
       "sha256": "94dbfb4e5f75d448073a115b310d4eedf900fc5446331ba485b30d07df480d11",
@@ -139,8 +139,8 @@
       "bytes": 1498
     },
     "product.js": {
-      "sha256": "d7506be19290a0f89b5dfdd6c685ffbdcd660971a03c3690ec3f6c2223803e37",
-      "bytes": 2495
+      "sha256": "cd64161fdabe02d58d33aaf001ed29c6f3df20a503552ba11e71f1e69b64ac23",
+      "bytes": 2521
     },
     "project-routing.css": {
       "sha256": "e7ddb60e7f3b37460fcdd0acc166138b74cf60ee60dd02ce1c54e200bdd84875",
@@ -155,8 +155,8 @@
       "bytes": 1267
     },
     "spaces.js": {
-      "sha256": "8cb37b188d88239a97721389d42200c67a5da1a50b870bfc7a33740532563fc9",
-      "bytes": 66243
+      "sha256": "95120af3c9c870fe97049be0a2678e87507297d2bc4240b7c8256ea24039c93a",
+      "bytes": 73235
     },
     "styles.css": {
       "sha256": "0f509e15056bc28b2e3af7652d94c53d6f51635bcb9f0a0bdc288e3a486805f4",

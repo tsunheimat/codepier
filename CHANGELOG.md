@@ -2,10 +2,17 @@
 
 Breaking fresh workspace schema; direct members and Profiles replace Roles.
 Connection identities bind a workspace/Profile from creation, with two-step OAuth
-and no mutable current-space context. Workspace folder bindings, Shared Storage
-maps, scoped shell inheritance and optional user-requested execution choices.
+and no mutable current-space context. Peer Folder/Storage Pool inventory, one workspace source per Project,
+Pool-owned file/shell defaults with scoped inheritance and optional user-requested execution choices.
 Whole VPS bindings have top-level/project/both display and saved Runner OpenSSH
 transport. POSIX persistent shells/PTYs keep original private sessions/receipts.
+
+
+Workspace schema `workspace-2` removes Pool wrapper Folders and independent Device
+assignment requirements for mappings and VPS launchers. The source API and direct
+source policy replace the former workspace Folder/Storage split without aliases
+or database migration. Local/SSH one-shot commands share ProcessSupervisor; a
+disposable real OpenSSH lab covers keys, ssh-agent, ProxyJump and all three modes.
 
 No production deployment, old-database upgrade, full-suite CI success or Windows
 execution-session acceptance is implied. See docs/WORKSPACES.md.

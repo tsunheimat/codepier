@@ -26,7 +26,7 @@ def inventory(app, browser, *, space='team', device='device-team'):
 
 def another_project(app, *, identifier='future', space='team', folder='folder-team'):
     app.state.store.execute('''INSERT INTO projects
-        (id,alias,alias_key,folder_id,subpath,space_id,owner_user_id,created)
+        (id,alias,alias_key,source_id,subpath,space_id,owner_user_id,created)
         VALUES(?,?,?,?,?,?,'owner',?)''',(identifier,identifier,identifier,folder,identifier,space,time.time()))
     return identifier
 

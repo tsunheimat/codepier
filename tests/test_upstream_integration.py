@@ -85,7 +85,7 @@ def test_native_catalog_is_only_current_workspace_tools_and_connection_identity(
         'jsonrpc':'2.0','id':1,'method':'tools/list','params':{}})
     tools=response.json()['result']['tools']
     assert {t['name'] for t in tools}==CORE_TOOLS|QUERY_TOOLS|{
-        'get_profile','get_access_context','session','get_execution_options','folders_list','projects_create'}
+        'get_profile','get_access_context','session','get_execution_options','sources_list','projects_create'}
     assert next(t for t in tools if t['name']=='get_profile')['_meta']['openai/profile'] is True
 
 

@@ -104,13 +104,13 @@ def execution_info(config, project, spec, root):
                   "filesystem_scope": "Agent OS user; absolute cwd and paths outside project allowed",
                   "next": "shell_exec" if denial is None else None},
         "tools": {name: shutil.which(name, path=environment.get("PATH")) for name in
-                  ("git", "ssh", "sshpass", "gh", "docker", "python3", "uv", "node", "npm", "pnpm")},
-        "ssh": {"tool": "ssh_exec", "password_auth_available": denial is None and all(
-                    shutil.which(name, path=environment.get('PATH')) for name in ('ssh', 'sshpass')),
-                "host_key_policy": "strict by default; explicit accept-new for a first connection",
-                "local_script_password": "For existing deployment scripts use shell_exec env.SSHPASS; chat text alone does not supply an environment variable."},
+                  ("git", "ssh", "gh", "docker", "python3", "uv", "node", "npm", "pnpm")},
+        "ssh": {"tool": "exec", "target": "vps:<saved-binding-id>",
+                "enabled": bool(config.get("ssh", {}).get("enabled")),
+                "authentication": "Runner-owned OpenSSH config, keys and ssh-agent; BatchMode=yes",
+                "host_key_policy": "strict by default; explicit accept-new for a first connection"},
         "tool_lookup": "Agent process PATH plus local shell.env; shell startup files may extend it",
         "credential_environment_present": {name: bool(environment.get(name)) for name in
                                            ("SSH_AUTH_SOCK", "GH_TOKEN", "GITHUB_TOKEN", "DOCKER_HOST")},
-        "note": "Shell commands use the Agent user's OS permissions and existing local credentials. No automatic backup/rollback or interactive input. Project file tools retain their own path rules.",
+        "note": "One-shot commands use the Agent user's OS permissions. Stateful Shell and interactive PTY use session when locally enabled. No automatic backup/rollback. Project file tools retain their own path rules.",
     }

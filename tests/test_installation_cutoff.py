@@ -44,7 +44,7 @@ def test_missing_database_never_adopts_an_unrelated_or_partial_directory(tmp_pat
     assert snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize('marker', [None, '1', '7', '10', 'workspace-0', 'workspace-2'])
+@pytest.mark.parametrize('marker', [None, '1', '7', '10', 'workspace-0', 'workspace-1'])
 def test_old_database_and_existing_users_are_not_treated_as_a_current_installation(tmp_path, marker):
     with closing(sqlite3.connect(tmp_path/'hub.sqlite3')) as db, db:
         db.execute('CREATE TABLE users(id TEXT PRIMARY KEY)');db.execute("INSERT INTO users VALUES('old-owner')")

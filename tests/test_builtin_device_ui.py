@@ -54,21 +54,21 @@ def builtin_page(request, roots_api):
                 payload = {'ok': True, 'builtin': True}
             elif path == '/api/spaces':
                 payload = {'spaces': [{'id': 'workspace-one', 'label': 'Explicit workspace'}]}
-            elif path == '/api/spaces/workspace-one/folders':
+            elif path == '/api/spaces/workspace-one/sources':
                 # Separate, previously reviewed workspace bindings, not grants
                 # created implicitly by saving the device's allowed roots.
-                payload = {'folders': [
+                payload = {'sources': [
                     {'id': 'builtin-read', 'name': 'Hub read-only', 'enabled': True,
                      'mode': 'read', 'allow_tasks': False,
-                     'views': [{'name': 'CodePier Hub', 'root': '/workspace/readonly'}]},
+                     'views': [{'device_name': 'CodePier Hub', 'root': '/workspace/readonly'}]},
                     {'id': 'remote-folder', 'name': 'Remote source', 'enabled': True,
                      'mode': 'write', 'allow_tasks': True,
-                     'views': [{'name': 'Remote', 'root': '/srv/project'}]},
+                     'views': [{'device_name': 'Remote', 'root': '/srv/project'}]},
                 ]}
             elif path == '/api/spaces/workspace-one/projects' and req.method == 'POST':
-                assert set(data) == {'alias', 'description', 'folder_id', 'subpath',
+                assert set(data) == {'alias', 'description', 'source_id', 'subpath',
                                      'expected_version', 'idempotency_key'}
-                assert data['folder_id'] in {'builtin-read', 'remote-folder'}
+                assert data['source_id'] in {'builtin-read', 'remote-folder'}
                 payload = {'id': 'fixture-project', **data}
             route.fulfill(status=status, content_type='application/json', body=json.dumps(payload))
 
@@ -243,7 +243,7 @@ def test_roots_save_explicit_modes_apply_and_map(builtin_page, roots_api):
     form = page.locator('#workspace-form')
     expect(form).to_be_visible()
     expect(form.locator('[name="device_id"], [name="root"], [name="mode"], [name="allow_tasks"]')).to_have_count(0)
-    expect(form.locator('[name="folder_id"]')).to_have_value('builtin-read')
+    expect(form.locator('[name="source_id"]')).to_have_value('builtin-read')
     expect(form.locator('[name="subpath"]')).to_have_value('.')
     expect(form.locator('[data-folder-preview]')).to_contain_text('/workspace/readonly')
     assert len(writes(roots_api)) == 1  # Device roots do not create a Project or a workspace binding.
@@ -251,7 +251,7 @@ def test_roots_save_explicit_modes_apply_and_map(builtin_page, roots_api):
     page.get_by_role('button', name='保存', exact=True).click()
     expect(page.locator('.modal')).to_have_count(0)
     assert writes(roots_api)[1][:2] == ('POST', '/api/spaces/workspace-one/projects')
-    assert writes(roots_api)[1][2]['folder_id'] == 'builtin-read'
+    assert writes(roots_api)[1][2]['source_id'] == 'builtin-read'
     assert writes(roots_api)[1][2]['subpath'] == '.'
     assert not {'device_id', 'root', 'mode', 'allow_tasks', 'space_id'} & writes(roots_api)[1][2].keys()
 
@@ -364,11 +364,11 @@ def test_project_folder_switch_uses_only_explicit_workspace_sources(builtin_page
     form = page.locator('#workspace-form')
     expect(form).to_be_visible()
     expect(form.locator('[name="root"], [name="device_id"], [name="mode"], [name="allow_tasks"]')).to_have_count(0)
-    assert form.locator('[name="folder_id"] option').evaluate_all('(items)=>items.map(x=>x.value)') == ['builtin-read', 'remote-folder']
-    form.locator('[name="folder_id"]').select_option('remote-folder')
+    assert form.locator('[name="source_id"] option').evaluate_all('(items)=>items.map(x=>x.value)') == ['builtin-read', 'remote-folder']
+    form.locator('[name="source_id"]').select_option('remote-folder')
     expect(form.locator('[data-folder-preview]')).to_contain_text('/srv/project')
     form.locator('[name="subpath"]').fill('subproject')
-    form.locator('[name="folder_id"]').select_option('builtin-read')
+    form.locator('[name="source_id"]').select_option('builtin-read')
     expect(form.locator('[data-folder-preview]')).to_contain_text('/workspace/readonly')
     expect(form.locator('[name="subpath"]')).to_have_value('subproject')
     assert writes(roots_api) == []  # A form selection neither grants nor mutates device capabilities.

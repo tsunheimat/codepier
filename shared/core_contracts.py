@@ -15,7 +15,7 @@ CORE_TOOLS = CORE_REMOTE | CORE_FACADES | {'vps', 'conversations'}
 # are loaded only when needed; each invocation validates the real typed contract.
 CORE_ACTIONS = {
     'workspace': {
-        'folders': 'folders_list', 'project_create': 'projects_create',
+        'sources': 'sources_list', 'project_create': 'projects_create',
         'resolve': 'projects_resolve', 'context': 'project_context',
         'dashboard': 'workspace_status', 'worktree_create': 'worktrees_create',
         'worktree_list': 'worktrees_list', 'worktree_remove': 'worktrees_remove',
@@ -173,7 +173,7 @@ class Workspace(ComputerArgs):
     options: dict[str, Any] = Field(default_factory=dict, description='Specialized operation arguments; discover with help.')
     tool: Literal['', 'workspace', 'read', 'write', 'edit', 'exec', 'process', 'vps', 'browser', 'computer'] = ''
     action: str = Field(default='', max_length=80, description='For help: exact operation to describe.')
-    operation: Literal['folders', 'project_create', 'list', 'open', 'skills', 'skill', 'tasks', 'status', 'readiness', 'tree', 'help', 'resolve', 'context', 'dashboard', 'worktree_create', 'worktree_list', 'worktree_remove', 'lsp_status', 'tests'] = 'list'
+    operation: Literal['sources', 'project_create', 'list', 'open', 'skills', 'skill', 'tasks', 'status', 'readiness', 'tree', 'help', 'resolve', 'context', 'dashboard', 'worktree_create', 'worktree_list', 'worktree_remove', 'lsp_status', 'tests'] = 'list'
     project: str = Field(default='', max_length=100)
     workspace_id: str = Field(default='', pattern=r'^(|[a-f0-9]{32})$')
     path: str = Field(default='.', max_length=1024)

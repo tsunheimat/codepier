@@ -185,7 +185,7 @@ async def test_queued_cancellation_does_not_touch_files(runtime):
 @pytest.mark.asyncio
 async def test_mapping_change_prevents_queued_execution(runtime):
     r,p=runtime;op=await r.invoke('fs_read',{'project':'Imago','path':'README.md'},p)
-    r.store.execute("UPDATE space_folders SET device_path='/tmp/different',version=version+1 WHERE id='test-folder'")
+    r.store.execute("UPDATE folders SET device_path='/tmp/different',version=version+1 WHERE id='test-folder'")
     peer=Peer();r.connections['dev']=peer;await r.deliver(op['operation_id'])
     assert r.operation(op['operation_id'],p)['result']['error']['code']=='AUTHORIZATION_CHANGED' and not peer.packets
 
@@ -380,7 +380,7 @@ def test_current_store_restart_preserves_key_and_receipt_records(tmp_path):
     secret=store.encrypt('persistent-key-test');keybytes=(directory/'master.key').read_bytes()
     store.close();store=Store(directory)
     try:
-        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-2'
         assert store.one('SELECT action FROM audit')['action']=='existing-audit'
         assert store.decrypt(secret)=='persistent-key-test'
         assert (directory/'master.key').read_bytes()==keybytes

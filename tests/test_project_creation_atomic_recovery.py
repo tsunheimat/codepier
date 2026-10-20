@@ -19,12 +19,12 @@ from tests.identity_fixtures import (team, must, call, data, set_member, make_pr
 
 
 def body(**changes):
-    return {'alias':'NewProject','folder_id':'folder-team','subpath':'sub',
+    return {'alias':'NewProject','source_id':'folder-team','subpath':'sub',
         'idempotency_key':uuid.uuid4().hex,**changes}
 
 
 def caller(b, kind, *, project_access=True):
-    policy={'folder_rules':[{'folders':['folder-team'],'actions':['read','projects.create']}]}
+    policy={'source_rules':[{'sources':['folder-team'],'actions':['read','projects.create']}]}
     if project_access:policy['project_rules']=[{'all_projects':True,'actions':['read','write']}]
     if kind=='panel':
         set_member(b['owner'],'alice',{**policy,'manage':['resources']})
@@ -106,7 +106,7 @@ def test_transaction_failure_rolls_back_and_reuses_original_validation(team, mon
 def test_validation_wait_rechecks_live_source_and_authority_before_commit(team, monkeypatch, kind, change):
     app,b=team;store=app.state.store;submit=caller(b,kind);values=body()
     def changed():
-        if change=='folder':store.execute("UPDATE space_folders SET device_path=device_path||'/changed',version=version+1 WHERE id='folder-team'")
+        if change=='folder':store.execute("UPDATE folders SET device_path=device_path||'/changed',version=version+1 WHERE id='folder-team'")
         elif change=='membership':store.execute("UPDATE memberships SET active=0 WHERE user_id='alice' AND space_id='team'")
         else:CurrentModel(store).project('competing',space='team',folder='folder-team',owner='owner',alias=values['alias'],subpath='elsewhere')
     monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok([],changed))
@@ -156,7 +156,7 @@ def test_explicit_root_folder_reference_can_overlap_without_escaping_source(team
     monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok([]))
     result=response_value(submit(body(subpath='.')),kind)
     row=app.state.store.one('SELECT * FROM projects WHERE id=?',(result['id'],))
-    assert row['folder_id']=='folder-team' and row['subpath']=='.'
+    assert row['source_id']=='folder-team' and row['subpath']=='.'
     assert not {'root','device_id','role_id'}&row.keys()
 
 
@@ -165,7 +165,7 @@ def test_folder_create_permission_alone_does_not_grant_access_to_created_project
     monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok([]))
     result=response_value(submit(body()),'mcp')
     assert result['accessible'] is False
-    assert app.state.store.one('SELECT folder_id FROM projects WHERE id=?',(result['id'],))['folder_id']=='folder-team'
+    assert app.state.store.one('SELECT source_id FROM projects WHERE id=?',(result['id'],))['source_id']=='folder-team'
     assert all('all_projects' not in row['policy'] or not json.loads(row['policy'])['project_rules']
         for row in app.state.store.all("SELECT policy FROM access_profiles"))
 

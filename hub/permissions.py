@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from hub.external_plugins.rules import PluginRule, intersect as intersect_plugins
-from shared.workspace_contracts import (WorkspaceModel, ProjectRule, DeviceRule, FolderRule,
+from shared.workspace_contracts import (WorkspaceModel, ProjectRule, DeviceRule, SourceRule,
                                         ConnectorRule, VPSRule, CAPABILITIES)
 from shared.util import DevError
 
@@ -21,7 +21,7 @@ class AccessPolicy(WorkspaceModel):
     manage: list[Literal['workspace', 'members', 'profiles', 'resources', 'connections', 'audit']] = Field(default_factory=list, max_length=6)
     project_rules: list[ProjectRule] = Field(default_factory=list, max_length=1000)
     device_rules: list[DeviceRule] = Field(default_factory=list, max_length=500)
-    folder_rules: list[FolderRule] = Field(default_factory=list, max_length=500)
+    source_rules: list[SourceRule] = Field(default_factory=list, max_length=500)
     connector_rules: list[ConnectorRule] = Field(default_factory=list, max_length=500)
     vps_rules: list[VPSRule] = Field(default_factory=list, max_length=500)
     plugin_rules: list[PluginRule] = Field(default_factory=list, max_length=256)
@@ -56,8 +56,8 @@ def device_actions(policy, identifier):
     return {a for rule in policy.device_rules if identifier in rule.devices for a in rule.actions}
 
 
-def folder_actions(policy, identifier):
-    return {a for rule in policy.folder_rules if identifier in rule.folders for a in rule.actions}
+def source_actions(policy, identifier):
+    return {a for rule in policy.source_rules if identifier in rule.sources for a in rule.actions}
 
 
 def connector_tools(policy, identifier):
@@ -83,7 +83,7 @@ def scoped_ids(store, space_id):
     return {
         'project': [r['id'] for r in store.all('SELECT id FROM projects WHERE space_id=?', (space_id,))],
         'device': [r['device_id'] for r in store.all('SELECT device_id FROM space_devices WHERE space_id=? AND enabled=1', (space_id,))],
-        'folder': [r['id'] for r in store.all('SELECT id FROM space_folders WHERE space_id=? AND enabled=1', (space_id,))],
+        'source': [r['id'] for r in store.all('SELECT id FROM space_sources WHERE space_id=? AND enabled=1', (space_id,))],
         'vps': [r['id'] for r in store.all('SELECT id FROM space_vps WHERE space_id=?', (space_id,))],
         'connector': [r['id'] for r in store.all('SELECT id FROM gateway_bindings WHERE space_id=?', (space_id,))],
     }
@@ -99,14 +99,14 @@ def intersect_policies(store, space_id, *policies):
                 for identifier in ids[kind]]
     projects = [ProjectRule(projects=[i], actions=sorted(a)) for i, a in actions('project', project_actions) if 'read' in a]
     devices = [DeviceRule(devices=[i], actions=sorted(a)) for i, a in actions('device', device_actions) if a]
-    folders = [FolderRule(folders=[i], actions=sorted(a)) for i, a in actions('folder', folder_actions) if 'read' in a]
+    folders = [SourceRule(sources=[i], actions=sorted(a)) for i, a in actions('source', source_actions) if 'read' in a]
     vps = [VPSRule(vps=[i], actions=sorted(a)) for i, a in actions('vps', vps_actions) if 'read' in a]
     connectors = [ConnectorRule(binding_id=i, tools=sorted(a)) for i, a in actions('connector', connector_tools) if a]
     plugins = policies[0].plugin_rules
     for policy in policies[1:]:
         plugins = intersect_plugins(AccessPolicy.model_construct(plugin_rules=plugins), policy)
     return AccessPolicy.model_construct(manage=[], project_rules=projects, device_rules=devices,
-        folder_rules=folders, vps_rules=vps, connector_rules=connectors, plugin_rules=plugins)
+        source_rules=folders, vps_rules=vps, connector_rules=connectors, plugin_rules=plugins)
 
 
 def connection_binding(store, grant):
@@ -156,7 +156,7 @@ def project_scopes(store, principal, project_id):
     return project_actions(principal_policy(store, principal), project_id)
 
 
-def require_access(store, principal, action, *, project_id=None, device_id=None, folder_id=None, creation=None):
+def require_access(store, principal, action, *, project_id=None, device_id=None, source_id=None, creation=None):
     from hub import iam
     principal = iam.live_principal(store, principal)
     policy = principal_policy(store, principal)
@@ -165,9 +165,9 @@ def require_access(store, principal, action, *, project_id=None, device_id=None,
     if project_id is not None:
         iam.project_in_space(store, principal, project_id)
         allowed = project_actions(policy, project_id)
-    elif folder_id is not None:
-        row = store.one('SELECT id FROM space_folders WHERE id=? AND space_id=? AND enabled=1', (folder_id, principal.space_id))
-        allowed = folder_actions(policy, folder_id) if row else set()
+    elif source_id is not None:
+        row = store.one('SELECT id FROM space_sources WHERE id=? AND space_id=? AND enabled=1', (source_id, principal.space_id))
+        allowed = source_actions(policy, source_id) if row else set()
         if not principal.grant_id and ('workspace' in policy.manage or 'resources' in policy.manage) and row:
             allowed |= {'read', 'projects.create'}
     elif device_id is not None:
@@ -190,7 +190,7 @@ def validate_policy(store, space_id, policy):
     selections = {
         'project': {i for r in policy.project_rules for i in r.projects + r.excluded_projects},
         'device': {i for r in policy.device_rules for i in r.devices},
-        'folder': {i for r in policy.folder_rules for i in r.folders},
+        'source': {i for r in policy.source_rules for i in r.sources},
         'vps': {i for r in policy.vps_rules for i in r.vps},
         'connector': {r.binding_id for r in policy.connector_rules},
     }
@@ -212,7 +212,7 @@ def policy_capabilities(policy):
         scopes.update(rule.actions)
     for rule in policy.device_rules:
         scopes.update(rule.actions)
-    for rule in policy.folder_rules:
+    for rule in policy.source_rules:
         scopes.update(rule.actions)
     if any('execute' in r.actions for r in policy.vps_rules):
         scopes.add('execute')

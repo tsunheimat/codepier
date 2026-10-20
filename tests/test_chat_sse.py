@@ -135,7 +135,7 @@ async def test_stream_last_id_auth_revocation_and_action_csrf(service):
         auth.allowed=True
         action=next(r.endpoint for r in routes if r.path.endswith('/{action}'))
         with pytest.raises(DevError,match='csrf'):await action('chat_prompt',request())
-        obj.runtime.store.execute("UPDATE space_folders SET allow_tasks=0 WHERE id='native-folder'")
+        obj.runtime.store.execute("UPDATE space_sources SET allow_tasks=0 WHERE id='native-folder'")
         with pytest.raises(DevError) as denied:await endpoint(sid,req,0)
         assert denied.value.code=='DEFAULT_DEVICE_UNAVAILABLE'
     finally:await iterator.aclose()

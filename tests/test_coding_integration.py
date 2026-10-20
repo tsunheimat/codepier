@@ -65,7 +65,7 @@ def test_remote_non_git_review_patch_idempotency_and_grant_boundaries(coding_sta
     s=coding_stack
     first=value(s,tool(s,'open_workspace',{'project':'Imago','capture_baseline':True}))
     assert first['baseline_ref'] and first['workspace']['root']=='.'
-    assert s.call('projects_resolve', {'project':s.project['id']})['root']==f"/folders/{s.folder['id']}/Imago"
+    assert s.call('projects_resolve', {'project':s.project['id']})['root']==f"/folders/{s.folder_resource['id']}/Imago"
     # Independent file requests preserve per-file failure and SHA checks.
     read = value(s, tool(s, 'read', {'project': 'Imago', 'path': 'README.md'}))
     assert read['sha256'] == hashlib.sha256((s.imago/'README.md').read_bytes()).hexdigest()

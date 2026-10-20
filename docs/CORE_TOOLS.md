@@ -1,6 +1,6 @@
 # MCP 资源工具与对话关联
 
-CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`vps`、`browser`、`computer`。保留底层 `conversations` 关联接口；正常调用由 Audit 自动按宿主会话归组，无需额外登记，不保存正文或进度。旧工作流及其 read/create/update/handoff 兼容操作已移除。其他旧独立 MCP 工具入口调用仍返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
+CodePier 保留的项目 / 执行工具为 `workspace`、`read`、`write`、`edit`、`exec`、`process`、`session`、`vps`、`browser`、`computer`。保留底层 `conversations` 关联接口；正常调用由 Audit 自动按宿主会话归组，无需额外登记，不保存正文或进度。旧工作流及其 read/create/update/handoff 兼容操作已移除。其他旧独立 MCP 工具入口调用仍返回 `TOOL_REMOVED`；`full`、`coding` 目录也不恢复旧入口。面板和 Agent 内部仍复用原有执行、权限和持久化实现。
 
 身份工具 `get_profile`、`get_access_context` 额外提供稳定身份和实时权限摘要。经明确同意的动态角色连接还可使用已审核的外部 MCP 工具及 `gateway_call_get` 回执查询，详见 [MCP 网关](MCP_GATEWAY.md)。
 
@@ -72,7 +72,8 @@ Task 绑定原 operation、Space、用户和确切创建 grant，每次查询/�
 | `edit` | 默认 `file`；`restore/checkpoint` |
 | `exec` | 本机命令、已配置任务、保存的 VPS 命令 |
 | `process` | `list/get/wait/cancel/trace/diagnostics/agent/activity`；`search_start/search_get/search_cancel`；`validate/validation_get/validation_list` |
-| `vps` | 查询授权服务器，返回供 `exec` 使用的 `target` |
+| `vps` | 查询授权服务器，返回供 `exec` / `session` 使用的 `target` |
+| `session` | 持久 Shell 或 PTY；原会话的 exec/read/write/resize/signal/status/close |
 | `browser` | `status/open/snapshot/action/close` |
 | `computer` | `status/apps/open/observe/action/close` |
 
@@ -107,11 +108,13 @@ Task 绑定原 operation、Space、用户和确切创建 grant，每次查询/�
 
 排队期限同时覆盖等待项目、资源和执行槽；到期返回 `QUEUE_EXPIRED` 并释放等待，不必等前一个命令结束。执行开始后，使用命令自己的 `timeout_seconds`。用 `process(operation="trace")` 或查询时传 `include_trace=true` 查看等待阶段及有权查看的阻塞操作。
 
-`exec` 的 `yield_seconds` 默认 1 秒，超过后返回持久操作编号。`process` 支持一次并行查询/等待最多 16 个编号。断线后查询原编号或用原幂等键恢复，不能因为暂未收到结果就换新键重跑。取消本机 SSH 进程不保证远端命令停止或回滚。当前命令执行是非交互式，不提供 PTY/stdin 会话。
+`exec` 的 `yield_seconds` 默认 1 秒，超过后返回持久操作编号。`process` 支持一次并行查询/等待最多 16 个编号。断线后查询原编号或用原幂等键恢复，不能因为暂未收到结果就换新键重跑。取消本机 SSH 进程不保证远端命令停止或回滚。`exec` 是一次性非交互命令；`session` 提供持久 Shell 和真正的 PTY，包括 read/write/resize/signal/close。Session 绑定原 Runner 和目标，HTTP 完成不关闭它，断线不自动重建。
 
 ## VPS、浏览器、桌面
 
-`vps(project="Imago")` 返回 `target="vps:<id>"`，传入 `exec(project="Imago", target="vps:<id>", command="df -h", idempotency_key="…")`。保存的密码只在已验证投递时解密，沿用项目绑定、连接版本、主机密钥检查和 Agent 本机 Shell 授权；密码不会返回给模型。临时 SSH 可以通过本机 `exec` 使用已安装的 SSH 工具，秘密放在环境变量而非命令文本。
+`vps()` 查询顶层 VPS，`vps(project="Imago")` 查询该 Project 的 VPS 分类；两者可能引用同一个整机资源。将返回的 `target="vps:<id>"` 传给 `exec(target=..., command="df -h", idempotency_key="…")`，不需要虚构的本机 Project。Runner 用保存的 OpenSSH Host Alias 和可选 `-F` 配置文件，支持 IdentityFile、ssh-agent 和 ProxyJump；凭据留在 Runner，固定使用非交互 BatchMode。2.0 不提供 password/sshpass adapter。Local 和 SSH One-shot 都经 `ProcessSupervisor`，分别使用 `LocalBackend` 和 `SSHBackend`；已有任务、Git/Test 路由与权限检查保持原有行为。
+
+`session(operation="open", target=..., mode="persistent_shell", idempotency_key="…")` 保留同一 Shell 的 cwd/env；每次 `session.exec` 仍有独立操作回执。`mode="pty"` 提供终端字节流，不把提示符、回显或一次 write 当作命令完成。所有有副作用的 Session 操作必须带幂等键，超时或 SSH 丢失后观察原操作，不能自动重发输入。
 
 浏览器使用本机配置的扩展、档案、空闲标签页池和站点白名单；桌面使用本机配置的原生提供方与允许的应用。工具出现在目录不代表本机已安装或授权。先调用 `status`，按真实配置结果处理。输入操作使用最新 `observation_id`，桌面还需要独立 `computer` scope；会话所有权、观察有效期、单次消费、截图过期与不确定输入不重放的规则不变。
 

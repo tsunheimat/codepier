@@ -306,3 +306,43 @@ def test_offline_shell_revoked_before_delivery_does_not_execute(tmp_path):
             return row if row and row[0] == 'failed' else None
         assert wait_for(failed_without_dispatch, timeout=25) == ('failed', 0)
         assert not (stack.project_root/'revoked-shell').exists()
+
+
+@pytest.mark.asyncio
+async def test_public_local_exec_uses_original_process_and_preserves_result_metadata(shell_agent):
+    from shared.tool_protocol import wire_version
+    agent,root=shell_agent
+    request=shell_request(root,'printf public-local; printf x >> original-count')
+    request['tool']='exec'
+    request['tool_contract_version']=wire_version('exec')
+    await agent.handle(request)
+    await agent.handle(request)
+    result=agent.journal.status(request['id'])['result']
+    assert result['ok'],result
+    data=result['data']
+    assert data['exit_code']==0 and data['output']=='public-local'
+    assert data['cwd']==str(root) and data['shell']==['/bin/sh','-c']
+    assert (root/'original-count').read_text()=='x'
+
+
+@pytest.mark.asyncio
+async def test_routed_argv_preserves_arguments_environment_and_original_receipt(shell_agent):
+    from shared.tool_protocol import wire_version
+    agent,root=shell_agent
+    request=shell_request(root)
+    request['tool']='routed_exec'
+    request['tool_contract_version']=wire_version('routed_exec')
+    request['project'].update(_execution_plan={'hook_protocol':1,'provider':'device'},
+        _route_context={'family':'shell','device_id':'fixture','source_key':'device:fixture','subpath':'.'})
+    argument="spaces; 'literal' $not_a_shell"
+    request['args']={'project':'fixture','action':'test','argv':[sys.executable,'-c',
+        'import json,os,sys; from pathlib import Path; p=Path("argv-count"); p.write_text((p.read_text() if p.exists() else "")+"x"); print(json.dumps([sys.argv[1],os.environ["CP_DIRECT"]]))',argument],
+        'env':{'CP_DIRECT':'direct-env'},'idempotency_key':uuid.uuid4().hex}
+    await agent.handle(request)
+    await agent.handle(request)
+    result=agent.journal.status(request['id'])['result']
+    assert result['ok'],result
+    data=result['data']
+    assert data['exit_code']==0 and json.loads(data['output'])==[argument,'direct-env']
+    assert data['provider']=='device' and data['route']==request['project']['_route_context']
+    assert 'shell' not in data and (root/'argv-count').read_text()=='x'

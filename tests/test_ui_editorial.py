@@ -99,7 +99,7 @@ def test_long_names_empty_states_and_colored_card_actions(stack,engine,width,hei
         for btn in page.locator('.workspace-project-row').first.locator('button').all():
             btn.scroll_into_view_if_needed();btn.click(trial=True)
         page.evaluate('''() => {S.projects=[];document.querySelector('#page').innerHTML=CodePierSpaces.projectCollection(S.projects,{workspaceLabels:true});uiPageReady();}''')
-        expect(page.locator('#page')).to_contain_text('先添加 Folder 再建立 Project')
+        expect(page.locator('#page')).to_contain_text('先导入 Folder 或 Storage Pool 再建立 Project')
         expect(page.locator('[data-project-row]')).to_have_count(0)
         readable(page,'empty projects')
         browser.close()

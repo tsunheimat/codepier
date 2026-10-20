@@ -24,7 +24,7 @@ def test_real_agent_folder_scoped_create_read_revoke_and_mapping_bounds(team_age
     with closing(Store(stack.hubdir)) as store:
         CurrentModel(store).user(uid,password_hash=password_hash('temporary-user-password'))
     policy={'project_rules':[{'actions':['read','write'],'all_projects':True}],
-        'folder_rules':[{'folders':[stack.folder['id']],'actions':['read','projects.create']}]}
+        'source_rules':[{'sources':[stack.folder['id']],'actions':['read','projects.create']}]}
     path=f'/api/spaces/{sid}/members/{uid}'
     membership=must(stack.client.put(path,json={'policy':policy,'active':True,
         'expected_version':0,'idempotency_key':uuid.uuid4().hex}))
@@ -36,11 +36,11 @@ def test_real_agent_folder_scoped_create_read_revoke_and_mapping_bounds(team_age
             'name':'Folder creator','profile_id':profile['id'],'profile_version':profile['version'],
             'consent_mode':'live','confirm_live_profile':True,'idempotency_key':uuid.uuid4().hex}),201)
         token=grant['token']
-        folders=data(call(client,token,'folders_list'))['folders']
+        folders=data(call(client,token,'sources_list'))['sources']
         assert [folder['id'] for folder in folders]==[stack.folder['id']]
         directory=stack.root/'new-private';directory.mkdir()
         (directory/'readme.txt').write_text('allowed-test-data')
-        args={'alias':'New-'+uid,'folder_id':stack.folder['id'],'subpath':'new-private',
+        args={'alias':'New-'+uid,'source_id':stack.folder['id'],'subpath':'new-private',
             'idempotency_key':uuid.uuid4().hex}
         def create():
             response=call(client,token,'projects_create',args)

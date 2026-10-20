@@ -20,7 +20,7 @@ from hub.db_worker import database_endpoint
 from hub.permissions import principal_policy, vps_actions, require_access
 from hub.workspace_mutations import label_key, mutate
 from hub.workspace_resources import owned_resource, checked_version
-from hub.workspace_sources import _device, require_vps_consent, vps_fingerprint
+from hub.workspace_sources import inventory_device, require_vps_consent, vps_fingerprint
 from shared.workspace_contracts import WorkspaceModel, VPSBindingInput
 from shared.util import DevError
 
@@ -77,7 +77,7 @@ class VPSService:
         if action=='execute':
             if not row['enabled'] or not row['resource_enabled']:
                 raise DevError('VPS_DISABLED','The workspace VPS resource is disabled',403)
-            _device(self.store,principal.space_id,row['runner_device_id'])
+            inventory_device(self.store,row['runner_device_id'])
             require_vps_consent(self.store,principal,row)
         return principal
 
@@ -158,7 +158,8 @@ class VPSService:
         def write(current):
             iam.require_space_capability(self.store,current,'resources')
             owned_resource(self.store,replace(current,space_id=None),'vps_connections',body.resource_id)
-            device=_device(self.store,current.space_id,body.runner_device_id)
+            owned_resource(self.store,replace(current,space_id=None),'devices',body.runner_device_id)
+            device=inventory_device(self.store,body.runner_device_id)
             info=json.loads(device['info'])
             refs=info.get('ssh_targets')
             if refs is not None and body.connection_ref not in refs:
@@ -223,7 +224,7 @@ class VPSService:
         row=self.row(ref.get('id'),ref.get('space_id'))
         if not row or not row['enabled'] or not row['resource_enabled'] or vps_fingerprint(row)!=ref.get('fingerprint'):
             raise DevError('VPS_CONFIGURATION_CHANGED','The original VPS connection changed; no replacement connection was selected',409)
-        _device(self.store,ref['space_id'],row['runner_device_id'])
+        inventory_device(self.store,row['runner_device_id'])
         if project_id and not self.store.one('SELECT project_id FROM vps_projects WHERE vps_id=? AND project_id=? AND space_id=?',
                                              (row['id'],project_id,ref['space_id'])):
             raise DevError('VPS_CONTEXT_CHANGED','The optional project association was removed',409)

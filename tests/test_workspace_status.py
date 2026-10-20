@@ -77,7 +77,7 @@ def test_worktree_filter_is_exact_and_device_changes_fence_receipts(env):
     model=CurrentModel(env[0].store)
     model.device('d2',owner='u',name='Second')
     model.bind_device(env[1].space_id,'d2')
-    env[0].store.execute("UPDATE space_folders SET device_id='d2',version=version+1 WHERE id='folder-p'")
+    env[0].store.execute("UPDATE folders SET device_id='d2',version=version+1 WHERE id='folder-p'")
     assert dashboard(env)['recent_operations'] == []
 
 
@@ -159,7 +159,7 @@ def test_dashboard_query_remains_available_without_widget(env):
         assert 'workspace_status' not in tools
         assert tools['workspace']['_meta']['ui']['visibility'] == ['model', 'app']
     assert set(t['name'] for t in tool_definitions('coding')) == CORE_TOOLS | QUERY_TOOLS | {
-        'get_profile','get_access_context','session','get_execution_options','folders_list','projects_create'}
+        'get_profile','get_access_context','session','get_execution_options','sources_list','projects_create'}
     value = dashboard(env)
     bound = attach({'structuredContent': value}, 'workspace_status', {'project': 'P'}, value, lambda: 'https://panel.example')
     assert bound == {'structuredContent': value}

@@ -78,7 +78,7 @@ def test_current_restart_preserves_plugin_consent_receipt_and_fixed_connection_b
         assert reopened.one('SELECT snapshot FROM external_plugin_consents WHERE grant_id=?', (value['grant']['connection_id'],))
         assert json.loads(reopened.one('SELECT plugin_context FROM gateway_calls WHERE id=?',
             (result['_meta']['codepier/callId'],))['plugin_context'])['project_id'] == 'project-a'
-        assert reopened.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
+        assert reopened.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-2'
     finally:
         reopened.close()
     # Receipt is still scoped to the same grant and validated against the current route.

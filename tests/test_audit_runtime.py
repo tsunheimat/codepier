@@ -34,9 +34,9 @@ def runtime(tmp_path):
         store.db.execute("INSERT INTO devices(id,name,secret,created,owner_user_id,info) VALUES('dev','home',?,?,'owner',?)",
             (store.encrypt(secret),now,json.dumps({'shell_enabled':True})))
         store.db.execute("INSERT INTO space_devices(space_id,device_id) VALUES('runtime-space','dev')")
-        store.db.execute("""INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode,allow_tasks)
-            VALUES('runtime-folder','runtime-space','Runtime folder','device','dev',?,'write',1)""",(str(root),))
-        store.db.execute("""INSERT INTO projects(id,alias,alias_key,folder_id,subpath,description,created,space_id,owner_user_id)
+        from tests.current_model import CurrentModel
+        CurrentModel(store).folder('runtime-folder',space='runtime-space',device='dev',path=root,mode='write',allow_tasks=True)
+        store.db.execute("""INSERT INTO projects(id,alias,alias_key,source_id,subpath,description,created,space_id,owner_user_id)
             VALUES('proj','Project','project','runtime-folder','.','',?,'runtime-space','owner')""",(now,))
     runtime = Runtime(store)
     runtime.wait_seconds = 0
@@ -154,7 +154,7 @@ async def test_credentials_revoked_during_handshake_cannot_register(runtime, pha
         else:
             with r.store.transaction():
                 r.store.db.execute('DELETE FROM projects')
-                r.store.db.execute('DELETE FROM space_folders')
+                r.store.db.execute('DELETE FROM space_sources')
                 r.store.db.execute('DELETE FROM space_devices')
                 r.store.db.execute('DELETE FROM devices')
     socket = Socket(secret, **{"before_hello" if phase == "hello" else "after_ready": revoke})

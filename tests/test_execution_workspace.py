@@ -276,3 +276,19 @@ async def test_queued_session_input_rechecks_policy_after_lock(tmp_path, mode):
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
         await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('code','uncertain'), [(0,False),(7,False),(255,True),(-9,True),(-15,True),(0xC000013A,True),(None,True)])
+async def test_ssh_client_termination_cannot_certify_remote_completion(tmp_path,monkeypatch,code,uncertain):
+    from agent.execution import ProcessSupervisor
+    from unittest.mock import AsyncMock
+    agent,_=setup(tmp_path)
+    monkeypatch.setattr('agent.ssh.shutil.which',lambda *a,**kw:'/usr/bin/ssh')
+    agent.run_process=AsyncMock(return_value={'exit_code':code,'output':'','cancelled':False,'timed_out':False})
+    project={'id':None,'root':'','_vps_context':{'id':'a'*32,'resource_id':'resource','connection_ref':'prod'},
+        '_ssh_target':{'vps_id':'a'*32,'resource_id':'resource','connection_ref':'prod'}}
+    result=await ProcessSupervisor(agent).run('b'*32,project,{'command':'true','timeout_seconds':10})
+    assert result['remote_execution_uncertain'] is uncertain
+    assert result['outcome_uncertain'] is uncertain
+    assert agent.run_process.await_count==1

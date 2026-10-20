@@ -249,64 +249,58 @@ space_id TEXT NOT NULL REFERENCES spaces(id), device_id TEXT NOT NULL REFERENCES
  PRIMARY KEY(space_id,device_id)
 );
 
+CREATE TABLE folders (
+id TEXT PRIMARY KEY, name TEXT NOT NULL, device_id TEXT NOT NULL REFERENCES devices(id), device_path TEXT NOT NULL,
+owner_user_id TEXT NOT NULL REFERENCES users(id), mode TEXT NOT NULL CHECK(mode IN ('read','write')),
+allow_tasks INTEGER NOT NULL CHECK(allow_tasks IN (0,1)), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+validated_at REAL NOT NULL, version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), created REAL NOT NULL, updated REAL NOT NULL,
+CHECK(allow_tasks=0 OR mode='write')
+);
+
 CREATE TABLE storage_pools (
 id TEXT PRIMARY KEY, name TEXT NOT NULL, abstract_base TEXT NOT NULL UNIQUE,
- owner_user_id TEXT NOT NULL REFERENCES users(id), enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
- version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), created REAL NOT NULL, updated REAL NOT NULL
+owner_user_id TEXT NOT NULL REFERENCES users(id), enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+default_fs_device_id TEXT NOT NULL REFERENCES devices(id), default_shell_device_id TEXT NOT NULL REFERENCES devices(id),
+shell_allowed_device_ids TEXT NOT NULL DEFAULT '[]',
+version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), created REAL NOT NULL, updated REAL NOT NULL
 );
 
 CREATE TABLE storage_mappings (
 id TEXT PRIMARY KEY, pool_id TEXT NOT NULL REFERENCES storage_pools(id), device_id TEXT NOT NULL REFERENCES devices(id),
- path TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
- version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), validated_at REAL,
- writable INTEGER NOT NULL DEFAULT 0 CHECK(writable IN (0,1)),
- allow_tasks INTEGER NOT NULL DEFAULT 0 CHECK(allow_tasks IN (0,1)),
- UNIQUE(pool_id,device_id), UNIQUE(pool_id,id,device_id)
+path TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), validated_at REAL NOT NULL,
+writable INTEGER NOT NULL DEFAULT 0 CHECK(writable IN (0,1)),
+allow_tasks INTEGER NOT NULL DEFAULT 0 CHECK(allow_tasks IN (0,1)),
+UNIQUE(pool_id,device_id), UNIQUE(pool_id,id,device_id)
 );
 
-CREATE TABLE space_storage (
-id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id), pool_id TEXT NOT NULL REFERENCES storage_pools(id),
- name TEXT NOT NULL, default_device_id TEXT NOT NULL, files_device_id TEXT NOT NULL,
- allowed_device_ids TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
- version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), UNIQUE(space_id,pool_id), UNIQUE(space_id,id), UNIQUE(space_id,id,pool_id),
- FOREIGN KEY(space_id,default_device_id) REFERENCES space_devices(space_id,device_id),
- FOREIGN KEY(space_id,files_device_id) REFERENCES space_devices(space_id,device_id)
-);
-
-CREATE TABLE space_storage_mappings (
-space_id TEXT NOT NULL, storage_binding_id TEXT NOT NULL, pool_id TEXT NOT NULL, mapping_id TEXT NOT NULL,
- device_id TEXT NOT NULL, PRIMARY KEY(storage_binding_id,device_id),
- FOREIGN KEY(space_id,storage_binding_id,pool_id) REFERENCES space_storage(space_id,id,pool_id) ON DELETE CASCADE,
- FOREIGN KEY(pool_id,mapping_id,device_id) REFERENCES storage_mappings(pool_id,id,device_id),
- FOREIGN KEY(space_id,device_id) REFERENCES space_devices(space_id,device_id)
-);
-
-CREATE TABLE space_folders (
+CREATE TABLE space_sources (
 id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id), name TEXT NOT NULL,
- source_kind TEXT NOT NULL CHECK(source_kind IN ('device','storage')),
- device_id TEXT, device_path TEXT, storage_binding_id TEXT, subpath TEXT NOT NULL DEFAULT '.',
- mode TEXT NOT NULL DEFAULT 'read' CHECK(mode IN ('read','write')),
- allow_tasks INTEGER NOT NULL DEFAULT 0 CHECK(allow_tasks IN (0,1)),
- enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)), version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
- validated_at REAL, UNIQUE(space_id,id), UNIQUE(space_id,name),
- FOREIGN KEY(space_id,device_id) REFERENCES space_devices(space_id,device_id),
- FOREIGN KEY(space_id,storage_binding_id) REFERENCES space_storage(space_id,id),
- CHECK((source_kind='device' AND device_id IS NOT NULL AND device_path IS NOT NULL AND storage_binding_id IS NULL AND subpath='.')
-    OR (source_kind='storage' AND device_id IS NULL AND device_path IS NULL AND storage_binding_id IS NOT NULL)),
- CHECK(allow_tasks=0 OR mode='write')
+source_kind TEXT NOT NULL CHECK(source_kind IN ('folder','storage')),
+folder_resource_id TEXT REFERENCES folders(id), pool_id TEXT REFERENCES storage_pools(id),
+subpath TEXT NOT NULL DEFAULT '.', mode TEXT NOT NULL CHECK(mode IN ('read','write')),
+allow_tasks INTEGER NOT NULL CHECK(allow_tasks IN (0,1)),
+files TEXT NOT NULL DEFAULT '{"mode":"inherit"}', shell TEXT NOT NULL DEFAULT '{"mode":"inherit"}',
+enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)), version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
+validated_at REAL NOT NULL, UNIQUE(space_id,id), UNIQUE(space_id,name), UNIQUE(space_id,id,pool_id),
+CHECK((source_kind='folder' AND folder_resource_id IS NOT NULL AND pool_id IS NULL)
+   OR (source_kind='storage' AND folder_resource_id IS NULL AND pool_id IS NOT NULL)),
+CHECK(allow_tasks=0 OR mode='write')
+);
+
+CREATE TABLE space_source_mappings (
+space_id TEXT NOT NULL, source_id TEXT NOT NULL, pool_id TEXT NOT NULL, mapping_id TEXT NOT NULL,
+device_id TEXT NOT NULL, PRIMARY KEY(source_id,device_id),
+FOREIGN KEY(space_id,source_id,pool_id) REFERENCES space_sources(space_id,id,pool_id) ON DELETE CASCADE,
+FOREIGN KEY(pool_id,mapping_id,device_id) REFERENCES storage_mappings(pool_id,id,device_id)
 );
 
 CREATE TABLE projects (
 id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id), alias TEXT NOT NULL, alias_key TEXT NOT NULL,
- folder_id TEXT NOT NULL, subpath TEXT NOT NULL DEFAULT '.', description TEXT NOT NULL DEFAULT '',
- owner_user_id TEXT NOT NULL REFERENCES users(id), version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
- created REAL NOT NULL, UNIQUE(space_id,alias_key), UNIQUE(space_id,id),
- FOREIGN KEY(space_id,folder_id) REFERENCES space_folders(space_id,id)
-);
-
-CREATE TABLE space_shell_settings (
-space_id TEXT PRIMARY KEY REFERENCES spaces(id), settings TEXT NOT NULL DEFAULT '{"mode":"inherit"}',
- version INTEGER NOT NULL DEFAULT 1 CHECK(version>0)
+source_id TEXT NOT NULL, subpath TEXT NOT NULL DEFAULT '.', description TEXT NOT NULL DEFAULT '',
+owner_user_id TEXT NOT NULL REFERENCES users(id), version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
+created REAL NOT NULL, UNIQUE(space_id,alias_key), UNIQUE(space_id,id),
+FOREIGN KEY(space_id,source_id) REFERENCES space_sources(space_id,id)
 );
 
 CREATE TABLE project_shell_settings (
@@ -344,7 +338,7 @@ id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id), resource_id T
  display_mode TEXT NOT NULL DEFAULT 'top_level' CHECK(display_mode IN ('top_level','project_only','both')),
  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)), version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
  UNIQUE(space_id,resource_id), UNIQUE(space_id,name_key), UNIQUE(space_id,id),
- FOREIGN KEY(space_id,runner_device_id) REFERENCES space_devices(space_id,device_id)
+ FOREIGN KEY(runner_device_id) REFERENCES devices(id)
 );
 
 CREATE TABLE vps_projects (
@@ -467,7 +461,7 @@ CREATE INDEX grants_profile ON grants(profile_id);
 
 CREATE INDEX grants_space ON grants(space_id);
 
-CREATE INDEX projects_folder ON projects(folder_id);
+CREATE INDEX projects_folder ON projects(source_id);
 
 CREATE INDEX vps_project_lookup ON vps_projects(project_id,vps_id);
 
@@ -489,10 +483,7 @@ CREATE TRIGGER workspace_projects_scope BEFORE UPDATE OF space_id ON projects
 CREATE TRIGGER workspace_access_profiles_scope BEFORE UPDATE OF space_id ON access_profiles
  WHEN NEW.space_id IS NOT OLD.space_id BEGIN SELECT RAISE(ABORT,'workspace identity is immutable'); END;
 
-CREATE TRIGGER workspace_space_folders_scope BEFORE UPDATE OF space_id ON space_folders
- WHEN NEW.space_id IS NOT OLD.space_id BEGIN SELECT RAISE(ABORT,'workspace identity is immutable'); END;
-
-CREATE TRIGGER workspace_space_storage_scope BEFORE UPDATE OF space_id ON space_storage
+CREATE TRIGGER workspace_space_sources_scope BEFORE UPDATE OF space_id ON space_sources
  WHEN NEW.space_id IS NOT OLD.space_id BEGIN SELECT RAISE(ABORT,'workspace identity is immutable'); END;
 
 CREATE TRIGGER workspace_space_vps_scope BEFORE UPDATE OF space_id ON space_vps

@@ -50,9 +50,9 @@ def api(tmp_path, monkeypatch):
         store.db.execute('INSERT INTO devices(id,name,secret,created,owner_user_id) VALUES(?,?,?,?,?)',
             ('device','fixture',store.encrypt('x'*43),now,'owner'))
         store.db.execute("INSERT INTO space_devices(space_id,device_id) VALUES('audit-space','device')")
-        store.db.execute('''INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode)
-            VALUES('audit-folder','audit-space','Source','device','device',?,'write')''',(str(root),))
-        store.db.execute('''INSERT INTO projects(id,alias,alias_key,folder_id,subpath,description,created,space_id,owner_user_id)
+        from tests.current_model import CurrentModel
+        CurrentModel(store).folder('audit-folder',space='audit-space',device='device',path=root,mode='write',allow_tasks=False)
+        store.db.execute('''INSERT INTO projects(id,alias,alias_key,source_id,subpath,description,created,space_id,owner_user_id)
             VALUES('project','fixture','fixture','audit-folder','.','',?,'audit-space','owner')''',(now,))
     with TestClient(app) as client:
         client.cookies.set('rd_session','session')

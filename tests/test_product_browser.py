@@ -36,14 +36,14 @@ def test_workspace_project_profile_connection_and_audit_flow(stack,product_page,
     page.locator('[data-ws-action="new-projects"]').click()
     form=page.locator('#workspace-form')
     form.locator('[name="alias"]').fill(project_name)
-    form.locator('[name="folder_id"]').select_option(stack.folder['id'])
+    form.locator('[name="source_id"]').select_option(stack.folder['id'])
     form.locator('[name="subpath"]').fill(source.name)
     expect(form.locator('[name="root"],[name="device_id"]')).to_have_count(0)
     page.get_by_role('button',name='保存',exact=True).click()
     expect(form).to_have_count(0,timeout=60000)
     expect(page.locator('#workspace-page h3').filter(has_text=project_name)).to_be_visible()
     project=next(p for p in stack.client.get('/api/projects').json()['projects'] if p['alias']==project_name)
-    assert project['folder_id']==stack.folder['id'] and project['subpath']==source.name
+    assert project['source_id']==stack.folder['id'] and project['subpath']==source.name
     navigate(page,stack,'profiles')
     page.locator('[data-ws-action="new-profiles"]').click()
     form.locator('[name="label"]').fill('Worker '+unique)

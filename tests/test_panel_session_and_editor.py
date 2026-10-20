@@ -37,7 +37,7 @@ def app_page(chat_browser_pool):
       window.fixtureDevices=[{id:'node-one',name:'Fixture node',online:true}];
       window.fixtureProjects=[{id:'project-one',alias:'Fixture',device_id:'node-one',
         root:'/folders/folder-one/one',mode:'write',allow_tasks:true,online:true,version:1,
-        folder_id:'folder-one',subpath:'one',workspace:{id:'space-one',label:'Explicit workspace'}}];
+        source_id:'folder-one',subpath:'one',workspace:{id:'space-one',label:'Explicit workspace'}}];
       window.EventSource=class {addEventListener(){} close(){this.closed=true;}};
       window.fetch=async(path,options={})=>{
         const method=options.method||'GET',body=options.body?JSON.parse(options.body):{};
@@ -67,9 +67,9 @@ def app_page(chat_browser_pool):
         if(path==='/api/spaces')return response({spaces:[{id:'space-one',label:'Explicit workspace'}]});
         if(path==='/api/spaces/space-one')return response({id:'space-one',label:'Explicit workspace',management:['workspace']});
         if(path==='/api/spaces/space-one/projects')return response({projects:fixtureProjects});
-        if(path==='/api/spaces/space-one/folders')return response({folders:[{
+        if(path==='/api/spaces/space-one/sources')return response({sources:[{
           id:'folder-one',name:'Reviewed source',enabled:true,mode:'write',allow_tasks:true,
-          views:[{name:'Fixture node',logical_root:'/folders/folder-one'}]}]});
+          views:[{device_name:'Fixture node',logical_root:'/folders/folder-one'}]}]});
         if(path==='/api/projects/project-one/vps')return response({vps:[]});
         if(path.startsWith('/api/native/access?'))return window.fixtureNativeDenied
           ? response({error:{code:'CLI_FORBIDDEN',message:'Native permission revoked'}},403)

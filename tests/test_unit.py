@@ -56,7 +56,7 @@ def test_password_and_redaction():
 def test_contracts():
     from shared.core_contracts import CORE_TOOLS
     from shared.query_contracts import QUERY_TOOLS
-    definitions=tool_definitions();assert {d['name'] for d in definitions} == CORE_TOOLS | QUERY_TOOLS | {'get_profile','get_access_context','session','get_execution_options','folders_list','projects_create'}
+    definitions=tool_definitions();assert {d['name'] for d in definitions} == CORE_TOOLS | QUERY_TOOLS | {'get_profile','get_access_context','session','get_execution_options','sources_list','projects_create'}
     for tool in definitions:
         assert tool['inputSchema']['type']=='object'
         assert tool['inputSchema']['additionalProperties'] is False
@@ -65,7 +65,7 @@ def test_contracts():
         Draft202012Validator.check_schema(tool['outputSchema'])
         # Omitted additionalProperties is true under JSON Schema, not invalid.
         assert tool['outputSchema'].get('additionalProperties',True) is (tool['name'] != 'get_profile')
-        assert tool['annotations']['readOnlyHint']==(tool['name'] in {'read','vps','get_profile','get_access_context','get_execution_options','folders_list'} | QUERY_TOOLS)
+        assert tool['annotations']['readOnlyHint']==(tool['name'] in {'read','vps','get_profile','get_access_context','get_execution_options','sources_list'} | QUERY_TOOLS)
 
 def test_read_pagination_and_search(engine):
     e,p,r=engine

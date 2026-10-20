@@ -9,7 +9,7 @@ from dataclasses import replace
 from hub import iam
 from shared.util import DevError
 
-TABLES = frozenset({'projects','operations','artifacts','access_profiles','grants','space_folders',
+TABLES = frozenset({'projects','operations','artifacts','access_profiles','grants','space_sources',
                    'space_vps','execution_sessions','native_ownership','native_upload_ownership',
                    'conversations','gateway_calls','gateway_bindings'})
 
@@ -49,7 +49,7 @@ def tool_context(store, principal, name, arguments):
         refs.append(('space_vps', target[4:]))
     if name == 'session' and arguments.get('session_id'):
         refs.append(('execution_sessions', arguments['session_id']))
-    for key, table in [('operation_id','operations'),('artifact_id','artifacts'),('folder_id','space_folders')]:
+    for key, table in [('operation_id','operations'),('artifact_id','artifacts'),('source_id','space_sources')]:
         if arguments.get(key):
             refs.append((table, arguments[key]))
     # Facades split batched IDs into concrete calls, each resolving its own

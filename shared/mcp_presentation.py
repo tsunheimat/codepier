@@ -57,7 +57,8 @@ def _execution(value):
         result['tools'] = {name: bool(path) for name, path in value['tools'].items()}
     result['note'] = ('Commands run on the workspace execution node with its account permissions. '
         'This is not an OS sandbox. File tools enforce their own project path rules. '
-        'No automatic command backup, rollback or interactive input.')
+        'No automatic command backup or rollback. One-shot exec is noninteractive; '
+        'use session for a persistent Shell or interactive PTY when locally enabled.')
     return result
 
 

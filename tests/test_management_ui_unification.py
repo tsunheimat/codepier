@@ -31,7 +31,7 @@ def test_all_management_routes_reflow_in_each_theme(stack, chat_browser_pool, tm
     try:
         _login(page,stack)
         page.evaluate('scheme=>CodePierAppearance.setPreference(scheme)',scheme)
-        for route in (*ROUTES,*('spaces/'+stack.space_id+'/'+tab for tab in ('projects','folders','profiles','connections','members','shell'))):
+        for route in (*ROUTES,*('spaces/'+stack.space_id+'/'+tab for tab in ('projects','sources','profiles','connections','members'))):
             _navigate(page,route)
             if route == 'native':
                 expect(page.locator('#chat-root')).to_be_visible()

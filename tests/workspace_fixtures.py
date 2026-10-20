@@ -26,20 +26,18 @@ class WorkspaceFixture:
                     (identifier,'Runner '+identifier,self.store.encrypt('test-device-secret-'+identifier),'alice',json.dumps({'shell_enabled':True}),self.now))
                 self.store.db.execute('INSERT INTO space_devices(space_id,device_id) VALUES(?,?)',('alice',identifier))
             self.store.db.execute('INSERT INTO space_devices(space_id,device_id) VALUES(?,?)',('bob','c'))
-            self.store.db.execute('INSERT INTO storage_pools(id,name,abstract_base,owner_user_id,created,updated) VALUES(?,?,?,?,?,?)',
-                ('pool','Shared','/storage/shared','alice',self.now,self.now))
+            self.store.db.execute('INSERT INTO storage_pools(id,name,abstract_base,owner_user_id,default_fs_device_id,default_shell_device_id,created,updated) VALUES(?,?,?,?,?,?,?,?)',
+                ('pool','Shared','/storage/shared','alice','b','a',self.now,self.now))
             for identifier in ('a','b','c'):
-                self.store.db.execute('INSERT INTO storage_mappings(id,pool_id,device_id,path,writable,allow_tasks) VALUES(?,?,?,?,1,1)',
+                self.store.db.execute('INSERT INTO storage_mappings(id,pool_id,device_id,path,writable,allow_tasks,validated_at) VALUES(?,?,?,?,1,1,1)',
                     ('map_'+identifier,'pool',identifier,'/mnt/'+identifier))
-            self.store.db.execute('INSERT INTO space_storage(id,space_id,pool_id,name,default_device_id,files_device_id) VALUES(?,?,?,?,?,?)',
-                ('binding','alice','pool','Shared source','a','b'))
+            self.store.db.execute("""INSERT INTO space_sources(id,space_id,name,source_kind,pool_id,subpath,mode,allow_tasks,validated_at)
+                VALUES('folder','alice','Shared source','storage','pool','team','write',1,1)""")
             for identifier in ('a','b'):
-                self.store.db.execute('INSERT INTO space_storage_mappings VALUES(?,?,?,?,?)',('alice','binding','pool','map_'+identifier,identifier))
-            self.store.db.execute('INSERT INTO space_folders(id,space_id,name,source_kind,storage_binding_id,subpath,mode,allow_tasks) VALUES(?,?,?,?,?,?,?,?)',
-                ('folder','alice','Team folder','storage','binding','team','write',1))
-            self.store.db.execute('INSERT INTO projects(id,space_id,alias,alias_key,folder_id,subpath,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?)',
+                self.store.db.execute('INSERT INTO space_source_mappings VALUES(?,?,?,?,?)',('alice','folder','pool','map_'+identifier,identifier))
+            self.store.db.execute('INSERT INTO projects(id,space_id,alias,alias_key,source_id,subpath,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?)',
                 ('project','alice','codepier','codepier','folder','codepier','alice',self.now))
-            self.store.db.execute('INSERT INTO projects(id,space_id,alias,alias_key,folder_id,subpath,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?)',
+            self.store.db.execute('INSERT INTO projects(id,space_id,alias,alias_key,source_id,subpath,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?)',
                 ('other','alice','read-only','read-only','folder','other','alice',self.now))
         self.principal = Principal('panel:alice','alice',{'read'},[],space_id='alice',user_epoch=1)
         self.project = self.store.one('SELECT * FROM projects WHERE id=?',('project',))

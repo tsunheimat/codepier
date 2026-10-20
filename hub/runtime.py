@@ -252,7 +252,7 @@ class Runtime:
         if device_id is not None:
             iam.require_device(self.store,principal,device_id,creation=creation)
         return require_access(self.store,principal,action,project_id=project_id,device_id=device_id,
-                              folder_id=creation.get('folder_id') if creation else None)
+                              source_id=creation.get('source_id') if creation else None)
 
     def visible_project(self, p: dict, principal: Principal):
         return p.get("space_id") == principal.space_id and (principal.admin or "*" in principal.projects or p["id"] in principal.projects)
@@ -297,7 +297,7 @@ class Runtime:
                 continue
             projected=self.project_public(self.routing.hydrate(row,principal))
             if not principal.grant_id:
-                projected.update(folder_id=row['folder_id'],subpath=row['subpath'])
+                projected.update(source_id=row['source_id'],subpath=row['subpath'])
             result.append(projected)
         return result
 
@@ -515,17 +515,17 @@ class Runtime:
         if name in {'get_profile', 'get_access_context'}:
             self.authorize(principal, name)
         elif name == 'projects_create':
-            require_access(self.store, principal, 'projects.create', folder_id=args['folder_id'])
+            require_access(self.store, principal, 'projects.create', source_id=args['source_id'])
             return DeferredCall("project_create", args, None)
-        elif name == 'folders_list':
+        elif name == 'sources_list':
             folders=[]
-            for folder in self.store.all('SELECT id,name FROM space_folders WHERE space_id=? AND enabled=1 ORDER BY name,id',(principal.space_id,)):
+            for folder in self.store.all('SELECT id,name FROM space_sources WHERE space_id=? AND enabled=1 ORDER BY name,id',(principal.space_id,)):
                 try:
-                    require_access(self.store,principal,'read',folder_id=folder['id'])
+                    require_access(self.store,principal,'read',source_id=folder['id'])
                 except DevError:
                     continue
                 folders.append(folder)
-            return {'folders':folders}
+            return {'sources':folders}
         elif name in {'artifacts_list','diagnostics_get'} and principal.space_id is None and not principal.grant_id:
             # A logged-in panel overview has no ambient workspace. These two
             # read-only aggregators enumerate live memberships and recheck each
@@ -723,13 +723,13 @@ class Runtime:
                 "elapsed_seconds": round(max(0, (time.time() if pending else op["updated"]) - op["created"]), 1),
                 "deadline": op["deadline"], "note": "已持久保存。网络恢复后继续同一操作；请查询 operation_id，不要换新幂等键重复提交。"}
 
-    def require_folder_context(self,principal,project,tool):
+    def require_source_context(self,principal,project,tool):
         from hub.workspace_sources import select_view,fingerprint
-        context=project.get('_folder_context') or {}
-        if tool!='fs_tree' or set(context)!={'folder_id','view_hash','device_id'}:
+        context=project.get('_source_context') or {}
+        if tool!='fs_tree' or set(context)!={'source_id','view_hash','device_id'}:
             raise DevError('FOLDER_CONTEXT_REQUIRED','Only bounded folder browsing is allowed',403)
-        require_access(self.store,principal,'read',folder_id=context['folder_id'])
-        view=select_view(self.store,{'id':'','space_id':principal.space_id,'folder_id':context['folder_id'],'subpath':'.'})
+        require_access(self.store,principal,'read',source_id=context['source_id'])
+        view=select_view(self.store,{'id':'','space_id':principal.space_id,'source_id':context['source_id'],'subpath':'.'})
         if (fingerprint(view)!=context['view_hash'] or view['device_id']!=context['device_id']
                 or view['root']!=project['root'] or project.get('mode')!='read' or project.get('allow_tasks')):
             raise DevError('FOLDER_CONTEXT_CHANGED','The original folder view changed',409)
@@ -762,13 +762,13 @@ class Runtime:
             device=self.workspace_resources.require_validation(principal,project,name)
             if device!=project['device_id']:
                 raise DevError('VALIDATION_TARGET_CHANGED','Validation must use its original device',403)
-        elif project.get('_folder_context'):
-            self.require_folder_context(principal,project,name)
+        elif project.get('_source_context'):
+            self.require_source_context(principal,project,name)
         elif project.get('id'):
             self.authorize(principal,TOOLS[name].scope,project_id=project['id'])
         else:
             raise DevError('RESOURCE_CONTEXT_REQUIRED','Operations require an explicit workspace resource or trusted inventory intent',403)
-        snapshot = {k: project[k] for k in ("id", "alias", "root", "mode", "allow_tasks", "_route_context", "_execution_plan", "_source_boundary", "_validation_context", "_folder_context", "_vps_context", "_session_context") if k in project}
+        snapshot = {k: project[k] for k in ("id", "alias", "root", "mode", "allow_tasks", "_route_context", "_execution_plan", "_source_boundary", "_validation_context", "_source_context", "_vps_context", "_session_context") if k in project}
         if (project.get('_source_boundary') or project.get('_vps_context') or project.get('_session_context')) and self.online(project['device_id']):
             self.routing.require_protocol(self.connections.get(project["device_id"]))
         if name in {"open_workspace", "show_changes", "apply_patch", "edit"}:
@@ -913,8 +913,8 @@ class Runtime:
                 expected=self.workspace_resources.require_validation(caller,snapshot,op['tool'],observe=status_only)
                 if expected!=op['device_id']:
                     return 'The original validation device does not match'
-            elif snapshot.get('_folder_context'):
-                self.require_folder_context(caller,snapshot,op['tool'])
+            elif snapshot.get('_source_context'):
+                self.require_source_context(caller,snapshot,op['tool'])
             elif snapshot.get('_session_context'):
                 # The stored open envelope is completed before the Session is used.
                 # Later calls retain the entire original selected device envelope.

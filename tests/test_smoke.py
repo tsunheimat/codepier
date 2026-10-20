@@ -62,7 +62,7 @@ def test_anonymous_requests_never_access_private_management(stack, path):
 def test_forged_management_write_is_denied(stack, origin, csrf):
     headers = {'X-RD-CSRF': csrf or stack.client.headers['X-RD-CSRF']}
     if origin: headers['Origin'] = origin
-    body = {'alias':'NoAdmission','folder_id':stack.folder['id'],'subpath':'.','idempotency_key':uuid.uuid4().hex}
+    body = {'alias':'NoAdmission','source_id':stack.folder['id'],'subpath':'.','idempotency_key':uuid.uuid4().hex}
     response = stack.client.post(f'/api/spaces/{stack.space_id}/projects', json=body, headers=headers)
     assert response.status_code == 403
 
@@ -81,9 +81,10 @@ def test_write_is_idempotent_and_audited(stack):
 def test_project_creation_keeps_explicit_read_boundary(stack):
     directory = stack.root / ('Smoke-' + uuid.uuid4().hex)
     directory.mkdir()
-    folder = stack.create_folder({'name':'Read-only smoke','source_kind':'device',
+    folder = stack.create_folder({'name':'Read-only smoke',
         'device_id':stack.device,'device_path':str(directory),'mode':'read','allow_tasks':False})
-    project = stack.create_project({'alias':directory.name,'folder_id':folder['id'],'subpath':'.'})
+    source = stack.create_source({'name':'Read-only smoke','source_kind':'folder','folder_resource_id':folder['id']})
+    project = stack.create_project({'alias':directory.name,'source_id':source['id'],'subpath':'.'})
     view = stack.must(stack.client.get('/api/projects/'+project['id']))
     assert view['mode'] == 'read' and not view['allow_tasks']
     # The project cannot override the folder's read-only setting even with a

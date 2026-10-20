@@ -118,7 +118,7 @@ class BuiltinHub:
                 'expected_version':0,'idempotency_key':uuid.uuid4().hex})
             assert response.status_code==200,response.text
         def create(kind,body):
-            path=f'/api/spaces/{self.space_id}/{kind}'
+            path='/api/folders' if kind=='folders' else f'/api/spaces/{self.space_id}/{kind}'
             values={**body,'idempotency_key':uuid.uuid4().hex}
             response=self.client.post(path,json=values)
             if response.status_code==409 and response.json().get('error',{}).get('code')=='VALIDATION_PENDING':
@@ -131,9 +131,10 @@ class BuiltinHub:
                 response=self.client.post(path,json=values)
             assert response.status_code==201,response.text
             return response.json()
-        folder=create('folders',{'name':alias+' folder','source_kind':'device','device_id':device,
+        folder=create('folders',{'name':alias+' folder','device_id':device,
             'device_path':str(root),'mode':mode,'allow_tasks':False})
-        return create('projects',{'alias':alias,'folder_id':folder['id'],'subpath':'.'})
+        source=create('sources',{'name':alias+' source','source_kind':'folder','folder_resource_id':folder['id'],'mode':mode})
+        return create('projects',{'alias':alias,'source_id':source['id'],'subpath':'.'})
 
     def call(self, tool, **arguments):
         return self.client.post('/api/tools/call', json={'tool': tool, 'arguments': arguments})

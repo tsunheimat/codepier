@@ -44,11 +44,9 @@ window.CodePierSpaces = (() => {
   let snapshot = null;
   const tabs = [
     ['projects', 'Projects'],
-    ['folders', 'Folders'],
-    ['storage', 'Shared Storage'],
+    ['sources', 'Folder / Storage Pool'],
     ['devices', 'Devices'],
     ['vps', 'VPS'],
-    ['shell', 'Shell'],
     ['profiles', 'Profiles'],
     ['connections', 'MCP Connections'],
     ['members', '成员与权限'],
@@ -155,7 +153,8 @@ window.CodePierSpaces = (() => {
   }
 
   function projectCollection(projects, { editable = false, workspaceLabels = false } = {}) {
-    if (!projects.length) return empty('进入工作空间，先添加 Folder 再建立 Project。');
+    if (!projects.length)
+      return empty('进入工作空间，先导入 Folder 或 Storage Pool 再建立 Project。');
     const cards = projects
       .map((p) => {
         const search = [
@@ -181,7 +180,7 @@ window.CodePierSpaces = (() => {
       <section class="workspace-project-collection">${cards}<div class="empty panel" id="project-no-match" hidden><p>没有匹配的项目</p><button type="button" class="btn ghost small" data-ui="clear-project-query">清除筛选</button></div></section>` +
       uiHelp(
         '工作空间目录与权限',
-        'Project 引用工作空间中的一个 Folder 及其根目录或子目录。可选执行设备来自该来源的映射；权限由成员和 Profile 决定，默认设备不可用时不会自动换机。',
+        'Project 引用工作空间中的一个文件来源及其根目录或子目录。可选执行设备来自该来源的映射；权限由成员和 Profile 决定，默认设备不可用时不会自动换机。',
       )
     );
   }
@@ -199,21 +198,13 @@ window.CodePierSpaces = (() => {
     const space = await api(root(address.id));
     const allowedTabs = tabs.filter(
       ([id]) =>
-        !['members', 'folders', 'storage', 'devices', 'shell', 'mcp'].includes(id) ||
+        !['members', 'sources', 'devices', 'mcp'].includes(id) ||
         manage(space, id === 'members' ? 'members' : 'resources'),
     );
     if (!allowedTabs.some(([id]) => id === address.tab))
       throw new Error('这个工作空间没有提供该管理页面。');
     let data, content;
-    if (address.tab === 'shell') {
-      data = await api(root(space.id) + '/shell');
-      content = panel(
-        'Shell 继承',
-        pretty(data.settings) +
-          '<p>继承来源时，每个 Project 按自己的 Folder 来源解析默认设备；不会任选一台在线设备。</p>',
-        manage(space, 'resources') ? button('shell', '编辑 Shell') : '',
-      );
-    } else if (address.tab === 'mcp') {
+    if (address.tab === 'mcp') {
       content =
         (await CodePierGateway.html(space.id)) + (await CodePierExternalPlugins.html(space.id));
     } else {
@@ -233,26 +224,15 @@ window.CodePierSpaces = (() => {
             (address.tab === 'members' && editable ? button('invite', '建立邀请') : '')
           : '';
       if (address.tab === 'projects') content = projectCollection(rows, { editable });
-      if (address.tab === 'folders')
+      if (address.tab === 'sources')
         content = rows
           .map((x) =>
             row(
               x.name,
-              `${esc(x.source_kind)} · ${esc(x.device_path || x.subpath)} · ${x.mode === 'write' ? '可写' : '只读'} · ${x.allow_tasks ? '允许命令' : '不允许命令'}<br>${(x.views || []).map((v) => `${esc(v.name)} → <code>${esc(v.root)}</code>`).join('<br>')}${x.source_error ? '<br>' + esc(x.source_error) : ''}`,
-              button('folder', '编辑', x.id) +
+              `${esc(x.source_kind)} · ${esc(x.device_path || x.subpath)} · ${x.mode === 'write' ? '可写' : '只读'} · ${x.allow_tasks ? '允许命令' : '不允许命令'}<br>${(x.views || []).map((v) => `${esc(v.device_name)} → <code>${esc(v.root)}</code>`).join('<br>')}<br>文件设备：${esc(x.files_device_id || '不可用')} · Shell 默认：${esc(x.default_device_id || '不可用')}（${esc(x.shell_origin || '')}）${x.unavailable ? '<br>' + esc(x.unavailable.message) : ''}`,
+              button('source', '编辑', x.id) +
                 button('browse', '浏览', x.id) +
-                button('remove-folder', '移除', x.id),
-            ),
-          )
-          .join('');
-      if (address.tab === 'storage')
-        content = rows
-          .map((x) =>
-            row(
-              x.name,
-              `<code>${esc(x.abstract_base)}</code><br>${(x.mappings || []).map((m) => `${esc(m.device_name)} → <code>${esc(m.path)}</code>`).join('<br>')}<br>默认 Shell：${esc(x.default_device_id)} · 文件设备：${esc(x.files_device_id)}`,
-              button('storage', '编辑映射与默认设备', x.id) +
-                button('remove-storage', '移除', x.id),
+                button('remove-source', '移除', x.id),
             ),
           )
           .join('');
@@ -344,7 +324,7 @@ window.CodePierSpaces = (() => {
     if (login !== S.session || page !== location.hash) return '';
     snapshot = { space, address, data };
     const pending = new URLSearchParams(location.search).get('authorize');
-    return `<div id="workspace-page">${heading(space.label, 'WORKSPACE', '资源先进入工作空间；Project 只使用其 Folder 已提供的设备。', `<a class="btn" href="#spaces">全部工作空间</a>${manage(space, 'workspace') ? button('settings', '工作空间设置') : ''}`)}<nav class="product-tabs" aria-label="工作空间设置">${allowedTabs.map(([id, label]) => `<a class="btn ${address.tab === id ? 'primary' : 'ghost'}" href="#spaces/${enc(space.id)}/${id}" ${address.tab === id ? 'aria-current="page"' : ''}>${esc(label)}</a>`).join('')}</nav>${pending && address.tab === 'profiles' ? notice(`建立 Profile 后仍需返回确认授权。${button('return-consent', '返回 MCP 授权', pending)}`) : ''}${content}</div>`;
+    return `<div id="workspace-page">${heading(space.label, 'WORKSPACE', '资源先进入工作空间；Project 只使用文件来源已提供的设备。', `<a class="btn" href="#spaces">全部工作空间</a>${manage(space, 'workspace') ? button('settings', '工作空间设置') : ''}`)}<nav class="product-tabs" aria-label="工作空间设置">${allowedTabs.map(([id, label]) => `<a class="btn ${address.tab === id ? 'primary' : 'ghost'}" href="#spaces/${enc(space.id)}/${id}" ${address.tab === id ? 'aria-current="page"' : ''}>${esc(label)}</a>`).join('')}</nav>${pending && address.tab === 'profiles' ? notice(`建立 Profile 后仍需返回确认授权。${button('return-consent', '返回 MCP 授权', pending)}`) : ''}${content}</div>`;
   }
 
   async function chooseSpace(title, proceed) {
@@ -407,41 +387,44 @@ window.CodePierSpaces = (() => {
         ),
     );
   }
-  async function folderEditor(space, old = null) {
-    const [devices, storage] = await Promise.all([
-      api(root(space.id) + '/devices'),
-      api(root(space.id) + '/storage'),
-    ]);
+  async function sourceEditor(space, old = null) {
+    const current = viewIntent();
+    const [folders, pools] = await Promise.all([api('/api/folders'), api('/api/storage-pools')]);
+    if (!current()) return;
+    let mapRows = [],
+      load = 0;
     const d = form(
-      old ? '编辑 Folder' : '添加 Folder',
+      old ? '编辑文件来源' : '导入 Folder / Storage Pool',
       field('name', '名称', old?.name, 'required maxlength="100"') +
         select(
           'source_kind',
-          '来源',
+          '来源类型',
           [
-            ['device', '设备目录'],
-            ['storage', '工作空间共享存储'],
+            ['folder', 'Folder · 单设备目录'],
+            ['storage', 'Storage Pool · 共享存储'],
           ],
-          old?.source_kind || 'device',
+          old?.source_kind || 'folder',
+          old ? 'disabled' : '',
         ) +
-        '<div data-source-device>' +
-        select('device_id', '工作空间设备', options(devices.devices), old?.device_id) +
-        field(
-          'device_path',
-          '设备绝对路径',
-          old?.device_path,
-          'maxlength="4096" placeholder="/srv/projects"',
-        ) +
-        '</div>' +
-        '<div data-source-storage>' +
+        '<div data-folder-resource>' +
         select(
-          'storage_binding_id',
-          '工作空间存储',
-          options(storage.storage),
-          old?.storage_binding_id,
+          'folder_resource_id',
+          'Folder 资源',
+          [['', '请选择'], ...options(folders.folders.filter((x) => x.enabled))],
+          old?.folder_resource_id,
+          old ? 'disabled' : '',
         ) +
-        field('subpath', '存储中的子目录', old?.subpath || '.', 'maxlength="4096"') +
         '</div>' +
+        '<div data-pool-resource>' +
+        select(
+          'pool_id',
+          'Storage Pool 资源',
+          [['', '请选择'], ...options(pools.pools.filter((x) => x.enabled))],
+          old?.pool_id,
+          old ? 'disabled' : '',
+        ) +
+        '<div data-source-mappings></div><div data-source-defaults></div></div>' +
+        field('subpath', '提供的根目录或子目录', old?.subpath || '.', 'required maxlength="4096"') +
         select(
           'mode',
           '文件访问',
@@ -454,56 +437,192 @@ window.CodePierSpaces = (() => {
         check('allow_tasks', '允许命令执行', !!old?.allow_tasks) +
         check('enabled', '启用', old ? !!old.enabled : true) +
         notice(
-          '绑定不会创建或挂载目录。路径必须由设备验证；一个工作空间可以添加同一设备的多个目录。',
+          'Folder 与 Storage Pool 都可直接作为 Project 来源。映射设备无需另外加入工作空间；导入不会授予独立设备访问权，也不会挂载或同步文件。',
         ),
       (f, key) => {
         const v = f.elements,
-          kind = v.source_kind.value;
-        const body = {
-          name: v.name.value,
-          source_kind: kind,
-          mode: v.mode.value,
-          allow_tasks: v.allow_tasks.checked,
-          enabled: v.enabled.checked,
-          ...(kind === 'device'
-            ? { device_id: v.device_id.value, device_path: v.device_path.value, subpath: '.' }
-            : { storage_binding_id: v.storage_binding_id.value, subpath: v.subpath.value }),
-        };
+          pool = v.source_kind.value === 'storage';
+        if (pool && !values(f, 'mapping_ids').length) throw new Error('至少选择一个来源映射。');
+        const files =
+          pool && v.files_mode.value === 'custom'
+            ? { mode: 'custom', device_id: v.files_device_id.value }
+            : { mode: 'inherit' };
+        const shell =
+          pool && v.shell_mode.value === 'custom'
+            ? {
+                mode: 'custom',
+                default_device_id: v.default_device_id.value,
+                allowed_device_ids: values(f, 'allowed_device_ids'),
+              }
+            : { mode: pool ? v.shell_mode.value : 'inherit' };
         return save(
-          root(space.id) + '/folders' + (old ? '/' + enc(old.id) : ''),
-          change(old, body, key),
+          root(space.id) + '/sources' + (old ? '/' + enc(old.id) : ''),
+          change(
+            old,
+            {
+              name: v.name.value,
+              source_kind: v.source_kind.value,
+              ...(pool
+                ? { pool_id: v.pool_id.value, mapping_ids: values(f, 'mapping_ids') }
+                : { folder_resource_id: v.folder_resource_id.value }),
+              subpath: v.subpath.value,
+              mode: v.mode.value,
+              allow_tasks: v.allow_tasks.checked,
+              enabled: v.enabled.checked,
+              files,
+              shell,
+            },
+            key,
+          ),
           !!old,
         );
       },
-      (f, d) => {
-        const update = () => {
-          const direct = f.elements.source_kind.value === 'device';
-          $('[data-source-device]', d).hidden = !direct;
-          $('[data-source-storage]', d).hidden = direct;
-          f.elements.device_path.required = direct;
-          f.elements.device_id.required = direct;
-          f.elements.storage_binding_id.required = !direct;
-          f.elements.subpath.required = !direct;
-          if (f.elements.mode.value !== 'write') {
-            f.elements.allow_tasks.checked = false;
-            f.elements.allow_tasks.disabled = true;
-          } else f.elements.allow_tasks.disabled = false;
-        };
-        f.elements.source_kind.onchange = update;
-        f.elements.mode.onchange = update;
-        update();
-      },
     );
+    const f = $('form', d),
+      v = f.elements;
+    const updateDefaults = () => {
+      const pool = pools.pools.find((x) => x.id === v.pool_id.value);
+      const selected = mapRows.filter((x) => values(f, 'mapping_ids').includes(x.id));
+      const executable = selected.filter(
+        (x) =>
+          x.shell_capable &&
+          (!pool?.shell_allowed_device_ids.length ||
+            pool.shell_allowed_device_ids.includes(x.device_id)),
+      );
+      const prior = {
+        filesMode: v.files_mode?.value ?? old?.files?.mode ?? 'inherit',
+        fs: v.files_device_id?.value ?? old?.files?.device_id ?? '',
+        shellMode: v.shell_mode?.value ?? old?.shell?.mode ?? 'inherit',
+        shell: v.default_device_id?.value ?? old?.shell?.default_device_id ?? '',
+        allowed: v.allowed_device_ids
+          ? values(f, 'allowed_device_ids')
+          : old?.shell?.allowed_device_ids || [],
+      };
+      const name = (id) => mapRows.find((x) => x.device_id === id)?.device_name || id || '未配置';
+      $('[data-source-defaults]', d).innerHTML =
+        select(
+          'files_mode',
+          '文件设备',
+          [
+            ['inherit', '继承 Pool：' + name(pool?.default_fs_device_id)],
+            ['custom', '覆盖'],
+          ],
+          prior.filesMode,
+        ) +
+        '<div data-files-custom>' +
+        select(
+          'files_device_id',
+          '文件设备覆盖',
+          [
+            ['', '请选择'],
+            ...selected
+              .filter((x) => v.mode.value !== 'write' || x.writable)
+              .map((x) => [x.device_id, x.device_name]),
+          ],
+          prior.fs,
+        ) +
+        '</div>' +
+        select(
+          'shell_mode',
+          'Shell 设置',
+          [
+            ['inherit', '继承 Pool：' + name(pool?.default_shell_device_id)],
+            ['custom', '覆盖'],
+            ['disabled', '停用'],
+          ],
+          prior.shellMode,
+        ) +
+        '<div data-shell-custom>' +
+        select(
+          'default_device_id',
+          '默认 Shell 设备',
+          [['', '请选择'], ...executable.map((x) => [x.device_id, x.device_name])],
+          prior.shell,
+        ) +
+        multi(
+          'allowed_device_ids',
+          'Shell 允许设备（不选即来源内全部符合条件的映射）',
+          executable.map((x) => [x.device_id, x.device_name]),
+          prior.allowed,
+        ) +
+        '</div><p data-default-message class="form-note"></p>';
+      const update = () => {
+        const fsCustom = v.files_mode.value === 'custom',
+          shellCustom = v.shell_mode.value === 'custom';
+        $('[data-files-custom]', d).hidden = !fsCustom;
+        v.files_device_id.required = fsCustom;
+        $('[data-shell-custom]', d).hidden = !shellCustom;
+        v.default_device_id.required = shellCustom;
+        const missing = [];
+        if (!fsCustom && !selected.some((x) => x.device_id === pool?.default_fs_device_id))
+          missing.push('已排除 Pool 文件默认设备，请选择覆盖或恢复该映射。');
+        if (
+          v.allow_tasks.checked &&
+          v.shell_mode.value === 'inherit' &&
+          !executable.some((x) => x.device_id === pool?.default_shell_device_id)
+        )
+          missing.push('已排除 Pool Shell 默认设备，请选择覆盖或恢复该映射。');
+        $('[data-default-message]', d).textContent = missing.join(' ');
+        v.pool_id.setCustomValidity(missing.join(' '));
+      };
+      v.files_mode.onchange = update;
+      v.shell_mode.onchange = update;
+      update();
+    };
+    const loadMappings = async () => {
+      const ticket = ++load,
+        id = v.pool_id.value;
+      mapRows = [];
+      $('[data-source-mappings]', d).replaceChildren();
+      $('[data-source-defaults]', d).replaceChildren();
+      if (!id) return;
+      const out = await api('/api/storage-pools/' + enc(id) + '/mappings');
+      if (!d.isConnected || ticket !== load || v.source_kind.value !== 'storage') return;
+      mapRows = out.mappings.filter((x) => x.available);
+      $('[data-source-mappings]', d).innerHTML = multi(
+        'mapping_ids',
+        '提供的设备映射',
+        mapRows.map((x) => [x.id, x.device_name + ' → ' + x.path]),
+        old?.mapping_ids || mapRows.map((x) => x.id),
+      );
+      $$('input[name="mapping_ids"]', d).forEach((n) => (n.onchange = updateDefaults));
+      updateDefaults();
+    };
+    const updateKind = () => {
+      const pool = v.source_kind.value === 'storage';
+      $('[data-folder-resource]', d).hidden = pool;
+      $('[data-pool-resource]', d).hidden = !pool;
+      v.folder_resource_id.required = !pool;
+      v.folder_resource_id.disabled = pool || !!old;
+      v.pool_id.required = pool;
+      $$('input, select', $('[data-pool-resource]', d)).forEach((n) => {
+        n.disabled = !pool || (n.name === 'pool_id' && !!old);
+      });
+      if (!pool) v.pool_id.setCustomValidity('');
+      if (v.mode.value !== 'write') {
+        v.allow_tasks.checked = false;
+        v.allow_tasks.disabled = true;
+      } else v.allow_tasks.disabled = false;
+      if (pool && v.pool_id.value) updateDefaults();
+    };
+    v.source_kind.onchange = updateKind;
+    v.mode.onchange = updateKind;
+    v.allow_tasks.onchange = () => {
+      if (v.source_kind.value === 'storage') updateDefaults();
+    };
+    v.pool_id.onchange = () => void loadMappings().catch((e) => toast(e.message, true));
+    updateKind();
+    await loadMappings();
     return d;
   }
   async function browse(space, folder, path = '.') {
     const data = await settled(
       api(
-        root(space.id) + '/folders/' + enc(folder.id) + '/browse?' + new URLSearchParams({ path }),
+        root(space.id) + '/sources/' + enc(folder.id) + '/browse?' + new URLSearchParams({ path }),
       ),
     );
     modal(
-      'Folder · ' + folder.name,
+      '文件来源 · ' + folder.name,
       pretty(data) + notice('Project 可绑定根目录 “.” 或其中一个相对子目录。'),
     );
   }
@@ -520,23 +639,26 @@ window.CodePierSpaces = (() => {
       spaceId = old.workspace?.id;
     }
     if (!spaceId) throw new Error('无法定位 Project 的工作空间；请从工作空间打开该项目。');
-    const folders = (await api(root(spaceId) + '/folders')).folders.filter((x) => x.enabled);
+    const folders = (await api(root(spaceId) + '/sources')).sources.filter((x) => x.enabled);
     if (!current()) return;
-    if (!folders.length) throw new Error('先在这个工作空间添加 Folder，再建立 Project。');
+    if (!folders.length)
+      throw new Error('先在这个工作空间导入 Folder 或 Storage Pool，再建立 Project。');
     form(
       old ? '编辑 Project' : '新建 Project',
       field('alias', '项目名称', old?.alias, 'required maxlength="100"') +
         field('description', '说明', old?.description, 'maxlength="2000"') +
-        select('folder_id', '工作空间 Folder', options(folders), old?.folder_id, 'required') +
+        select('source_id', '工作空间文件来源', options(folders), old?.source_id, 'required') +
         field(
           'subpath',
           '根目录或相对子目录',
           old?.subpath || '.',
           'required maxlength="4096" aria-describedby="project-subpath-help"',
         ) +
-        '<p class="form-note" id="project-subpath-help">使用工作空间 Folder 的相对子目录；“.” 使用 Folder 根目录，不能越出范围。</p>' +
+        '<p class="form-note" id="project-subpath-help">使用工作空间文件来源的相对子目录；“.” 使用来源根目录，不能越出范围。</p>' +
         '<div data-folder-preview class="form-note"></div>' +
-        notice('每个 Project 只引用一个 Folder。使用 “.” 绑定根目录；不能越出 Folder 范围。'),
+        notice(
+          '每个 Project 只引用一个 Folder 或 Storage Pool 来源。使用 “.” 绑定根目录；不能越出来源范围。',
+        ),
       (f, key) =>
         save(
           old ? '/api/projects/' + enc(id) : root(spaceId) + '/projects',
@@ -545,7 +667,7 @@ window.CodePierSpaces = (() => {
             {
               alias: f.elements.alias.value,
               description: f.elements.description.value,
-              folder_id: f.elements.folder_id.value,
+              source_id: f.elements.source_id.value,
               subpath: f.elements.subpath.value,
             },
             key,
@@ -554,12 +676,12 @@ window.CodePierSpaces = (() => {
         ),
       (f, d) => {
         const preview = () => {
-          const x = folders.find((x) => x.id === f.elements.folder_id.value);
+          const x = folders.find((x) => x.id === f.elements.source_id.value);
           $('[data-folder-preview]', d).innerHTML = (x?.views || [])
-            .map((v) => `${esc(v.name)} → <code>${esc(v.logical_root || v.root)}</code>`)
+            .map((v) => `${esc(v.device_name)} → <code>${esc(v.logical_root || v.root)}</code>`)
             .join('<br>');
         };
-        f.elements.folder_id.onchange = preview;
+        f.elements.source_id.onchange = preview;
         preview();
       },
     );
@@ -587,7 +709,7 @@ window.CodePierSpaces = (() => {
             )
             .join('') || empty('没有在这个 Project 类别显示的 VPS。'),
         ),
-      `<button class="btn" data-ws-project-folder>Folder</button><button class="btn" data-ws-project-shell>Shell</button><button class="btn" data-ws-project-artifacts>产物 / 下载</button><button class="btn primary" data-ws-project-tools>开发工具</button>`,
+      `<button class="btn" data-ws-project-folder>文件来源</button><button class="btn" data-ws-project-shell>Shell</button><button class="btn" data-ws-project-artifacts>产物 / 下载</button><button class="btn primary" data-ws-project-tools>开发工具</button>`,
       true,
     );
     $('[data-ws-project-folder]', d).onclick = async () => {
@@ -618,21 +740,17 @@ window.CodePierSpaces = (() => {
     );
   }
   async function shellEditor(spaceId, projectId = '') {
-    const url = projectId ? '/api/projects/' + enc(projectId) + '/shell' : root(spaceId) + '/shell';
+    const url = '/api/projects/' + enc(projectId) + '/shell';
     const state = await api(url);
-    const devices = projectId
-      ? state.devices
-      : (await api(root(spaceId) + '/devices')).devices.filter(
-          (x) => x.info?.shell_enabled !== false,
-        );
+    const devices = state.devices;
     const old = state.settings;
     form(
-      projectId ? 'Project Shell' : '工作空间 Shell',
+      'Project Shell',
       select(
         'mode',
         '执行设置',
         [
-          ['inherit', projectId ? '继承工作空间' : '继承 Folder 来源'],
+          ['inherit', '继承文件来源'],
           ['custom', '自定义'],
           ['disabled', '停用'],
         ],
@@ -656,7 +774,7 @@ window.CodePierSpaces = (() => {
           ? `<details><summary>当前解析结果</summary>${pretty(state.resolved)}</details>`
           : '') +
         (state.resolved_error ? notice(esc(state.resolved_error.message)) : '') +
-        notice('自定义只选择工作空间 Folder 提供的设备。默认设备不可用时失败，不自动切换。'),
+        notice('自定义只选择文件来源提供的设备。默认设备不可用时失败，不自动切换。'),
       (f, key) => {
         const custom = f.elements.mode.value === 'custom';
         return save(
@@ -691,9 +809,70 @@ window.CodePierSpaces = (() => {
     );
   }
 
-  async function poolEditor(old = null) {
+  async function folderInventoryEditor(old = null) {
+    const current = viewIntent(),
+      inventory = await api('/api/devices');
+    if (!current()) return;
     form(
-      old ? '编辑 Shared Storage' : '新增 Shared Storage',
+      old ? '编辑 Folder 资源' : '新增 Folder 资源',
+      field('name', '名称', old?.name, 'required maxlength="100"') +
+        select(
+          'device_id',
+          '设备',
+          options(inventory.devices),
+          old?.device_id,
+          old ? 'disabled' : 'required',
+        ) +
+        field('device_path', '设备绝对路径', old?.device_path, 'required maxlength="4096"') +
+        select(
+          'mode',
+          '文件能力',
+          [
+            ['read', '只读'],
+            ['write', '可写'],
+          ],
+          old?.mode || 'read',
+        ) +
+        check('allow_tasks', '允许命令执行', !!old?.allow_tasks) +
+        check('enabled', '启用', old ? !!old.enabled : true) +
+        notice(
+          '一个 Folder 只指向一个设备目录。保存由 Runner 验证路径和能力；随后可导入工作空间并缩小子目录范围。',
+        ),
+      (f, key) =>
+        save(
+          '/api/folders' + (old ? '/' + enc(old.id) : ''),
+          change(
+            old,
+            {
+              name: f.elements.name.value,
+              device_id: f.elements.device_id.value,
+              device_path: f.elements.device_path.value,
+              mode: f.elements.mode.value,
+              allow_tasks: f.elements.allow_tasks.checked,
+              enabled: f.elements.enabled.checked,
+            },
+            key,
+          ),
+          !!old,
+        ),
+      (f) => {
+        const update = () => {
+          f.elements.allow_tasks.disabled = f.elements.mode.value !== 'write';
+          if (f.elements.allow_tasks.disabled) f.elements.allow_tasks.checked = false;
+        };
+        f.elements.mode.onchange = update;
+        update();
+      },
+    );
+  }
+  async function poolEditor(old = null) {
+    const current = viewIntent();
+    const inventory = await api('/api/devices');
+    const rows = old ? (await api('/api/storage-pools/' + enc(old.id) + '/mappings')).mappings : [];
+    if (!current()) return;
+    const devices = inventory.devices.filter((x) => x.enabled);
+    const d = form(
+      old ? '编辑 Storage Pool' : '新增 Storage Pool',
       field('name', '名称', old?.name, 'required maxlength="100"') +
         field(
           'abstract_base',
@@ -701,8 +880,36 @@ window.CodePierSpaces = (() => {
           old?.abstract_base || '/storage/',
           'required maxlength="4096"',
         ) +
+        (!old
+          ? '<fieldset class="ws-options"><legend>设备路径映射</legend>' +
+            devices
+              .map(
+                (x) =>
+                  check('mapping_device', '纳入 ' + x.name, false).replace(
+                    'name="mapping_device"',
+                    `name="mapping_device" value="${esc(x.id)}"`,
+                  ) +
+                  field(
+                    'mapping_path_' + x.id,
+                    x.name + ' 的绝对路径',
+                    '',
+                    'maxlength="4096" data-pool-path="' + esc(x.id) + '"',
+                  ),
+              )
+              .join('') +
+            '</fieldset>'
+          : '') +
+        '<div data-pool-defaults></div>' +
         check('enabled', '启用', old ? !!old.enabled : true) +
-        notice('逻辑路径不是设备上的真实挂载。添加设备映射后，仍需在工作空间纳入这些映射。'),
+        (!old
+          ? check(
+              'confirmed_same_storage',
+              '我已确认各设备映射的是同一份共享数据，不是独立 Git clone',
+            )
+          : '') +
+        notice(
+          'Pool 拥有独立的文件和 Shell 默认设备。工作空间可继承或覆盖；离线默认设备不会触发自动换机。',
+        ),
       (f, key) =>
         save(
           '/api/storage-pools' + (old ? '/' + enc(old.id) : ''),
@@ -712,12 +919,71 @@ window.CodePierSpaces = (() => {
               name: f.elements.name.value,
               abstract_base: f.elements.abstract_base.value,
               enabled: f.elements.enabled.checked,
+              default_fs_device_id: f.elements.default_fs_device_id.value,
+              default_shell_device_id: f.elements.default_shell_device_id.value,
+              shell_allowed_device_ids: values(f, 'shell_allowed_device_ids'),
+              ...(!old
+                ? {
+                    confirmed_same_storage: f.elements.confirmed_same_storage.checked,
+                    mappings: values(f, 'mapping_device').map((id) => ({
+                      device_id: id,
+                      path: f.elements['mapping_path_' + id].value,
+                    })),
+                  }
+                : {}),
             },
             key,
           ),
           !!old,
         ),
     );
+    const f = $('form', d);
+    const update = () => {
+      const selected = old
+        ? rows.filter((x) => x.available)
+        : values(f, 'mapping_device').map((id) => ({
+            device_id: id,
+            device_name: devices.find((x) => x.id === id).name,
+            shell_capable: devices.find((x) => x.id === id).info?.shell_enabled !== false,
+          }));
+      const executable = selected.filter((x) => x.shell_capable);
+      const fs = f.elements.default_fs_device_id?.value ?? old?.default_fs_device_id ?? '';
+      const shell = f.elements.default_shell_device_id?.value ?? old?.default_shell_device_id ?? '';
+      const allowed = f.elements.shell_allowed_device_ids
+        ? values(f, 'shell_allowed_device_ids')
+        : old?.shell_allowed_device_ids || [];
+      $('[data-pool-defaults]', d).innerHTML =
+        select(
+          'default_fs_device_id',
+          'Pool 文件默认设备',
+          [['', '请选择'], ...selected.map((x) => [x.device_id, x.device_name])],
+          fs,
+          'required',
+        ) +
+        select(
+          'default_shell_device_id',
+          'Pool Shell 默认设备',
+          [['', '请选择'], ...executable.map((x) => [x.device_id, x.device_name])],
+          shell,
+          'required',
+        ) +
+        multi(
+          'shell_allowed_device_ids',
+          'Shell 允许设备（不选即全部符合条件的映射）',
+          executable.map((x) => [x.device_id, x.device_name]),
+          allowed,
+        );
+      if (!old)
+        $$('[data-pool-path]', d).forEach((n) => {
+          n.required = values(f, 'mapping_device').includes(n.dataset.poolPath);
+          n.disabled = !n.required;
+        });
+    };
+    if (!old) {
+      f.elements.confirmed_same_storage.required = true;
+      $$('[name="mapping_device"]', d).forEach((n) => (n.onchange = update));
+    }
+    update();
   }
   async function mappings(pool) {
     const [data, inventory] = await Promise.all([
@@ -801,107 +1067,6 @@ window.CodePierSpaces = (() => {
           })),
     );
   }
-  async function storageEditor(space, old = null) {
-    const [pools, devices] = await Promise.all([
-      api('/api/storage-pools'),
-      api(root(space.id) + '/devices'),
-    ]);
-    let mapRows = [],
-      load = 0;
-    const d = form(
-      '工作空间共享存储',
-      field('name', '名称', old?.name, 'required maxlength="100"') +
-        select(
-          'pool_id',
-          '存储资源',
-          [['', '请选择'], ...options(pools.pools)],
-          old?.pool_id,
-          old ? 'disabled' : 'required',
-        ) +
-        '<div data-storage-mappings></div><div data-storage-devices></div>' +
-        check('enabled', '启用', old ? !!old.enabled : true) +
-        notice(
-          '只纳入这个工作空间的设备映射。默认 Shell 设备必选；允许清单不选表示全部符合条件的映射设备。',
-        ),
-      (f, key) =>
-        save(
-          root(space.id) + '/storage' + (old ? '/' + enc(old.id) : ''),
-          change(
-            old,
-            {
-              pool_id: f.elements.pool_id.value,
-              name: f.elements.name.value,
-              mapping_ids: values(f, 'mapping_ids'),
-              default_device_id: f.elements.default_device_id?.value || '',
-              files_device_id: f.elements.files_device_id?.value || '',
-              allowed_device_ids: values(f, 'allowed_device_ids'),
-              enabled: f.elements.enabled.checked,
-            },
-            key,
-          ),
-          !!old,
-        ),
-    );
-    const f = $('form', d);
-    const updateDevices = () => {
-      const selected = mapRows.filter((x) => values(f, 'mapping_ids').includes(x.id));
-      const executable = selected.filter(
-        (x) =>
-          x.allow_tasks &&
-          x.writable &&
-          devices.devices.find((d) => d.id === x.device_id)?.info?.shell_enabled !== false,
-      );
-      const previousDefault = f.elements.default_device_id?.value || old?.default_device_id || '';
-      const previousFiles = f.elements.files_device_id?.value || old?.files_device_id || '';
-      const previousAllowed = f.querySelector('[name="allowed_device_ids"]')
-        ? values(f, 'allowed_device_ids')
-        : old?.allowed_device_ids || [];
-      $('[data-storage-devices]', d).innerHTML =
-        select(
-          'files_device_id',
-          '文件操作设备',
-          [['', '请选择'], ...selected.map((x) => [x.device_id, x.device_name])],
-          previousFiles,
-          'required',
-        ) +
-        select(
-          'default_device_id',
-          '默认 Shell 设备',
-          [['', '请选择'], ...executable.map((x) => [x.device_id, x.device_name])],
-          previousDefault,
-          'required',
-        ) +
-        multi(
-          'allowed_device_ids',
-          'Shell 允许设备（不选即全部已纳入的可执行映射）',
-          executable.map((x) => [x.device_id, x.device_name]),
-          previousAllowed,
-        );
-    };
-    const loadMappings = async () => {
-      const ticket = ++load,
-        id = f.elements.pool_id.value;
-      $('[data-storage-mappings]', d).replaceChildren();
-      $('[data-storage-devices]', d).replaceChildren();
-      if (!id) return;
-      const out = await api('/api/storage-pools/' + enc(id) + '/mappings');
-      if (!d.isConnected || ticket !== load) return;
-      mapRows = out.mappings.filter(
-        (x) => x.enabled && devices.devices.some((d) => d.id === x.device_id),
-      );
-      $('[data-storage-mappings]', d).innerHTML = multi(
-        'mapping_ids',
-        '纳入工作空间的设备路径',
-        mapRows.map((x) => [x.id, x.device_name + ' → ' + x.path]),
-        old?.mapping_ids || old?.mappings?.map((x) => x.id) || [],
-      );
-      $$('input[name="mapping_ids"]', d).forEach((n) => (n.onchange = updateDevices));
-      updateDevices();
-    };
-    f.elements.pool_id.onchange = () => void loadMappings().catch((e) => toast(e.message, true));
-    await loadMappings();
-  }
-
   function policyEditorHTML(policy = {}, member = false) {
     // Explicit resource/action pairs remain editable without invented roles.
     return (
@@ -930,7 +1095,7 @@ window.CodePierSpaces = (() => {
         JSON.stringify(policy, null, 2),
         'spellcheck="false"',
       ) +
-      '<p class="form-note">保存时，下方可视化项目/VPS选择会覆盖 JSON 中对应的规则；外部工具、Folder 委派等其他规则保留。</p></details>'
+      '<p class="form-note">保存时，下方可视化项目/VPS选择会覆盖 JSON 中对应的规则；外部工具、文件来源委派等其他规则保留。</p></details>'
     );
   }
   async function bindPolicy(f, space, policy = {}) {
@@ -1341,7 +1506,7 @@ window.CodePierSpaces = (() => {
   async function vpsEditor(space, old = null) {
     const [inventory, devices, projects] = await Promise.all([
       api('/api/vps'),
-      api(root(space.id) + '/devices'),
+      api('/api/devices'),
       api(root(space.id) + '/projects'),
     ]);
     form(
@@ -1356,7 +1521,7 @@ window.CodePierSpaces = (() => {
         ) +
         select(
           'runner_device_id',
-          '发起 SSH 的工作空间 Runner',
+          '发起 SSH 的 Runner（独立技术依赖）',
           options(devices.devices),
           old?.runner_device_id,
           'required',
@@ -1438,16 +1603,30 @@ window.CodePierSpaces = (() => {
   }
 
   async function inventoryHTML(kind) {
-    const data = await api(kind === 'storage' ? '/api/storage-pools' : '/api/vps'),
-      rows = data[kind === 'storage' ? 'pools' : 'vps'];
+    const data = await api(
+        kind === 'storage'
+          ? '/api/storage-pools'
+          : kind === 'folders'
+            ? '/api/folders'
+            : '/api/vps',
+      ),
+      rows = data[kind === 'storage' ? 'pools' : kind === 'folders' ? 'folders' : 'vps'];
     snapshot = { inventory: rows, kind };
     return `<div id="workspace-inventory">${panel(
-      kind === 'storage' ? 'Shared Storage · 共享存储' : 'VPS 资源库',
+      kind === 'storage'
+        ? 'Storage Pool · 共享存储'
+        : kind === 'folders'
+          ? 'Folder · 设备目录'
+          : 'VPS 资源库',
       rows
         .map((x) =>
           row(
             x.name,
-            kind === 'storage' ? `<code>${esc(x.abstract_base)}</code>` : esc(x.host),
+            kind === 'storage'
+              ? `<code>${esc(x.abstract_base)}</code><br>文件默认：${esc(x.default_fs_device_id)} · Shell 默认：${esc(x.default_shell_device_id)}`
+              : kind === 'folders'
+                ? `<code>${esc(x.device_path)}</code> · ${esc(x.device_id)}`
+                : esc(x.host),
             button('inventory-edit', '编辑', x.id) +
               (kind === 'storage' ? button('mappings', '设备路径映射', x.id) : '') +
               button('inventory-remove', '移除', x.id),
@@ -1456,7 +1635,7 @@ window.CodePierSpaces = (() => {
         .join('') || empty('尚未登记资源。'),
       button('inventory-new', '新增资源'),
     )}
-      ${notice('这里只登记资源。使用权限、工作空间映射、默认执行设备与 VPS 显示位置都在具体工作空间配置。')}</div>`;
+      ${notice('这里只登记资源。使用权限、工作空间映射、来源范围与 VPS 显示位置在工作空间配置；Pool 默认设备可直接继承。')}</div>`;
   }
   async function remove(url, old, message = '移除这个工作空间绑定？不会删除实物文件或远端资源。') {
     if (!confirm(message)) return;
@@ -1485,22 +1664,16 @@ window.CodePierSpaces = (() => {
                 return bindDevice(space);
               case 'device-detail':
                 return deviceDetail(id);
-              case 'new-folders':
-                return folderEditor(space);
-              case 'folder':
-                return folderEditor(space, old);
+              case 'new-sources':
+                return sourceEditor(space);
+              case 'source':
+                return sourceEditor(space, old);
               case 'browse':
                 return browse(space, old);
               case 'new-projects':
                 return projectEditor(null, space.id);
               case 'project':
                 return projectEditor(id);
-              case 'new-storage':
-                return storageEditor(space);
-              case 'storage':
-                return storageEditor(space, old);
-              case 'shell':
-                return shellEditor(space.id);
               case 'new-profiles':
                 return profileEditor(space);
               case 'profile':
@@ -1542,23 +1715,31 @@ window.CodePierSpaces = (() => {
                 return vpsEditor(space, old);
               case 'vps-command':
                 return commandVPS(old);
-              case 'remove-folder':
-                return remove(root(space.id) + '/folders/' + enc(id), old);
-              case 'remove-storage':
-                return remove(root(space.id) + '/storage/' + enc(id), old);
+              case 'remove-source':
+                return remove(root(space.id) + '/sources/' + enc(id), old);
               case 'remove-vps':
                 return remove(root(space.id) + '/vps/' + enc(id), old);
               case 'inventory-new':
-                return captured.kind === 'storage' ? poolEditor() : vpsInventoryEditor();
+                return captured.kind === 'storage'
+                  ? poolEditor()
+                  : captured.kind === 'folders'
+                    ? folderInventoryEditor()
+                    : vpsInventoryEditor();
               case 'inventory-edit':
                 return captured.kind === 'storage'
                   ? poolEditor(captured.inventory.find((x) => x.id === id))
-                  : vpsInventoryEditor(captured.inventory.find((x) => x.id === id));
+                  : captured.kind === 'folders'
+                    ? folderInventoryEditor(captured.inventory.find((x) => x.id === id))
+                    : vpsInventoryEditor(captured.inventory.find((x) => x.id === id));
               case 'mappings':
                 return mappings(captured.inventory.find((x) => x.id === id));
               case 'inventory-remove':
                 return remove(
-                  (captured.kind === 'storage' ? '/api/storage-pools/' : '/api/vps/') + enc(id),
+                  (captured.kind === 'storage'
+                    ? '/api/storage-pools/'
+                    : captured.kind === 'folders'
+                      ? '/api/folders/'
+                      : '/api/vps/') + enc(id),
                   captured.inventory.find((x) => x.id === id),
                   '移除资源登记？不会删除实物数据或远端服务器。',
                 );

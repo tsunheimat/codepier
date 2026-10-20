@@ -1,8 +1,7 @@
-"""Resolve a project's one workspace folder to reviewed device views.
+"""Resolve one workspace-bound Folder or Pool without granting Device access.
 
-Inventory mappings have no authority by themselves. Every view must travel through
-space_devices and the folder's own workspace storage binding. No fallback executor,
-string substitution in commands, filesystem synchronization, or ambient workspace.
+Inventory supplies technical mappings. The explicit source binding, member policy
+and Connection consent supply authority. Offline defaults never select a fallback.
 """
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ import hashlib
 import json
 from pathlib import PurePosixPath, PureWindowsPath
 
-from shared.workspace_contracts import ShellSettings, absolute_path, mapped_path, relative_path
+from shared.workspace_contracts import FilesSettings, ShellSettings, absolute_path, mapped_path, relative_path
 from shared.util import DevError
 
 
@@ -32,101 +31,149 @@ def _json(value, expected):
         raise DevError('WORKSPACE_CONFIGURATION_INVALID','Stored workspace configuration is invalid',409) from exc
 
 
-def _device(store, space_id, device_id):
-    row=store.one('''SELECT d.*,sd.enabled AS binding_enabled FROM space_devices sd
-        JOIN devices d ON d.id=sd.device_id WHERE sd.space_id=? AND sd.device_id=?''',(space_id,device_id))
+def inventory_device(store, device_id):
     from hub import iam
-    if not row or not row['binding_enabled'] or not iam.device_identity_active(store,row):
-        raise DevError('SOURCE_DEVICE_UNAVAILABLE','The source device is not active in this workspace',409)
+    row=store.one('SELECT * FROM devices WHERE id=?',(device_id,))
+    if not row or not iam.device_identity_active(store,row):
+        raise DevError('SOURCE_DEVICE_UNAVAILABLE','The source device identity is inactive or missing',409)
     return row
 
 
-def source_views(store, project):
-    folder=store.one('SELECT * FROM space_folders WHERE id=? AND space_id=?',(project['folder_id'],project['space_id']))
-    if not folder or not folder['enabled']:
-        raise DevError('PROJECT_SOURCE_UNAVAILABLE','The project folder is no longer provided by this workspace',409)
-    try:
-        project_subpath=relative_path(project['subpath'])
-        views={}
-        def view(device,mount,subpath,logical,source_key,source_path):
-            root=mapped_path(mount,subpath)
-            info=_json(device['info'],dict)
-            return {'device_id':device['id'],'device_name':device['name'],'root':root,'mount':mount,
-                    'subpath':subpath,'logical_root':logical,'source_key':source_key,'source_path':source_path,
-                    'mode':folder['mode'],'allow_tasks':bool(folder['allow_tasks']),
-                    'shell_enabled':info.get('shell_enabled'),'folder_id':folder['id']}
-        if folder['source_kind']=='device':
-            device=_device(store,project['space_id'],folder['device_id'])
-            root=mapped_path(folder['device_path'],project_subpath)
-            location=absolute_path(root)
-            canonical=str(location).casefold() if isinstance(location,PureWindowsPath) else str(location)
-            views[device['id']]=view(device,folder['device_path'],project_subpath,
-                mapped_path('/folders/'+folder['id'],project_subpath),'device:'+device['id'],canonical)
-            return {'folder':folder,'views':views,'default_device_id':device['id'],
-                    'files_device_id':device['id'],'allowed_device_ids':set(views)}
-        binding=store.one('SELECT * FROM space_storage WHERE id=? AND space_id=?',(folder['storage_binding_id'],project['space_id']))
-        pool=store.one('SELECT * FROM storage_pools WHERE id=?',(binding['pool_id'],)) if binding else None
-        if not binding or not binding['enabled'] or not pool or not pool['enabled']:
-            raise DevError('STORAGE_BINDING_UNAVAILABLE','The workspace storage binding is disabled or missing',409)
-        subpath=joined(folder['subpath'],project_subpath)
-        rows=store.all('''SELECT m.* FROM space_storage_mappings sm JOIN storage_mappings m
+def pool_defaults(pool, mappings, devices):
+    """Validate actual Pool defaults against validated, enabled mapping capabilities."""
+    mapped={m['device_id'] for m in mappings if m['enabled'] and m['validated_at'] is not None and m['device_id'] in devices}
+    executable={m['device_id'] for m in mappings if m['device_id'] in mapped and m['writable'] and m['allow_tasks']
+                and m['device_id'] in devices and _json(devices[m['device_id']]['info'],dict).get('shell_enabled') is not False}
+    selected=_json(pool['shell_allowed_device_ids'],list)
+    if len(set(selected))!=len(selected) or not set(selected)<=executable:
+        raise DevError('POOL_SHELL_DEVICES_INVALID','Pool shell limits must select executable mapped devices',409)
+    allowed=executable & set(selected) if selected else executable
+    if pool['default_fs_device_id'] not in mapped:
+        raise DevError('POOL_FILES_DEFAULT_INVALID','The Pool files default needs a validated enabled mapping',409)
+    if pool['default_shell_device_id'] not in allowed:
+        raise DevError('POOL_SHELL_DEFAULT_INVALID','The Pool shell default needs an eligible writable mapping',409)
+    return allowed
+
+
+def configured_source(store, binding, mappings=None):
+    """Resolve binding defaults, before adding a Project subdirectory.
+
+    Mapping selection is pinned at import. Empty editor selection means all current
+    validated mappings; future Pool mappings do not silently expand that binding.
+    """
+    files=FilesSettings.model_validate(_json(binding['files'],dict))
+    shell=ShellSettings.model_validate(_json(binding['shell'],dict))
+    if binding['source_kind']=='folder':
+        folder=store.one('SELECT * FROM folders WHERE id=?',(binding['folder_resource_id'],))
+        if not folder or not folder['enabled']:
+            raise DevError('FOLDER_UNAVAILABLE','The inventory Folder is disabled or missing',409)
+        device=inventory_device(store,folder['device_id'])
+        if files.mode!='inherit' or shell.mode=='custom':
+            raise DevError('DEVICE_NOT_IN_SOURCE','A Folder source uses only its own device',403)
+        if binding['mode']=='write' and folder['mode']!='write' or binding['allow_tasks'] and not folder['allow_tasks']:
+            raise DevError('SOURCE_CAPABILITY_DENIED','The Folder does not provide the requested source capabilities',403)
+        return {'resource':folder,'mappings':[{'device_id':device['id'],'path':folder['device_path'],
+                'writable':folder['mode']=='write','allow_tasks':folder['allow_tasks']}],
+                'files_device_id':device['id'],'default_device_id':device['id'],
+                'allowed_device_ids':{device['id']},'shell_disabled':shell.mode=='disabled','shell_origin':'source'}
+    pool=store.one('SELECT * FROM storage_pools WHERE id=?',(binding['pool_id'],))
+    if not pool or not pool['enabled']:
+        raise DevError('STORAGE_POOL_UNAVAILABLE','The inventory Pool is disabled or missing',409)
+    if mappings is None:
+        mappings=store.all('''SELECT m.* FROM space_source_mappings sm JOIN storage_mappings m
             ON m.id=sm.mapping_id AND m.pool_id=sm.pool_id AND m.device_id=sm.device_id
-            WHERE sm.storage_binding_id=? AND sm.space_id=? AND sm.pool_id=? AND m.enabled=1''',
-            (binding['id'],project['space_id'],binding['pool_id']))
-        for mapping in rows:
+            WHERE sm.source_id=? AND sm.space_id=? AND sm.pool_id=?''',
+            (binding['id'],binding['space_id'],pool['id']))
+    if not mappings or any(not m['enabled'] or m['validated_at'] is None for m in mappings):
+        raise DevError('STORAGE_MAPPING_UNAVAILABLE','A selected source mapping is disabled or unvalidated',409)
+    devices={m['device_id']:store.one('SELECT * FROM devices WHERE id=?',(m['device_id'],)) for m in mappings}
+    mapped={m['device_id'] for m in mappings}
+    executable={m['device_id'] for m in mappings if m['writable'] and m['allow_tasks'] and devices.get(m['device_id'])
+                and _json(devices[m['device_id']]['info'],dict).get('shell_enabled') is not False}
+    pool_allowed=_json(pool['shell_allowed_device_ids'],list)
+    allowed=executable & set(pool_allowed) if pool_allowed else executable
+    fs=files.device_id if files.mode=='custom' else pool['default_fs_device_id']
+    default=shell.default_device_id if shell.mode=='custom' else pool['default_shell_device_id']
+    if fs not in mapped:
+        raise DevError('FILES_DEVICE_UNAVAILABLE','The files default is outside the available source mappings; configure an override',409)
+    if binding['mode']=='write' and not next(m for m in mappings if m['device_id']==fs)['writable']:
+        raise DevError('FILES_READ_ONLY','The files default cannot provide a writable source',403)
+    if shell.mode=='custom' and shell.allowed_device_ids:
+        if not set(shell.allowed_device_ids)<=allowed:
+            raise DevError('DEVICE_NOT_IN_SOURCE','Shell overrides must narrow the Pool and selected source mappings',403)
+        allowed &= set(shell.allowed_device_ids)
+    return {'resource':pool,'mappings':mappings,'files_device_id':fs,'default_device_id':default,
+            'allowed_device_ids':allowed,'shell_disabled':shell.mode=='disabled',
+            'shell_origin':'source' if shell.mode=='custom' else 'pool'}
+
+
+def source_views(store, project):
+    binding=store.one('SELECT * FROM space_sources WHERE id=? AND space_id=?',(project['source_id'],project['space_id']))
+    if not binding or not binding['enabled']:
+        raise DevError('PROJECT_SOURCE_UNAVAILABLE','The source is no longer provided by this workspace',409)
+    try:
+        resolved=configured_source(store,binding)
+        subpath=joined(binding['subpath'],project['subpath'])
+        resource=resolved['resource']
+        views={}
+        for mapping in resolved['mappings']:
             try:
-                device=_device(store,project['space_id'],mapping['device_id'])
+                device=inventory_device(store,mapping['device_id'])
             except DevError:
                 continue
-            views[device['id']]=view(device,mapping['path'],subpath,mapped_path(pool['abstract_base'],subpath),
-                                    'pool:'+pool['id'],subpath)
-            views[device['id']]['allow_tasks'] = bool(folder['allow_tasks'] and mapping['allow_tasks'])
-            views[device['id']]['mode'] = 'write' if folder['mode']=='write' and mapping['writable'] else 'read'
-        selected=_json(binding['allowed_device_ids'],list)
-        if any(not isinstance(i,str) for i in selected) or len(set(selected))!=len(selected):
-            raise ValueError('Invalid allowed device list')
-        allowed=set(views) & set(selected) if selected else set(views)
-        return {'folder':folder,'views':views,'default_device_id':binding['default_device_id'],
-                'files_device_id':binding['files_device_id'],'allowed_device_ids':allowed,'storage':binding}
+            root=mapped_path(mapping['path'],subpath)
+            if binding['source_kind']=='folder':
+                location=absolute_path(root)
+                canonical=str(location).casefold() if isinstance(location,PureWindowsPath) else str(location)
+                source_key,source_path='device:'+device['id'],canonical
+                logical=mapped_path('/folders/'+resource['id'],subpath)
+            else:
+                source_key,source_path='pool:'+resource['id'],subpath
+                logical=mapped_path(resource['abstract_base'],subpath)
+            views[device['id']]={'device_id':device['id'],'device_name':device['name'],'root':root,
+                'mount':mapping['path'],'subpath':subpath,'logical_root':logical,
+                'source_key':source_key,'source_path':source_path,
+                'mode':'write' if binding['mode']=='write' and mapping['writable'] else 'read',
+                'allow_tasks':bool(binding['allow_tasks'] and mapping['allow_tasks']),
+                'shell_enabled':_json(device['info'],dict).get('shell_enabled'),'source_id':binding['id']}
+        return {**resolved,'source':binding,'views':views}
     except (ValueError,KeyError,TypeError) as exc:
         raise DevError('WORKSPACE_CONFIGURATION_INVALID','The source mapping cannot be resolved safely',409) from exc
 
 
 def shell_settings(store, project):
-    rows=(store.one('SELECT settings FROM space_shell_settings WHERE space_id=?',(project['space_id'],)),
-          store.one('SELECT settings FROM project_shell_settings WHERE project_id=?',(project['id'],)))
+    row=store.one('SELECT settings FROM project_shell_settings WHERE project_id=?',(project['id'],))
     try:
-        return tuple(ShellSettings.model_validate(_json(r['settings'],dict) if r else {}) for r in rows)
+        return ShellSettings.model_validate(_json(row['settings'],dict) if row else {})
     except (ValueError,TypeError) as exc:
         raise DevError('SHELL_CONFIGURATION_INVALID','Stored shell inheritance is invalid',409) from exc
 
 
-def resolve_shell(store, project, *, source=None, space_override=None, project_override=None):
+def resolve_shell(store, project, *, source=None, project_override=None):
     source=source or source_views(store,project)
-    space_settings,project_settings=shell_settings(store,project)
-    space_settings=space_override if space_override is not None else space_settings
-    project_settings=project_override if project_override is not None else project_settings
-    allowed=set(source['allowed_device_ids'])
+    settings=project_override if project_override is not None else shell_settings(store,project)
+    if source['shell_disabled'] or settings.mode=='disabled':
+        raise DevError('SHELL_DISABLED','Shell is explicitly disabled for this source or project',403)
+    allowed={i for i in source['allowed_device_ids'] if i in source['views'] and source['views'][i]['shell_enabled'] is not False
+             and source['views'][i]['allow_tasks'] and source['views'][i]['mode']=='write'}
     default=source['default_device_id']
-    origin='source'
-    for origin_name,settings in (('workspace',space_settings),('project',project_settings)):
-        if settings.mode=='disabled':
-            raise DevError('SHELL_DISABLED','Shell is explicitly disabled for this project source',403)
-        if settings.mode=='custom':
-            if settings.allowed_device_ids:
-                allowed &= set(settings.allowed_device_ids)
-            default=settings.default_device_id
-            origin=origin_name
-    allowed={i for i in allowed if source['views'][i]['shell_enabled'] is not False and source['views'][i]['allow_tasks'] and source['views'][i]['mode']=='write'}
+    origin=source['shell_origin']
+    if settings.mode=='custom':
+        if not ({settings.default_device_id} | set(settings.allowed_device_ids))<=allowed:
+            raise DevError('DEVICE_NOT_IN_PROJECT_SOURCE','Project shell settings must narrow their source devices',403)
+        if settings.allowed_device_ids:
+            allowed &= set(settings.allowed_device_ids)
+        default=settings.default_device_id
+        origin='project'
     if default not in allowed:
-        raise DevError('DEFAULT_DEVICE_UNAVAILABLE','The configured default is not an executable view of this folder; no other device was selected',409)
-    if not source['folder']['allow_tasks'] or source['folder']['mode']!='write':
-        raise DevError('TASKS_DISABLED','This workspace folder does not permit commands',403)
+        raise DevError('DEFAULT_DEVICE_UNAVAILABLE','The configured default is unavailable; no other device was selected',409)
+    if not source['source']['allow_tasks'] or source['source']['mode']!='write':
+        raise DevError('TASKS_DISABLED','This workspace source does not permit commands',403)
     return {'default_device_id':default,'allowed_device_ids':allowed,'origin':origin}
 
 
 def target_fingerprint(view):
-    return fingerprint({k:view[k] for k in ('device_id','mount','subpath','root','source_key','source_path','mode','allow_tasks')})
+    return fingerprint({k:view[k] for k in ('source_id','device_id','mount','subpath','root','source_key','source_path','mode','allow_tasks')})
 
 
 def vps_fingerprint(row):
