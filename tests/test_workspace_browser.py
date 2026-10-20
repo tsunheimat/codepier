@@ -6,7 +6,9 @@ workspace, browser profile, SSH host, or user credential is accessed.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
+import json
 import re
 import uuid
 from urllib.parse import parse_qs, urlparse
@@ -49,32 +51,62 @@ def open_workspace(context, server, path):
     return page
 
 
+@contextmanager
+def held_account_response(page, lookup, *, initial=False):
+    """Hold one authentic response without intercepting unrelated HTTP or SSE."""
+    script='''lookup => {
+        const original = window.fetch;
+        const gate = window.accountResponseGate = { original, status: null, count: 0 };
+        const released = new Promise(resolve => { gate.release = resolve; });
+        window.fetch = async function(...args) {
+            const response = await original.apply(this, args);
+            if (args[0] === lookup && gate.count === 0) {
+                gate.count++;
+                gate.status = response.status;
+                window.fetch = original;
+                await released;
+            }
+            return response;
+        };
+    }'''
+    if initial:
+        page.add_init_script('('+script+')('+json.dumps(lookup)+');')
+    else:
+        page.evaluate(script,lookup)
+    try:
+        yield
+    finally:
+        if not page.is_closed():
+            page.evaluate('''() => {
+                const gate = window.accountResponseGate;
+                if (!gate) return;
+                window.fetch = gate.original;
+                gate.release();
+                delete window.accountResponseGate;
+            }''')
+
+
 @pytest.mark.parametrize('lookup',['/api/session','/api/iam/me','/api/devices','/api/projects'])
 def test_initial_account_lookup_survives_workspace_navigation_without_replaying_writes(workspace_server,workspace_browser,lookup):
     server=workspace_server;context,errors=workspace_browser
-    held=[];writes=[]
-    page=context.new_page()
-    def hold(route):
-        held.append(route)
-        page.evaluate('document.documentElement.dataset.bootLookupHeld="true"')
-    context.route(server.url+lookup,hold,times=1)
+    writes=[];page=context.new_page()
     page.on('request',lambda request:writes.append(request.url)
         if request.method not in {'GET','HEAD','OPTIONS'} else None)
-    try:
+    with held_account_response(page,lookup,initial=True):
         # The workspace listing intentionally does not enumerate global
         # devices/projects. Exercise those account snapshots from their actual
         # resource-page entrypoint, not by requiring unused startup requests.
         start='resources/devices' if lookup in {'/api/devices','/api/projects'} else 'spaces'
         with page.expect_request(server.url+lookup):
             page.goto(server.url+'/#'+start,wait_until='domcontentloaded')
-        page.wait_for_function('document.documentElement.dataset.bootLookupHeld==="true"')
-        assert len(held)==1
-        # Fetch authentic fixture account data, then change only the view before
-        # delivery. Neither login identity nor credentials are substituted.
-        response=held[0].fetch()
-        assert response.status==200
+        page.wait_for_function('accountResponseGate.status !== null')
+        assert page.evaluate('accountResponseGate.status')==200
+        assert page.evaluate('accountResponseGate.count')==1
+        # The server response is real; only its delivery to the application is
+        # delayed until the explicit view changes. Do not toggle interception
+        # that can also pause the next, unrelated account request.
         page.evaluate('location.hash="#spaces/alice/profiles"')
-        held.pop().fulfill(response=response)
+        page.evaluate('accountResponseGate.release()')
         try:
             expect(page.locator('#workspace-page h2')).to_have_text('Profiles',timeout=15000)
         except AssertionError:
@@ -91,9 +123,6 @@ def test_initial_account_lookup_survives_workspace_navigation_without_replaying_
         expect(page.locator('#retry-boot')).to_have_count(0)
         assert page.evaluate('S.session.user_id')=='alice'
         assert writes==[] and errors==[]
-    finally:
-        for route in held:route.abort()
-        context.unroute(server.url+lookup)
 
 
 def test_project_search_counts_actual_scope_and_keeps_only_same_page_drafts(workspace_server,workspace_browser):
@@ -295,43 +324,20 @@ def test_navigation_during_revalidation_preserves_url_without_old_content(worksp
     assert page.evaluate('!S.work.project && !ChatUI.project && ChatUI.views.size===0')
     page.on('request',lambda request:(reads if request.method=='GET' else writes).append(urlparse(request.url).path))
     url=server.url+'/api/iam/me'
-    # Delay delivery of one authentic response, not the browser's transport.
-    # Installing/removing network interception while the real SSE reconnects
-    # also changes unrelated requests. This barrier controls only the identity
-    # promise; cookies, response bytes, workspace reads and SSE remain real.
-    page.evaluate('''() => {
-        const original = window.fetch;
-        const gate = window.identityResponseGate = { original, status: null, count: 0 };
-        const released = new Promise(resolve => { gate.release = resolve; });
-        window.fetch = async function(...args) {
-            const response = await original.apply(this, args);
-            if (args[0] === '/api/iam/me' && gate.count === 0) {
-                gate.count++;
-                gate.status = response.status;
-                window.fetch = original;
-                await released;
-            }
-            return response;
-        };
-    }''')
-    try:
+    # Use the same response-only barrier as cold boot. Real cookies, response
+    # bytes, workspace reads and the reconnecting EventSource remain untouched.
+    with held_account_response(page,'/api/iam/me'):
         with page.expect_request(url):page.evaluate('void recoverPanelAccess()')
-        page.wait_for_function('identityResponseGate.status !== null')
-        assert page.evaluate('identityResponseGate.status')==200
-        assert page.evaluate('identityResponseGate.count')==1
+        page.wait_for_function('accountResponseGate.status !== null')
+        assert page.evaluate('accountResponseGate.status')==200
+        assert page.evaluate('accountResponseGate.count')==1
         expect(page.locator('#breadcrumb-page')).to_have_count(0)
         page.evaluate('navigate("spaces/alice/folders")')
         expect(page).to_have_url(server.url+'/#spaces/alice/folders')
         expect(page.locator('#workspace-page')).to_have_count(0)
-        page.evaluate('identityResponseGate.release()')
+        page.evaluate('accountResponseGate.release()')
         expect(page.locator('#workspace-page h2')).to_have_text('Folders',timeout=15000)
         assert '/api/spaces/alice/folders' in reads
         assert '/api/devices' not in reads and '/api/projects' not in reads
         assert page.evaluate('Object.hasOwn(S,"space_id")') is False
         assert writes==[] and errors==[]
-    finally:
-        page.evaluate('''() => {
-            window.fetch = identityResponseGate.original;
-            identityResponseGate.release();
-            delete window.identityResponseGate;
-        }''')
