@@ -229,8 +229,9 @@ window.CodePierSpaces = (() => {
           .map((x) =>
             row(
               x.name,
-              `${esc(x.source_kind)} · ${esc(x.device_path || x.subpath)} · ${x.mode === 'write' ? '可写' : '只读'} · ${x.allow_tasks ? '允许命令' : '不允许命令'}<br>${(x.views || []).map((v) => `${esc(v.device_name)} → <code>${esc(v.root)}</code>`).join('<br>')}<br>文件设备：${esc(x.files_device_id || '不可用')} · Shell 默认：${esc(x.default_device_id || '不可用')}（${esc(x.shell_origin || '')}）${x.unavailable ? '<br>' + esc(x.unavailable.message) : ''}`,
+              `${x.enabled ? '已启用' : '已停用'} · ${esc(x.source_kind)} · ${esc(x.device_path || x.subpath)} · ${x.mode === 'write' ? '可写' : '只读'} · ${x.allow_tasks ? '允许命令' : '不允许命令'}<br>${(x.views || []).map((v) => `${esc(v.device_name)} → <code>${esc(v.root)}</code>`).join('<br>')}<br>文件设备：${esc(x.files_device_id || '不可用')} · Shell 默认：${esc(x.default_device_id || '不可用')}（${esc(x.shell_origin || '')}）${x.unavailable ? '<br>' + esc(x.unavailable.message) : ''}`,
               button('source', '编辑', x.id) +
+                (editable && x.enabled ? button('deactivate-source', '停用', x.id) : '') +
                 button('browse', '浏览', x.id) +
                 button('remove-source', '移除', x.id),
             ),
@@ -383,6 +384,34 @@ window.CodePierSpaces = (() => {
         save(
           root(space.id) + '/devices/' + enc(f.elements.device.value),
           change(null, { enabled: true }, key),
+          true,
+        ),
+    );
+  }
+  function deactivateSource(space, old) {
+    const fields = Object.fromEntries(
+      [
+        'name',
+        'source_kind',
+        'folder_resource_id',
+        'pool_id',
+        'mapping_ids',
+        'subpath',
+        'mode',
+        'files',
+        'shell',
+      ].map((key) => [key, old[key]]),
+    );
+    return form(
+      '停用文件来源',
+      `<p>${esc(old.name)}</p>` +
+        notice(
+          '停用后，这个来源不再接受新的文件或命令请求。已运行的命令仍需查看原操作回执；停用不会确认远端进程已经停止。',
+        ),
+      (_form, key) =>
+        save(
+          root(space.id) + '/sources/' + enc(old.id),
+          change(old, { ...fields, allow_tasks: !!old.allow_tasks, enabled: false }, key),
           true,
         ),
     );
@@ -1668,6 +1697,8 @@ window.CodePierSpaces = (() => {
                 return sourceEditor(space);
               case 'source':
                 return sourceEditor(space, old);
+              case 'deactivate-source':
+                return deactivateSource(space, old);
               case 'browse':
                 return browse(space, old);
               case 'new-projects':

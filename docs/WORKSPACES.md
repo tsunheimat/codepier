@@ -84,6 +84,18 @@ source's scoped operations; it does not create `space_devices` entries or grant
 bindings and physical files intact. A VPS launcher is likewise a validated technical
 reference, not a prerequisite whole-Device grant. Only the inventory owner or
 instance administrator can select those resources during workspace configuration.
+The current independent Device policy exposes `devices.read`. It does not add a
+Project-free whole-Device command target: local execution still requires its
+authorized Project source, while a separately authorized top-level VPS can run
+without a Project.
+
+Use **Deactivate** on a source to withdraw new file and command admission even
+when a Runner is offline or an underlying resource is unavailable. The save is
+authenticated, versioned and idempotent, and preserves the stored path, mappings
+and capabilities. Combining deactivation with configuration edits is rejected;
+enablement and configuration changes still require Runner validation. Existing
+operation receipts retain their original targets and uncertainty; deactivation
+does not certify that a running remote process has stopped.
 
 Pool defaults are `default_fs_device_id`, `default_shell_device_id` and
 `shell_allowed_device_ids`. An import stores `files` and `shell` settings as
@@ -168,7 +180,9 @@ top-level entries; `vps(project=...)` lists that Project's entries. Execution us
 The Runner's `ssh.targets` maps a saved reference to an OpenSSH Host alias and an
 optional absolute custom config file. OpenSSH owns IdentityFile, ssh-agent,
 ProxyJump and known_hosts resolution; credentials are not uploaded to the Hub.
-There is no password/sshpass compatibility adapter and no custom SSH-config parser.
+OpenSSH-only is the CodePier 2.0 contract and supersedes the historical password
+adapter plan in #9. There is no password/sshpass compatibility adapter and no
+custom SSH-config parser.
 Host-key checking defaults to strict. The Hub selects a registered reference,
 not arbitrary hostnames or SSH options from model arguments.
 

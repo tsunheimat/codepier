@@ -170,6 +170,20 @@ def test_folder_create_permission_alone_does_not_grant_access_to_created_project
         for row in app.state.store.all("SELECT policy FROM access_profiles"))
 
 
+@pytest.mark.parametrize('kind',['panel','mcp'])
+def test_project_save_replay_rechecks_current_source_creation_authority(team,monkeypatch,kind):
+    app,b=team;submit=caller(b,kind);values=body();calls=[]
+    monkeypatch.setattr(app.state.runtime,'dispatch',validate_ok(calls))
+    created=response_value(submit(values),kind)
+    assert response_value(submit(values),kind)['id']==created['id']
+    assert len(calls)==1
+    set_member(b['owner'],'alice',{'source_rules':[{'sources':['folder-team'],'actions':['read']}],
+        'project_rules':[{'all_projects':True,'actions':['read','write']}]})
+    error=response_error(submit(values),kind)
+    assert error['code']==('WORKSPACE_POLICY_DENIED' if kind=='mcp' else 'WORKSPACE_ADMIN_REQUIRED')
+    assert len(calls)==1
+
+
 def test_update_failure_restores_prior_folder_reference_and_version(team, monkeypatch):
     app,b=team;store=app.state.store;runtime=app.state.runtime;resources=runtime.workspace_resources
     before=store.one("SELECT * FROM projects WHERE id='project-team'")

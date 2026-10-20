@@ -203,3 +203,22 @@ def test_folder_inventory_and_direct_source_remain_independent_of_devices(routin
         assert not r.get(r.space_path+'/devices')['devices']
     finally:
         page.context.close()
+
+
+def test_source_can_be_deactivated_from_list_with_runner_offline(routing_stack,routing_browser):
+    r=routing_stack;page=routing_browser.new_page()
+    try:
+        r.s.stop_agent()
+        page.goto(r.s.url+'/#spaces/'+r.s.space_id+'/sources')
+        page.fill('#username','admin');page.fill('#password',r.s.password);page.click('#login-form button')
+        page.locator('[data-ws-action="deactivate-source"][data-id="'+r.folder['id']+'"]').click()
+        expect(page.locator('#workspace-form')).to_contain_text('停用不会确认远端进程已经停止')
+        saved=save(page,r,r.space_path+'/sources/'+r.folder['id'],'PUT')
+        assert not saved['enabled'] and saved['version']==r.folder['version']+1
+        assert saved['mapping_ids']==r.folder['mapping_ids']
+        expect(page.locator('[data-ws-action="deactivate-source"][data-id="'+r.folder['id']+'"]').first).to_have_count(0)
+        denied=r.s.client.get(r.space_path+'/sources/'+r.folder['id']+'/browse')
+        assert denied.status_code==403,denied.text
+        assert (r.s.lumen/'README.md').is_file()
+    finally:
+        page.context.close()

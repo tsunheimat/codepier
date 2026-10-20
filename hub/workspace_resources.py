@@ -117,8 +117,11 @@ class WorkspaceResources:
                 sql+=' AND '+key+'=?';args.append(value)
         conflicts=[]
         for binding in self.store.all(sql,args):
-            projects=self.store.all('SELECT * FROM projects WHERE source_id=?',(binding['id'],))
-            for project in projects or [{'id':'','source_id':binding['id'],'space_id':binding['space_id'],'subpath':'.'}]:
+            # A child's override must never hide an invalid inherited source
+            # default. Validate the source root independently before its users.
+            projects=[{'id':'','source_id':binding['id'],'space_id':binding['space_id'],'subpath':'.'},
+                      *self.store.all('SELECT * FROM projects WHERE source_id=?',(binding['id'],))]
+            for project in projects:
                 try:
                     source=source_views(self.store,project)
                     if source['files_device_id'] not in source['views']:
@@ -232,6 +235,38 @@ class WorkspaceResources:
             return {'before':old,'source':source,'views':views}
         raise DevError('INVALID_VALIDATION','Unsupported workspace validation intent')
 
+    def _authorize_save_replay(self, kind, principal, payload, receipt, pool_id):
+        if kind in {'pool','folder'}:
+            owned_resource(self.store,principal,'storage_pools' if kind=='pool' else 'folders',receipt['id'])
+        elif kind=='mapping':
+            owned_resource(self.store,principal,'storage_pools',pool_id)
+        elif kind=='project' and principal.grant_id:
+            require_access(self.store,principal,'projects.create',source_id=payload['source_id'])
+        else:
+            iam.require_space_capability(self.store,principal,'resources')
+
+    def _deactivate_source(self, principal, payload, identifier):
+        """Withdraw a binding using only Hub state, preserving its configuration."""
+        iam.require_space_capability(self.store,principal,'resources')
+        old=self.store.one('SELECT * FROM space_sources WHERE id=? AND space_id=?',(identifier,principal.space_id))
+        if not old:
+            raise DevError('SOURCE_NOT_FOUND','Workspace source not found',404)
+        checked_version(old,payload['expected_version'])
+        stored={k:old[k] for k in SourceInput.model_fields if k in old}
+        stored.update(enabled=bool(old['enabled']),allow_tasks=bool(old['allow_tasks']),
+                      files=json.loads(old['files']),shell=json.loads(old['shell']),
+                      mapping_ids=[m['mapping_id'] for m in self.store.all(
+                          'SELECT mapping_id FROM space_source_mappings WHERE source_id=? AND space_id=?',
+                          (identifier,principal.space_id))])
+        current=SourceInput.model_validate(stored)
+        requested=SourceInput.model_validate({k:payload[k] for k in SourceInput.model_fields})
+        if (requested.model_dump(exclude={'enabled','mapping_ids'})!=current.model_dump(exclude={'enabled','mapping_ids'})
+                or set(requested.mapping_ids)!=set(current.mapping_ids)):
+            raise DevError('SOURCE_DEACTIVATION_ONLY','Disable the unchanged source first; configuration edits require a separate validated save',409)
+        self.store.db.execute('UPDATE space_sources SET enabled=0,version=version+1 WHERE id=? AND space_id=?',
+                              (identifier,principal.space_id))
+        return self.source_public(self.store.one('SELECT * FROM space_sources WHERE id=?',(identifier,)))
+
     async def validated_save(self, kind, principal, body, identifier=None, *, pool_id=None, reauthenticate=None):
         payload=body.model_dump()
         if pool_id is not None:
@@ -239,6 +274,13 @@ class WorkspaceResources:
         operation=kind+'.save:'+(identifier or 'new')+(':'+pool_id if pool_id else '')
         request_fingerprint=fingerprint(payload)
         key='workspace-validation:'+fingerprint([principal.space_id,principal.user_id,principal.grant_id,operation,body.idempotency_key])
+        def record(fresh, selected):
+            self.store.db.execute('INSERT INTO workspace_requests VALUES(?,?,?,?,?,?,?)',
+                (fresh.space_id or '',fresh.user_id,operation,body.idempotency_key,request_fingerprint,
+                 json.dumps(selected,ensure_ascii=False),time.time()))
+            iam.audit(self.store,fresh,operation,selected['id'],detail={'version':selected.get('version')})
+            self.changed(fresh,selected['id'])
+            return selected
         def prepare():
             with self.store.transaction():
                 fresh=reauthenticate() if reauthenticate else iam.live_principal(self.store,principal)
@@ -249,13 +291,14 @@ class WorkspaceResources:
                 if old:
                     if old['fingerprint']!=request_fingerprint:
                         raise DevError('IDEMPOTENCY_CONFLICT','This request key identifies different resource arguments',409)
-                    if kind=='mapping':
-                        owned_resource(self.store,fresh,'storage_pools',pool_id)
-                    elif fresh.grant_id:
-                        require_access(self.store,fresh,'projects.create',source_id=payload['source_id'])
-                    else:
-                        iam.require_space_capability(self.store,fresh,'resources')
-                    return None,json.loads(old['receipt'])
+                    receipt=json.loads(old['receipt'])
+                    self._authorize_save_replay(kind,fresh,payload,receipt,pool_id)
+                    return None,{**receipt,'replayed':True}
+                if kind=='source' and identifier and not payload['enabled']:
+                    prior=self.store.one('SELECT value FROM meta WHERE key=?',(key,))
+                    if prior and json.loads(prior['value'])['fingerprint']!=request_fingerprint:
+                        raise DevError('VALIDATION_CHANGED','The original save request has different arguments; use a reviewed new save request',409)
+                    return None,record(fresh,self._deactivate_source(fresh,payload,identifier))
                 selected=self._prepare_validation(kind,fresh,payload,identifier)
                 intent={'kind':kind,'payload':payload,'identifier':identifier,'user_id':fresh.user_id,'space_id':fresh.space_id,
                         'grant_id':fresh.grant_id,'selected':selected,'fingerprint':request_fingerprint}
@@ -266,9 +309,9 @@ class WorkspaceResources:
                 else:
                     self.store.db.execute('INSERT INTO meta(key,value) VALUES(?,?)',(key,json.dumps(intent,sort_keys=True)))
                 return intent,None
-        intent,replayed=await self.store.run(prepare)
-        if replayed is not None:
-            return {**replayed,'replayed':True}
+        intent,immediate=await self.store.run(prepare)
+        if immediate is not None:
+            return immediate
         results=[]
         for index,view in enumerate(intent['selected']['views']):
             context={'key':key,'index':index}
@@ -292,12 +335,7 @@ class WorkspaceResources:
                 if latest!=intent['selected']:
                     raise DevError('VALIDATION_CHANGED','Resources changed during validation; no resource was saved',409)
                 selected=self._commit_validated(kind,fresh,payload,identifier,results)
-                receipt=json.dumps(selected,ensure_ascii=False)
-                self.store.db.execute('INSERT INTO workspace_requests VALUES(?,?,?,?,?,?,?)',
-                    (fresh.space_id or '',fresh.user_id,operation,body.idempotency_key,request_fingerprint,receipt,time.time()))
-                iam.audit(self.store,fresh,operation,selected['id'],detail={'version':selected.get('version')})
-                self.changed(fresh,selected['id'])
-                return selected
+                return record(fresh,selected)
         return await self.store.run(finish)
 
     def require_validation(self, principal, project, tool, *, observe=False):

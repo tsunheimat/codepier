@@ -14,7 +14,8 @@ files. IdentityFile, ssh-agent, ProxyJump and known_hosts remain with OpenSSH.
 Use a custom config path without whitespace when combining `-F` and ProxyJump;
 OpenSSH constructs the nested client invocation and spaced config paths are not
 portable there. Direct `-F` paths with spaces are covered separately by the lab.
-There is no password/sshpass adapter. `exec`/`process` perform one-shot work;
+The 2.0 OpenSSH-only contract supersedes the older password-adapter plan in #9;
+there is no password/sshpass compatibility adapter. `exec`/`process` perform one-shot work;
 `session` owns persistent shells/PTYs and original operation receipts. Do not infer
 remote termination from local SSH client cancellation. See the full guide for
 configuration, current platform support and uncertainty semantics.

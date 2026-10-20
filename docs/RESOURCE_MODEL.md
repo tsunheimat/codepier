@@ -14,5 +14,8 @@ Folder and Storage Pool are peer inventory resources. Import either directly;
 a Pool does not need a wrapper Folder. Pool mappings and VPS launchers do not
 require or grant independent workspace Device access. Pool file/shell defaults
 are configured with the resource and can be inherited or narrowed on import.
+Independent Device rules currently expose `devices.read`; allocating a Device
+does not create a whole-Device execution target without a Project. Top-level VPS
+execution is a separate, explicitly authorized resource operation.
 
 See [Workspace setup and contracts](WORKSPACES.md) for the complete development model.
