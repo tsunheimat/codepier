@@ -84,7 +84,9 @@ def test_real_extension_native_host_and_mcp_browser_actions(native_workspace,web
         settings=json.loads(s.config_path.read_text());settings['mcp_policy']={'block_local_codex':True};atomic_json(s.config_path,settings)
         installed=install(s.config_path,extension_id,identity,['Imago'],[website],browser='chromium',root=profile,apply=True)
         s.start_agent()
-        grant=s.client.post('/api/grants',json={'label':'Browser isolated fixture','projects':[s.project['id']],'scopes':['read','write','execute','computer'],'days':1}).json()
+        permissions=s.create_profile({'project_rules':[{'projects':[s.project['id']],
+            'actions':['read','write','execute','computer']}]},label='Browser isolated fixture')
+        grant=s.create_connection(permissions)
         context=pw.chromium.launch_persistent_context(str(profile),**options)
         executor=ThreadPoolExecutor(max_workers=1)
         def native_call(name,args=None,*,token=None,expect_failure=False):
@@ -163,12 +165,14 @@ def test_real_extension_native_host_and_mcp_browser_actions(native_workspace,web
             call('browser_action',{'lease_id':lease,'observation_id':snapshot['observation_id'],'action':'navigate','value':'https://not-authorized.invalid/'},expect_failure=True)
             assert owned_page.url==website+'/index.html?verified=1'
             # Another authorized principal still cannot access this lease.
-            other=s.client.post('/api/grants',json={'label':'Other browser reader','projects':[s.project['id']],'scopes':['read','computer'],'days':1}).json()
+            reader=s.create_profile({'project_rules':[{'projects':[s.project['id']],
+                'actions':['read','computer']}]},label='Other browser reader')
+            other=s.create_connection(reader)
             call('browser_snapshot',{'lease_id':lease},token=other['token'],expect_failure=True)
-            s.client.delete('/api/grants/'+other['grant_id'])
+            s.must(s.client.post('/api/spaces/'+s.space_id+'/connections/'+other['connection_id']+'/revoke'))
             released=call('browser_close',{'lease_id':lease});assert released['tab_cleanup_confirmed']
             assert call('browser_status')['active_leases']==[]
-            output=BASE/'docs/evidence/integration-finish-20260917/screenshots';output.mkdir(parents=True,exist_ok=True)
+            output=tmp_path/'browser-evidence';output.mkdir(parents=True,exist_ok=True)
             popup.screenshot(path=str(output/'isolated-browser-extension.png'))
             assert s.agent.poll() is None
         finally:

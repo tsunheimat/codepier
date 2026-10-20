@@ -8,14 +8,11 @@ import uuid
 from tests.routing_support import routing_stack
 
 
-def test_receipt_get_list_and_wait_enforce_live_route_permission(routing_stack):
-    r = routing_stack
-    role = r.post('/api/access-roles', {'label': 'Private test results', 'idempotency_key': uuid.uuid4().hex,
-        'project_rules': [{'projects': [r.project['id']], 'actions': ['read', 'execute']}],
-        'route_rules': [{'route_id': r.routes['test']['id'], 'projects': [r.project['id']]}]})
-    grant = r.post('/api/client-connections', {'name': 'Revocable routing', 'role_id': role['id'],
-        'expected_role_version': role['version'], 'authorization_mode': 'role', 'confirm_dynamic_role': True,
-        'idempotency_key': uuid.uuid4().hex})
+def test_receipt_get_list_and_wait_enforce_live_workspace_profile(routing_stack):
+    r=routing_stack
+    profile=r.s.create_profile({'project_rules':[{'projects':[r.project['id']],
+        'actions':['read','write','execute']}]})
+    grant=r.s.create_connection(profile,live=True)
     call = r.s.mcp('exec', {'project': r.project['id'], 'action': 'test',
         'argv': [sys.executable, '-c', 'print("private-route-data")'], 'idempotency_key': uuid.uuid4().hex,
         'yield_seconds': 0}, token_value=grant['token'])
@@ -23,11 +20,12 @@ def test_receipt_get_list_and_wait_enforce_live_route_permission(routing_stack):
     identifier = call['structuredContent']['operation_id']
     completed = r.s.poll(identifier, timeout=45)
     assert completed['state'] == 'succeeded', completed
-    r.put('/api/access-roles/' + role['id'], {'label': role['label'], 'expected_version': role['version'],
-        'project_rules': role['project_rules'], 'device_rules': role['device_rules'], 'route_rules': []})
+    r.put(r.space_path+'/profiles/'+profile['id'],{'label':profile['label'],
+        'expected_version':profile['version'],'policy':{},'idempotency_key':uuid.uuid4().hex})
     for operation in ('get', 'wait'):
         response = r.s.mcp('task_query', {'operation': operation, 'operation_ids': [identifier]}, token_value=grant['token'])
-        assert 'ROUTE_RECEIPT_DENIED' in json.dumps(response), response
+        assert response.get('isError'),response
+        assert any(code in json.dumps(response) for code in ('WORKSPACE_POLICY_DENIED','ACCESS_DENIED')),response
         assert 'private-route-data' not in json.dumps(response)
     response = r.s.mcp('task_query', {'operation': 'list', 'project': r.project['id']}, token_value=grant['token'])
     assert identifier not in json.dumps(response), response

@@ -1,5 +1,3 @@
-from tests.evidence import evidence_path
-from tests.support_legacy_terminal import mount_archived_terminal
 """Native protocol real Hub/Agent and real Chromium; only disposable fixture processes."""
 import base64
 from contextlib import closing
@@ -109,61 +107,43 @@ def test_admin_csrf_mapping_permissions_and_upload(cli_stack):
     chunk={'file':fid,'offset':0,'data':base64.b64encode(raw).decode(),'sha256':sha}
     r=s.must(call(s,'upload_chunk',chunk));assert r['ready'];assert s.must(call(s,'upload_chunk',chunk))['received']==len(raw)
     assert Path(r['path']).name==fid+'.png'
-    project=s.project
-    s.must(s.client.put('/api/projects/'+project['id'],json={k:project[k] for k in ('alias','device_id','root','description','mode','allow_tasks')}|{'allow_tasks':False}))
-    assert s.client.get('/api/native/sessions/'+sid+'/output').status_code==403
-    s.must(s.client.put('/api/projects/'+project['id'],json={k:project[k] for k in ('alias','device_id','root','description','mode','allow_tasks')}))
+    folder_path='/api/spaces/'+s.space_id+'/folders'
+    def folder_tasks(allowed):
+        current=next(f for f in s.must(s.client.get(folder_path))['folders'] if f['id']==s.folder['id'])
+        values={key:current[key] for key in ('name','source_kind','device_id','device_path','mode')}
+        values.update(allow_tasks=allowed,expected_version=current['version'],idempotency_key=uuid.uuid4().hex)
+        path=folder_path+'/'+current['id']
+        result=s.client.put(path,json=values)
+        if result.status_code==409 and result.json()['error']['code']=='VALIDATION_PENDING':
+            original=s.poll(result.json()['error']['operation_id'],timeout=30)
+            assert original['state']=='succeeded',original
+            result=s.client.put(path,json=values)
+        return s.must(result)
+    folder_tasks(False)
+    unavailable=s.client.get('/api/native/sessions/'+sid+'/output')
+    assert unavailable.status_code==409 and unavailable.json()['error']['code']=='DEFAULT_DEVICE_UNAVAILABLE'
+    folder_tasks(True)
     s.must(s.client.patch('/api/devices/'+s.device,json={'enabled':False}))
-    assert s.client.get('/api/native/sessions/'+sid+'/output').status_code==403
+    unavailable=s.client.get('/api/native/sessions/'+sid+'/output')
+    assert unavailable.status_code==409 and unavailable.json()['error']['code']=='SOURCE_DEVICE_UNAVAILABLE'
     s.must(s.client.patch('/api/devices/'+s.device,json={'enabled':True}))
     wait_for(lambda:any(d['online'] for d in s.must(s.client.get('/api/devices'))['devices']),20)
 
 
-def test_real_chromium_terminal_mobile_detach_and_escape_policy(cli_stack):
-    s=cli_stack
-    with sync_playwright() as p:
-        browser=p.chromium.launch();page=browser.new_page(viewport={'width':1400,'height':1000})
-        errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-        try:
-            page.goto(s.url+'/#projects');page.fill('#username', 'admin');page.fill('#password',s.password);page.click('#login-form button')
-            expect(page.locator('[data-native-launch="codex"]').first).to_be_visible()
-            page.locator('[data-native-launch="codex"][data-project="'+s.project['id']+'"]').click()
-            mount_archived_terminal(page)
-            expect(page.locator('#native-root')).to_be_visible()
-            page.fill('#native-model','native-model');page.click('#native-start')
-            expect(page.locator('.xterm')).to_be_visible();expect(page.locator('#native-status')).to_contain_text('running',timeout=15000)
-            page.click('#native-write');expect(page.locator('#native-status')).to_contain_text('可输入',timeout=10000)
-            page.fill('#native-compose','BROWSER-SENT');page.click('#native-insert');page.locator('[data-native-key="DQ=="]').click()
-            wait_for(lambda:any(b'ECHO:BROWSER-SENT' in read(s,x['id']) for x in s.must(s.client.get('/api/native/sessions'))['sessions']),10)
-            page.fill('#native-compose','DRAFT-MUST-SURVIVE');page.evaluate('nativePage()');expect(page.locator('#native-compose')).to_have_value('DRAFT-MUST-SURVIVE')
-            # Untrusted OSC/title/hyperlinks and HTML never activate browser APIs.
-            original=page.title()
-            page.evaluate("NativeCLIUI.term.write('\\x1b]2;PWNED\\x07\\x1b]52;c;UE9JU09O\\x07<img src=x onerror=window.pwned=1>')")
-            assert page.title()==original and page.evaluate('window.pwned') is None
-            assert page.locator('#native-terminal img').count()==0
-            selected=page.evaluate('NativeCLIUI.selected.id');before=len(read(s,selected))
-            page.click('#native-detach');wait_for(lambda:len(read(s,selected))>before+30)
-            page.set_viewport_size({'width':390,'height':844});expect(page.locator('#native-keys')).to_be_visible()
-            assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+2')
-            page.screenshot(path=evidence_path(str(Path('docs/evidence/chat-ui-20260915/mobile-terminal.png'))))
-            page.reload();expect(page.locator('#chat-compose')).to_be_visible();mount_archived_terminal(page);expect(page.locator('#native-list .native-session').first).to_be_visible(timeout=15000)
-            assert errors==[]
-        finally:browser.close()
-
-
-def test_retired_terminal_hash_opens_chat_without_terminal_assets(cli_stack):
+def test_current_native_panel_never_mounts_archived_terminal_assets(cli_stack):
     s=cli_stack
     with sync_playwright() as pw:
-        browser=pw.chromium.launch();page=browser.new_page();assets=[]
+        browser=pw.chromium.launch();page=browser.new_page();assets=[];starts=[]
         page.on('request',lambda request:assets.append(request.url))
+        page.on('request',lambda r:starts.append(r.url) if r.method=='POST' and r.url.endswith('/api/native/start') else None)
         try:
-            page.goto(s.url+'/#terminal');page.fill('#username', 'admin');page.fill('#password',s.password);page.click('#login-form button')
-            expect(page.locator('#chat-root')).to_be_visible()
-            assert page.evaluate('location.hash')=='#native'
-            page.evaluate("navigate('terminal')")
-            expect(page.locator('#chat-root')).to_be_visible()
+            page.goto(s.url+'/#native');page.fill('#username','admin');page.fill('#password',s.password);page.click('#login-form button')
+            expect(page.locator('#chat-root')).to_be_visible(timeout=15000)
             expect(page.locator('#native-root')).to_have_count(0)
             assert page.evaluate('typeof NativeCLIUI')=='undefined'
             assert not any(any(term in url for term in ['xterm','native-cli.js','addon-fit']) for url in assets)
-        finally:
-            browser.close()
+            # Removed bookmarks do not restore the old renderer or start a CLI.
+            page.evaluate('navigate("terminal")')
+            expect(page.locator('#native-root')).to_have_count(0)
+            assert starts==[]
+        finally:browser.close()

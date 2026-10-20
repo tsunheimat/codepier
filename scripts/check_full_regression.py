@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Run every test module in bounded independent processes; retain exact evidence.
 
-No automatic retry, test exclusion or skipped-test-as-success. Each module gets
+No automatic retry, test exclusion or skipped-test-as-success. Exact native-only
+cases retain not_applicable outcomes on other platforms; complete aggregation
+requires their same-source real native-platform proof as well. Each module gets
 its own pytest cache and report. A stalled module receives SIGINT so fixtures can
 clean up; forced termination is reported and never counted as verification.
 """
@@ -34,6 +36,8 @@ def pytest_collection_finish(session):
 def pytest_runtest_logreport(report):
     value = {'nodeid':report.nodeid,'when':report.when,'outcome':report.outcome,'duration':report.duration}
     if hasattr(report,'wasxfail'): value['xfail'] = True
+    if report.skipped and isinstance(report.longrepr, tuple) and len(report.longrepr)==3:
+        value['skip_reason'] = str(report.longrepr[2])
     with open(os.environ['CODEPIER_EVENTS'],'a') as output: output.write(json.dumps(value)+'\\n')
 '''
 
@@ -199,7 +203,7 @@ def main():
         if xml.is_file():
             document = ET.parse(xml).getroot()
             for suite in list(document) if document.tag=='testsuites' else [document]: suites.append(suite)
-    outcomes, duplicate_phases = classify_events(expected, records)
+    outcomes, duplicate_phases = classify_events(expected, records, platform=sys.platform)
     coverage_error = None
     if args.coverage:
         from scripts.coverage_reports import combine
@@ -209,11 +213,11 @@ def main():
             # Preserve the complete test receipts even when coverage fails.
             coverage_error = type(error).__name__ + ': ' + str(error)
     after = snapshot(); changed = sorted(path for path in baseline.keys()|after.keys() if baseline.get(path)!=after.get(path))
-    counts = {state:sum(s==state for s in outcomes.values()) for state in ('passed','failed','skipped','missing')}
+    counts = {state:sum(s==state for s in outcomes.values()) for state in ('passed','failed','skipped','missing','not_applicable')}
     summary = {'collected':len(expected),'total_collected':len(full_collection),'modules':len(modules),'jobs':len(jobs),'workers':args.workers,'limited_jobs':len(limited_jobs),'limited_workers':limited_workers,'exclusive_jobs':len(exclusive_jobs),'counts':counts,
-               'shard':{'index':args.shard_index,'count':args.shard_count},
+               'shard':{'index':args.shard_index,'count':args.shard_count},'platform':sys.platform,
                'coverage_requested':args.coverage,'coverage_error':coverage_error,
-               'scope':'complete' if args.shard_count == 1 else 'shard',
+               'scope':('platform' if counts['not_applicable'] else 'complete') if args.shard_count == 1 else 'shard',
                'full_collection':full_collection,'collection_sha256':fingerprint(full_collection),
                'source_inventory_sha256':fingerprint(baseline),'duplicate_phases':duplicate_phases,
                'seconds':round(time.monotonic()-started,3),'source_changed_during_run':changed,
@@ -221,7 +225,7 @@ def main():
                'module_failures':[r for r in results if r['exit_code'] or r['timed_out']],
                'outcomes':outcomes,'runs':sorted(results,key=lambda r:r['job']),
                'method':'Deterministic exhaustive module/independent-case jobs, explicit shards, exactly-once evidence, no retries. Browser/integration jobs use a two-worker resource pool; timing/restart-sensitive jobs run once with exclusive host admission after both pools drain. A shard is not full verification until all shards merge. Native CLI tests use local substitutes, never real model probes.'}
-    summary['verified'] = (counts['passed']==len(expected) and bool(expected) and not changed
+    summary['verified'] = (counts['passed']+counts['not_applicable']==len(expected) and bool(expected) and not changed
                            and not summary['unexpected_tests'] and not summary['module_failures'] and not duplicate_phases and not coverage_error)
     write_json(output/'summary.json',summary); write_json(output/'source-after.json',after)
     ET.ElementTree(suites).write(output/'full-regression.xml',encoding='utf-8',xml_declaration=True)

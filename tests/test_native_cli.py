@@ -50,7 +50,8 @@ def native(tmp_path,monkeypatch):
          'shell':validate_shell({'enabled':True,'projects':['*'],'inherit_env':False,'env':{'PATH':str(bindir)+os.pathsep+str(Path(sys.executable).parent)+os.pathsep+os.defpath,'HOME':str(home)}})}
     journal=Journal(state)
     agent=SimpleNamespace(state_dir=state,config=cfg,engine=FileEngine(cfg,journal,config))
-    obj=NativeCLI(agent);project={'id':uuid.uuid4().hex,'device_id':uuid.uuid4().hex,'root':str(root),'alias':'fixture','mode':'write','allow_tasks':True}
+    obj=NativeCLI(agent);project={'id':uuid.uuid4().hex,'device_id':uuid.uuid4().hex,'root':str(root),'alias':'fixture','mode':'write','allow_tasks':True,
+        '_native_owner':'user:fixture-owner','_native_space':'fixture-native-space'}
     yield obj,project
     for row in obj.live():
         writer=uuid.uuid4().hex

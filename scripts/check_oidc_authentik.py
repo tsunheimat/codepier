@@ -31,7 +31,7 @@ from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from shared.role_contracts import ROLE_SCOPE
+from shared.workspace_contracts import WORKSPACE_SCOPE
 
 
 def compose_command():
@@ -56,16 +56,16 @@ def required(response, status=200):
     return response.json() if response.content else {}
 
 
-def select_personal_space(client):
-    """Use the authenticated bootstrap owner's real Space, never a legacy hint."""
-    me = required(client.get('/api/iam/me'))
-    personal = next((space for space in me['spaces']
-                     if space['id'] == me['default_space_id']
-                     and space['kind'] == 'personal' and space['level'] == 'owner'), None)
-    assert me['instance_admin'] and personal is not None
-    assert not any(space['kind'] == 'legacy' for space in me['spaces'])
-    client.headers['X-CodePier-Space'] = personal['id']
-    return personal['id']
+def verify_bootstrap_workspace(client):
+    """Inspect the real bootstrap workspace without changing any ambient state."""
+    me=required(client.get('/api/iam/me'))
+    spaces=required(client.get('/api/spaces'))['spaces']
+    personal=[space for space in spaces if space['kind']=='personal' and space['owner_user_id']==me['id']]
+    assert me['instance_admin'] and len(personal)==1
+    assert not {'default_space_id','current_space_id','active_space_id'} & me.keys()
+    assert all(space['kind']!='legacy' for space in spaces)
+    assert 'X-CodePier-Space' not in client.headers
+    return personal[0]['id']
 
 
 
@@ -73,7 +73,7 @@ MCP_ACCEPTANCE_VERSION = '2025-11-25'
 
 
 def mcp_request(client, access_token, method, params=None, *, notification=False):
-    """Use the real legacy Streamable HTTP contract, including both media types.
+    """Use the negotiated Streamable HTTP contract, including both media types.
 
     Keep this explicit rather than relying on a panel client's default headers.
     HTTP/authentication failures remain failures; do not retry or mask a 406.
@@ -108,6 +108,36 @@ def await_ready(predicate, seconds=300):
             pass
         time.sleep(2)
     raise RuntimeError('Disposable service readiness deadline exceeded')
+
+
+def await_collection(client, path, predicate, *, seconds=300):
+    """Wait only on read-only startup discovery; never retry mutations/consent.
+
+    Authentik may restart a worker after API authentication becomes available.
+    A temporary 502/503/504 is not a ready collection. Authentication failures,
+    unexpected responses and malformed successful payloads still fail the gate.
+    Return the successfully inspected rows instead of issuing a racing extra GET.
+    """
+    rows = []
+
+    def ready():
+        response = client.get('/api/v3/' + path)
+        if response.status_code in {502, 503, 504}:
+            return False
+        try:
+            value = required(response)
+            candidates = value.get('results')
+        except (ValueError, AttributeError) as exc:
+            raise AssertionError('Invalid disposable provider readiness collection') from exc
+        if not isinstance(candidates, list) or any(not isinstance(row, dict) for row in candidates):
+            raise AssertionError('Invalid disposable provider readiness collection')
+        if not predicate(candidates):
+            return False
+        rows.extend(candidates)
+        return True
+
+    await_ready(ready, seconds)
+    return rows
 
 
 def password_hash(password):
@@ -159,11 +189,9 @@ def acceptance(output):
             phase = 'authentik-default-flows'
             flow_slugs = {'default-provider-authorization-implicit-consent',
                           'default-provider-invalidation-flow', 'default-authentication-flow'}
-            def flows_ready():
-                rows = ak_call('GET', 'flows/instances/?page_size=100')['results']
-                return flow_slugs <= {row['slug'] for row in rows}
-            await_ready(flows_ready)
-            flows = {row['slug']: row['pk'] for row in ak_call('GET', 'flows/instances/?page_size=100')['results']}
+            flow_rows = await_collection(ak, 'flows/instances/?page_size=100',
+                lambda rows: flow_slugs <= {row.get('slug') for row in rows})
+            flows = {row['slug']: row['pk'] for row in flow_rows}
             authorization = flows['default-provider-authorization-implicit-consent']
             invalidation = flows['default-provider-invalidation-flow']
             authentication = flows['default-authentication-flow']
@@ -174,11 +202,8 @@ def acceptance(output):
             signing = signing_key['pk']
             phase = 'authentik-scope-mappings'
             scope_names = {'openid', 'profile', 'email', 'offline_access'}
-            def scopes_ready():
-                rows = ak_call('GET', 'propertymappings/provider/scope/?page_size=100')['results']
-                return scope_names <= {row.get('scope_name') for row in rows}
-            await_ready(scopes_ready)
-            mappings = ak_call('GET', 'propertymappings/provider/scope/?page_size=100')['results']
+            mappings = await_collection(ak, 'propertymappings/provider/scope/?page_size=100',
+                lambda rows: scope_names <= {row.get('scope_name') for row in rows})
             scopes = [row['pk'] for row in mappings if row.get('scope_name') in scope_names]
             phase = 'authentik-test-users'
             group = ak_call('POST', 'core/groups/', {'name': 'codepier-acceptance-team'}, 201)
@@ -204,13 +229,11 @@ def acceptance(output):
             await_ready(lambda: owner.get('/healthz').status_code == 200, 60)
             login = required(owner.post('/api/login', json={'username': 'admin', 'password': hub_env['CODEPIER_ADMIN_PASSWORD']}))
             owner.headers['X-RD-CSRF'] = login['csrf']
-            select_personal_space(owner)
-            passed('fresh_admin_owns_normal_personal_without_legacy')
-            sid = required(owner.post('/api/iam/spaces', json={'label': 'Provider acceptance team', 'idempotency_key': uuid.uuid4().hex}), 201)['id']
-            owner.headers['X-CodePier-Space'] = sid
-            role = required(owner.post('/api/access-roles', json={'label': 'secretary',
-                            'project_rules': [{'actions': ['read'], 'all_projects': True}],
-                            'device_rules': [], 'idempotency_key': uuid.uuid4().hex}), 201)
+            verify_bootstrap_workspace(owner)
+            passed('fresh_admin_has_workspace_without_ambient_state')
+            sid=required(owner.post('/api/spaces',json={'label':'Provider acceptance team',
+                'idempotency_key':uuid.uuid4().hex}),201)['id']
+            resource_policy={'project_rules':[{'actions':['read'],'all_projects':True}]}
             client_id, client_secret = 'codepier-acceptance', secret()
             provider_config = {'label': 'Isolated Authentik', 'issuer': issuer_base+'/application/o/codepier-test/',
                                'client_id': client_id, 'client_secret': client_secret, 'enabled': True,
@@ -231,7 +254,8 @@ def acceptance(output):
             verified = required(owner.post('/api/iam/oidc/providers/'+provider['id']+'/check'))
             assert verified['issuer'] == provider_config['issuer'] and verified['callback'] == callback
             required(owner.post('/api/iam/oidc/providers/'+provider['id']+'/mappings', json={
-                'group_name': group['name'], 'space_id': sid, 'level': 'member', 'role_id': role['id'], 'may_delegate': True}), 201)
+                'group_name':group['name'],'space_id':sid,
+                'policy':{**resource_policy,'manage':['profiles']}}),201)
             passed('actual_discovery_jwks_and_exact_callback')
             phase = 'real-browser-login'
             with sync_playwright() as pw:
@@ -265,6 +289,26 @@ def acceptance(output):
                         expect(password_stage).to_be_visible()
                         password_stage.locator('input[name="password"]').fill(password)
                         password_stage.locator('button[type="submit"]').click()
+                        # The real provider may render a consent stage even
+                        # for its implicit-consent flow (for example when a
+                        # newly requested scope requires review). Complete the
+                        # user's explicit submit; never forge a callback/token.
+                        page.wait_for_function('''hub => {
+                            if (location.origin === hub) return true;
+                            const find = root => {
+                                for (const node of root.querySelectorAll('*')) {
+                                    if (node.tagName === 'AK-STAGE-CONSENT') return true;
+                                    if (node.shadowRoot && find(node.shadowRoot)) return true;
+                                }
+                                return false;
+                            };
+                            return find(document);
+                        }''', arg=hub_url, timeout=60000)
+                        if urlsplit(page.url).netloc != urlsplit(hub_url).netloc:
+                            assert urlsplit(page.url).netloc == urlsplit(issuer_base).netloc
+                            consent_stage = page.locator('ak-stage-consent')
+                            expect(consent_stage).to_be_visible()
+                            consent_stage.locator('button[name="continue"][type="submit"]').click()
                         page.wait_for_url(hub_url+'/**', timeout=60000)
                     except Exception:
                         u = urlsplit(page.url)
@@ -274,30 +318,42 @@ def acceptance(output):
                         # contain Tokens on an unexpected error page.
                         browser_diagnostics['elements'] = page.evaluate("""() => {const out=[];const visit=root=>{for(const node of root.querySelectorAll('*')){if(node.tagName==='INPUT')out.push({tag:node.tagName,name:node.name,type:node.type,id:node.id,invalid:node.getAttribute('aria-invalid')});else if(node.tagName.startsWith('AK-STAGE-'))out.push({tag:node.tagName});if(node.shadowRoot)visit(node.shadowRoot);}};visit(document);return out.slice(0,40);}""")
                         raise
-                    expect(page.locator('#iam-active-space')).to_be_visible(timeout=30000)
+                    page.goto(hub_url+'/#spaces')
+                    expect(page.locator('#workspace-page')).to_be_visible(timeout=30000)
+                    expect(page.locator('#iam-active-space')).to_have_count(0)
                     cookies = {c['name']: c['value'] for c in context.cookies(hub_url)}
                     client = httpx.Client(base_url=hub_url, cookies=cookies, timeout=30)
                     session = required(client.get('/api/session'))
-                    client.headers.update({'X-RD-CSRF': session['csrf'], 'X-CodePier-Space': sid})
+                    client.headers.update({'X-RD-CSRF':session['csrf']})
                     me = required(client.get('/api/iam/me'))
                     assert not me['instance_admin'] and not me['local_login']
-                    assert {s['kind'] for s in me['spaces']} == {'personal', 'team'}
+                    assert {s['kind'] for s in me['spaces']} == {'personal', 'workspace'}
                     assert all(s['id'] != 'legacy' for s in me['spaces'])
                     assert client.get('/api/iam/users').status_code == 403
-                    p = required(client.post('/api/access-profiles', json={'label': user['name']+' secretary',
-                        'role_id': role['id'], 'idempotency_key': uuid.uuid4().hex}), 201)
+                    # A non-admin Profile manager may configure only explicit
+                    # resources, never delegate a future-resource wildcard.
+                    # Exercise that real denial instead of weakening it for CI.
+                    denied=client.post('/api/spaces/'+sid+'/profiles',json={
+                        'label':user['name']+' denied wildcard','policy':resource_policy,
+                        'idempotency_key':uuid.uuid4().hex})
+                    assert denied.status_code==403 and denied.json()['error']['code']=='DELEGATION_EXCEEDED'
+                    p=required(client.post('/api/spaces/'+sid+'/profiles',json={
+                        'label':user['name']+' read profile','policy':{},
+                        'idempotency_key':uuid.uuid4().hex}))
                     human_clients.append(client); identities.append(me); profiles.append(p)
                     context.close()
                 assert identities[0]['id'] != identities[1]['id']
-                assert human_clients[0].get('/api/access-profiles/'+profiles[1]['id']).status_code in (403,404)
-                passed('real_code_pkce_login_group_assignment_private_profiles')
-                phase = 'downstream-role-consent'
+                # Profiles are workspace configuration; sharing them does not
+                # merge the users' Connection identities or private receipts.
+                assert human_clients[0].get('/api/spaces/'+sid+'/profiles/'+profiles[1]['id']).status_code==200
+                passed('real_code_pkce_login_direct_group_policy_and_workspace_profiles')
+                phase='downstream-workspace-consent'
                 alice = human_clients[0]
                 registration = required(alice.post('/oauth/register', json={'redirect_uris': ['http://localhost:19876/callback']}), 201)
                 verifier = secrets.token_urlsafe(64)
                 challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
                 response = alice.get('/oauth/authorize', params={'response_type':'code','client_id':registration['client_id'],
-                    'redirect_uri':'http://localhost:19876/callback','scope':ROLE_SCOPE,'resource':hub_url+'/mcp',
+                    'redirect_uri':'http://localhost:19876/callback','scope':WORKSPACE_SCOPE,'resource':hub_url+'/mcp',
                     'code_challenge_method':'S256','code_challenge':challenge})
                 assert response.status_code == 303
                 auth_path = response.headers['location']
@@ -305,19 +361,20 @@ def acceptance(output):
                 ctx.add_cookies([{'name': 'rd_session', 'value': alice.cookies.get('rd_session'), 'url': hub_url}])
                 page = ctx.new_page()
                 page.route('http://localhost:19876/callback*', lambda route: route.fulfill(body='Authorized isolated test callback'))
-                # Choose the team BEFORE the consent page creates its server-side binding.
-                page.goto(hub_url)
-                page.locator('#iam-active-space').select_option(sid)
-                page.wait_for_function('(sid)=>S.space_id===sid', arg=sid)
                 page.goto(hub_url+auth_path)
-                page.select_option('#access-profile-selector', profiles[0]['id'])
-                confirmation = page.locator('[name="confirm_dynamic_role"]')
+                expect(page.locator('[name="consent_profile"]')).to_be_disabled()
+                page.select_option('[name="consent_space"]',sid)
+                expect(page.locator('[name="consent_profile"]')).to_be_enabled()
+                page.select_option('[name="consent_profile"]',profiles[0]['id'])
+                page.select_option('[name="consent_mode"]','live')
+                confirmation=page.locator('[name="confirm_live_profile"]')
                 expect(confirmation).not_to_be_checked()
-                confirmation.check(); page.locator('#allow-consent').click()
+                confirmation.check();page.locator('[data-consent-allow]').click()
                 page.wait_for_url('http://localhost:19876/callback*')
                 code = parse_qs(urlsplit(page.url).query)['code'][0]
                 tokens = required(alice.post('/oauth/token', data={'grant_type':'authorization_code','code':code,
-                    'client_id':registration['client_id'],'redirect_uri':'http://localhost:19876/callback','code_verifier':verifier}))
+                    'client_id':registration['client_id'],'redirect_uri':'http://localhost:19876/callback',
+                    'resource':hub_url+'/mcp','code_verifier':verifier}))
                 # MCP is a separate client: never rely on a human panel cookie
                 # or X-CodePier-Space header to make downstream Tokens work.
                 with httpx.Client(base_url=hub_url, timeout=30) as mcp:
@@ -325,25 +382,48 @@ def acceptance(output):
                     def rpc(name, token_value=None, arguments=None):
                         return mcp_request(mcp, token_value or tokens['access_token'], 'tools/call',
                                            {'name': name, 'arguments': arguments or {}})
-                    assert required(rpc('get_profile'))['result']['structuredContent']['id'] == profiles[0]['id']
-                    passed('separate_codepier_oauth_issuer_and_explicit_dynamic_role_consent')
+                    connection_id=required(rpc('get_profile'))['result']['structuredContent']['id']
+                    access=required(rpc('get_access_context'))['result']['structuredContent']
+                    assert access['profile']['id']==profiles[0]['id'] and connection_id!=profiles[0]['id']
+                    peer=required(human_clients[1].post('/api/spaces/'+sid+'/connections',json={
+                        'name':'Second private connection','profile_id':profiles[0]['id'],
+                        'profile_version':profiles[0]['version'],'consent_mode':'live','confirm_live_profile':True,
+                        'idempotency_key':uuid.uuid4().hex}),201)
+                    assert required(rpc('get_profile',peer['token']))['result']['structuredContent']['id']!=connection_id
+                    assert peer['connection_id'] not in json.dumps(required(alice.get('/api/spaces/'+sid+'/connections')))
+                    passed('separate_oauth_issuer_two_stage_consent_and_private_connections')
                     phase = 'dynamic-resource-and-refresh'
-                    # Seed an offline fixture mapping, not a real directory or credential.
-                    db = sqlite3.connect(hub_dir/'hub.sqlite3', timeout=30)
+                    # The workspace administrator explicitly publishes future
+                    # read access after the human approved a live Profile.
+                    # Both the current group membership and that consent still
+                    # constrain the existing Connection; identity never changes.
+                    reviewed=required(owner.put('/api/spaces/'+sid+'/profiles/'+profiles[0]['id'],json={
+                        'label':profiles[0]['label'],'policy':resource_policy,
+                        'expected_version':profiles[0]['version'],'idempotency_key':uuid.uuid4().hex}))
+                    assert reviewed['id']==profiles[0]['id'] and reviewed['version']==profiles[0]['version']+1
+                    passed('non_admin_wildcard_denial_and_explicit_admin_profile_publication')
+                    # Seed only an isolated offline resource binding; never an
+                    # old device/root Project or an executable credential.
+                    db=sqlite3.connect(hub_dir/'hub.sqlite3',timeout=30)
+                    db.execute('PRAGMA foreign_keys=ON')
+                    source=folder/'offline-source';source.mkdir()
                     with db:
-                        device = 'fixture-'+uuid.uuid4().hex
-                        db.execute('INSERT INTO devices(id,name,secret,space_id,owner_user_id,created) VALUES(?,?,?,?,?,?)',
-                                   (device,'offline fixture','not-a-live-credential',sid,identities[0]['id'],time.time()))
-                        project_id = 'fixture-'+uuid.uuid4().hex
-                        db.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,space_id,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?)',
-                                   (project_id,'new-project','new-project',device,str(folder/'unmapped'),sid,identities[0]['id'],time.time()))
-                    projects = required(rpc('workspace', arguments={'operation':'list'}))['result']['structuredContent']['projects']
+                        device='fixture-'+uuid.uuid4().hex;folder_id='folder-'+uuid.uuid4().hex
+                        db.execute('INSERT INTO devices(id,name,secret,owner_user_id,created) VALUES(?,?,?,?,?)',
+                            (device,'offline fixture','not-a-live-credential',identities[0]['id'],time.time()))
+                        db.execute('INSERT INTO space_devices(space_id,device_id) VALUES(?,?)',(sid,device))
+                        db.execute('''INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode)
+                            VALUES(?,?,?,'device',?,?,'read')''',(folder_id,sid,'Isolated source',device,str(source)))
+                        project_id='fixture-'+uuid.uuid4().hex
+                        db.execute('''INSERT INTO projects(id,alias,alias_key,folder_id,subpath,space_id,owner_user_id,created)
+                            VALUES(?,?,?,? ,'.',?,?,?)''',(project_id,'new-project','new-project',folder_id,sid,identities[0]['id'],time.time()))
+                    projects=required(rpc('project_query',arguments={'operation':'list'}))['result']['structuredContent']['projects']
                     assert project_id in {p['id'] for p in projects}
                     fresh = required(alice.post('/oauth/token', data={'grant_type':'refresh_token','refresh_token':tokens['refresh_token'],
-                        'client_id':registration['client_id']}))
+                        'client_id':registration['client_id'],'resource':hub_url+'/mcp'}))
                     assert fresh['refresh_token'] != tokens['refresh_token']
-                    assert required(rpc('get_profile', fresh['access_token']))['result']['structuredContent']['id'] == profiles[0]['id']
-                    passed('same_role_connection_gains_new_project_and_refresh_preserves_identity')
+                    assert required(rpc('get_profile',fresh['access_token']))['result']['structuredContent']['id']==connection_id
+                    passed('explicit_live_profile_future_project_and_stable_refreshed_connection')
                     phase = 'real-group-removal'
                     ak_call('PATCH', f"core/users/{users[0][0]['pk']}/", {'groups': []})
                     with db:

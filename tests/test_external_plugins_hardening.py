@@ -6,7 +6,7 @@ import pytest
 from hub.external_plugins.contracts import Registry, parse_spec
 from hub.store import Store
 from shared.util import DevError
-from tests.external_plugin_support import plugin_env, setup, approve, invoke, code, must, update_role, call
+from tests.external_plugin_support import plugin_env, setup, approve, invoke, code, must, update_policy, call
 
 
 def test_consent_names_external_target_and_warns_about_raw_access(plugin_env):
@@ -19,7 +19,7 @@ def test_consent_names_external_target_and_warns_about_raw_access(plugin_env):
     assert route['effect'] == 'read'
     assert route['broader_direct_access'] == []
     assert 'FIXTURE_BACKEND_CREDENTIAL' not in json.dumps(preview)
-    update_role(value, connector_rules=[{'binding_id': value['binding']['id'], 'tools': ['backend_pipeline']}])
+    update_policy(value, connector_rules=[{'binding_id': value['binding']['id'], 'tools': ['backend_pipeline']}])
     preview = approve(value)
     assert preview['routes'][0]['broader_direct_access'] == [
         {'binding_id': value['binding']['id'], 'tool': 'backend_pipeline'}]
@@ -59,7 +59,7 @@ def test_unsupported_external_content_does_not_replay(plugin_env):
 
 def test_reattachment_does_not_resurrect_old_consent(plugin_env):
     value = setup(plugin_env)
-    path = f"/api/external-integrations/{value['integration']['id']}/projects/project-a"
+    path = f"/api/spaces/team/external-integrations/{value['integration']['id']}/projects/project-a"
     must(value['b']['owner'].delete(path + '?expected_version=1'))
     must(value['b']['owner'].put(path, json={'expected_version': 2, 'config': {'remote_project_id': 123}}))
     assert code(invoke(value)) == 'UNKNOWN_TOOL'
@@ -67,18 +67,18 @@ def test_reattachment_does_not_resurrect_old_consent(plugin_env):
     assert not invoke(value).get('isError')
 
 
-def test_restart_preserves_plugin_consent_receipt_and_old_grant_bounds(plugin_env):
+def test_current_restart_preserves_plugin_consent_receipt_and_fixed_connection_bounds(plugin_env):
     value = setup(plugin_env, mode='fixed')
     result = invoke(value)
     live = value['app'].state.store
-    before = live.one('SELECT resource_policy FROM grants WHERE id=?', (value['grant']['grant_id'],))
+    before = live.one('SELECT * FROM grants WHERE id=?', (value['grant']['connection_id'],))
     reopened = Store(live.directory)
     try:
-        assert reopened.one('SELECT resource_policy FROM grants WHERE id=?', (value['grant']['grant_id'],)) == before
-        assert reopened.one('SELECT snapshot FROM external_plugin_consents WHERE grant_id=?', (value['grant']['grant_id'],))
+        assert reopened.one('SELECT * FROM grants WHERE id=?', (value['grant']['connection_id'],)) == before
+        assert reopened.one('SELECT snapshot FROM external_plugin_consents WHERE grant_id=?', (value['grant']['connection_id'],))
         assert json.loads(reopened.one('SELECT plugin_context FROM gateway_calls WHERE id=?',
             (result['_meta']['codepier/callId'],))['plugin_context'])['project_id'] == 'project-a'
-        assert reopened.one("SELECT value FROM meta WHERE key='external_plugin_schema'")['value'] == '1'
+        assert reopened.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
     finally:
         reopened.close()
     # Receipt is still scoped to the same grant and validated against the current route.

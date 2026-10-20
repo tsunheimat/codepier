@@ -1,3 +1,15 @@
+# 2.0.0 — Workspace abstraction (development, unpublished)
+
+Breaking fresh workspace schema; direct members and Profiles replace Roles.
+Connection identities bind a workspace/Profile from creation, with two-step OAuth
+and no mutable current-space context. Workspace folder bindings, Shared Storage
+maps, scoped shell inheritance and optional user-requested execution choices.
+Whole VPS bindings have top-level/project/both display and saved Runner OpenSSH
+transport. POSIX persistent shells/PTYs keep original private sessions/receipts.
+
+No production deployment, old-database upgrade, full-suite CI success or Windows
+execution-session acceptance is implied. See docs/WORKSPACES.md.
+
 # Changelog
 
 ## Unreleased

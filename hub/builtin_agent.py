@@ -34,9 +34,10 @@ def _marker(store):
         return None
     try:
         marker = json.loads(row["value"])
-        if not isinstance(marker, dict) or type(marker.get("version")) is not int or marker["version"] != 1:
+        if (not isinstance(marker,dict) or set(marker)!={'version','device_id','owner_user_id'}
+                or type(marker.get('version')) is not int or marker['version']!=1):
             raise ValueError
-        for key in ("device_id", "owner_user_id", "space_id"):
+        for key in ("device_id", "owner_user_id"):
             if not isinstance(marker.get(key), str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", marker[key]):
                 raise ValueError
         return marker
@@ -60,29 +61,21 @@ def require_external_device(store, device_id):
 
 
 def ensure_identity(store):
-    """Enroll once, atomically with original ownership and its audit record."""
+    """Enroll the Hub in global inventory once. A workspace must bind it explicitly."""
     with store.transaction():
         marker = _marker(store)
         if marker is not None:
             return marker
-        owner = store.one("""SELECT u.id AS owner_user_id,s.id AS space_id
-            FROM users u JOIN iam_users i ON i.user_id=u.id
-            JOIN spaces s ON s.id=i.personal_space_id
-            WHERE i.active=1 AND i.instance_admin=1 AND s.active=1 AND s.kind='personal'
-            AND EXISTS(SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.space_id=s.id
-                AND m.active=1 AND m.level='owner' AND (m.expires IS NULL OR m.expires>?))
-            AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.user_id=u.id AND b.space_id=s.id AND b.blocked=1)
-            ORDER BY u.created,u.id,s.id LIMIT 1""", (time.time(),))
+        owner = store.one("""SELECT u.id AS owner_user_id FROM users u JOIN iam_users i ON i.user_id=u.id
+            WHERE i.active=1 AND i.instance_admin=1 ORDER BY u.created,u.id LIMIT 1""")
         if owner is None:
             return None
-        marker = {"version": 1, "device_id": "dev_" + uuid.uuid4().hex, **owner}
-        store.db.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES(?,?,?,?,?,?)",
-                         (marker["device_id"], "CodePier Hub", store.encrypt(secrets.token_urlsafe(48)), time.time(),
-                          marker["space_id"], marker["owner_user_id"]))
-        store.db.execute("INSERT INTO meta(key,value) VALUES(?,?)", (META_KEY, json.dumps(marker)))
-        store.db.execute("INSERT INTO audit(at,actor,action,target,status,detail,space_id,owner_user_id) VALUES(?,?,?,?,?,?,?,?)",
-                         (time.time(), "hub:builtin-agent", "device.builtin_enrolled", marker["device_id"], "ok", "{}",
-                          marker["space_id"], marker["owner_user_id"]))
+        marker = {"version": 1, "device_id": "dev_"+uuid.uuid4().hex, **owner}
+        store.db.execute("INSERT INTO devices(id,name,secret,created,owner_user_id) VALUES(?,?,?,?,?)",
+                         (marker['device_id'], 'CodePier Hub', store.encrypt(secrets.token_urlsafe(48)), time.time(), marker['owner_user_id']))
+        store.db.execute('INSERT INTO meta(key,value) VALUES(?,?)', (META_KEY,json.dumps(marker)))
+        store.db.execute('INSERT INTO audit(at,actor,action,target,status,detail,space_id,owner_user_id) VALUES(?,?,?,?,?,?,NULL,?)',
+                         (time.time(),'hub:builtin-agent','device.builtin_enrolled',marker['device_id'],'ok','{}',marker['owner_user_id']))
         return marker
 
 
@@ -163,7 +156,7 @@ class BuiltinAgent:
             device = self.store.one("SELECT * FROM devices WHERE id=?", (marker["device_id"],))
             if device is None:  # Permanent deletion tombstone.
                 return None
-            if any(device[key] != marker[key] for key in ("owner_user_id", "space_id")):
+            if any(device[key] != marker[key] for key in ("owner_user_id",)):
                 raise DevError("BUILTIN_AGENT_STATE", "Hub 内置设备原始归属不一致；不会重新分配", 409)
             if not device_identity_active(self.store, device):
                 return None

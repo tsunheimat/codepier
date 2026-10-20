@@ -15,8 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from hub.oidc import ProviderInput,validate_claims,LOGOUT_EVENT
 from hub import iam
 from shared.util import DevError
-from tests.test_iam_integration import team as team, Browser
-from tests.test_roles import must
+from tests.identity_fixtures import team as team, Browser, must, project_policy, set_member
 
 
 class Provider:
@@ -105,14 +104,14 @@ def callback(oidc,state,response,*,browser=None,cookie_override=None):
                        headers={'Cookie':cookie_override if cookie_override is not None else cookie+'; rd_session='+browser.cookie},follow_redirects=False)
 
 
-def login(oidc):
-    state,response=start(oidc)
-    result=callback(oidc,state,response)
+def login(oidc,browser=None):
+    state,response=start(oidc,browser)
+    result=callback(oidc,state,response,browser=browser)
     assert result.status_code==303,result.text
     app,b,_,_,_=oidc
     secret=result.cookies.get('rd_session')
     session=app.state.store.one('SELECT * FROM sessions WHERE id_hash=?',(__import__('shared.crypto',fromlist=['digest']).digest(secret),))
-    personal=app.state.store.one("SELECT space_id FROM memberships WHERE user_id=? AND level='owner'",(session['user_id'],))['space_id']
+    personal=app.state.store.one("SELECT id FROM spaces WHERE owner_user_id=? AND kind='personal'",(session['user_id'],))['id']
     return Browser(b['owner'].client,secret,session['csrf'],personal),session
 
 
@@ -123,13 +122,13 @@ def test_provider_check_returns_stable_callback(oidc):
     assert result['backchannel_logout']=='http://testserver/auth/oidc/'+row['id']+'/backchannel-logout'
 
 
-def test_legacy_callback_alias_rejects_wrong_provider_without_consuming_state(oidc):
+def test_removed_callback_url_is_not_an_alias_and_does_not_consume_state(oidc):
     _,b,_,row,_=oidc
     state,response=start(oidc)
     cookie=response.headers['set-cookie'].split(';',1)[0]
     wrong=b['owner'].get('/auth/oidc/not-'+row['id']+'/callback',params={'state':state,'code':'authorization-code'},
                          headers={'Cookie':cookie+'; rd_session='+b['owner'].cookie},follow_redirects=False)
-    assert wrong.status_code==400
+    assert wrong.status_code==404
     accepted=callback(oidc,state,response)
     assert accepted.status_code==303,accepted.text
 
@@ -141,7 +140,8 @@ def test_complete_oidc_login_provisions_nonadmin_private_space_and_encrypts_toke
     assert me['id'] not in {'owner','alice','bob'} and not me['instance_admin'] and not me['local_login']
     assert len(me['spaces'])==1 and me['spaces'][0]['kind']=='personal'
     assert user.get('/api/iam/users').status_code==403
-    assert user.get('/api/projects',headers={'X-CodePier-Space':'legacy'}).status_code==403
+    assert user.get('/api/spaces/other-team').status_code==403
+    assert user.get('/api/projects').json()['projects']==[]
     identity=app.state.store.one('SELECT * FROM external_identities WHERE user_id=?',(me['id'],))
     assert identity['issuer']==fake.issuer and identity['subject']==fake.subject
     assert fake.access_token not in identity['upstream_tokens']
@@ -219,23 +219,29 @@ def test_link_rejects_stale_upstream_authentication(oidc):
     assert callback(oidc,state,response,browser=b['alice']).status_code==401
 
 
-def test_group_sync_removes_only_derived_memberships_and_assignments(oidc):
+def test_group_sync_updates_direct_member_policy_and_preserves_manual_sources(oidc):
     app,b,fake,row,_=oidc
-    r=must(b['owner'].post('/api/access-roles',json={'label':'shared','project_rules':[{'actions':['read'],'all_projects':True}], 'idempotency_key':'group-role-create'}),201)
-    must(b['owner'].post('/api/iam/oidc/providers/'+row['id']+'/mappings',json={'group_name':'developers','space_id':'team','role_id':r['id'],'may_delegate':True}),201)
-    user,session=login(oidc);uid=session['user_id']
+    policy=project_policy('read','write','execute')
+    must(b['owner'].post('/api/iam/oidc/providers/'+row['id']+'/mappings',json={
+        'group_name':'developers','space_id':'team','policy':policy}),201)
+    # The SSO callback replaces its browser's old login. Use a different
+    # account view so the owner can continue explicitly administering members.
+    user,session=login(oidc,browser=b['bob']);uid=session['user_id']
     assert any(s['id']=='team' for s in must(user.get('/api/iam/me'))['spaces'])
-    # Explicit manual membership and Role assignment must not be removed by group sync.
+    assert 'project-team' in user.get('/api/projects').text
+    # Group changes affect only this external identity's direct member source.
+    # The separately assigned manual policy remains active, without any Role.
+    set_member(b['owner'],uid,project_policy('read'))
     store=app.state.store
-    store.execute("INSERT INTO memberships(space_id,user_id,source,level) VALUES('team',?,'manual','member')",(uid,))
-    store.execute("INSERT INTO role_assignments(role_id,user_id,space_id,source,may_delegate) VALUES(?,?,'team','manual',1)",(r['id'],uid))
     identity=store.one('SELECT * FROM external_identities WHERE user_id=?',(uid,))
     fake.groups=[]
     asyncio.run(app.state.oidc.sync_identity(identity['id']))
-    assert store.one("SELECT active FROM memberships WHERE user_id=? AND source='manual' AND space_id='team'",(uid,))['active']==1
-    assert all(not x['active'] for x in store.all("SELECT active FROM memberships WHERE user_id=? AND source LIKE 'oidc:%'",(uid,)))
-    assert all(not x['active'] for x in store.all("SELECT active FROM role_assignments WHERE user_id=? AND source LIKE 'oidc:%'",(uid,)))
-    assert store.one("SELECT active FROM role_assignments WHERE user_id=? AND source='manual'",(uid,))['active']==1
+    manual=store.one("SELECT * FROM memberships WHERE user_id=? AND source='manual' AND space_id='team'",(uid,))
+    assert manual['active']==1
+    assert json.loads(manual['policy'])['project_rules'][0]['actions']==['read']
+    derived=store.all("SELECT active FROM memberships WHERE user_id=? AND source LIKE 'oidc:%'",(uid,))
+    assert derived and all(not x['active'] for x in derived)
+    assert 'project-team' in user.get('/api/projects').text
 
 
 def test_freshness_expiry_denies_resources_but_not_logout(oidc):

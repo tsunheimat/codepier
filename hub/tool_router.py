@@ -24,7 +24,7 @@ class ToolRouter:
     @iam.read_decision
     def definitions(self, principal):
         principal = refresh_principal(self.store, principal)
-        native = tool_definitions(authorization=principal.authorization_mode)
+        native = tool_definitions()
         external = self.gateway.tools(principal)
         names = [item['name'] for item in native + external]
         if len(names) != len(set(names)):
@@ -39,8 +39,6 @@ class ToolRouter:
                     self.gateway.secret)
 
     def resolve(self, principal, name):
-        if name in REPLACED_MCP_TOOLS:
-            raise DevError('TOOL_REMOVED', '旧工具已移除，请使用 ' + REPLACED_MCP_TOOLS[name], 404)
         if name in ADMIN_TOOLS:
             raise DevError('OWNER_REQUIRED', '此操作只接受已授权的管理入口', 403)
         _, native, external = self.definitions(principal)

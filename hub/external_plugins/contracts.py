@@ -133,7 +133,7 @@ def map_arguments(action, inputs, project_config, space_config):
     return mapped
 
 
-def public_definition(alias, name, action, authorization='role'):
+def public_definition(alias, name, action):
     schema = copy.deepcopy(action.input_schema)
     if action.scope == 'project':
         schema.setdefault('properties', {})['project'] = {'type': 'string', 'minLength': 1, 'maxLength': 100,
@@ -141,7 +141,7 @@ def public_definition(alias, name, action, authorization='role'):
         schema['required'] = sorted(set(schema.get('required', [])) | {'project'})
     tool = {'name': name, 'description': action.description or action.title, 'inputSchema': schema,
             'annotations': {'readOnlyHint': False, 'destructiveHint': True, 'idempotentHint': False, 'openWorldHint': True}}
-    value = catalog.definition(alias, tool, authorization)
+    value = catalog.definition(alias, tool)
     raw_name = 'ext.' + alias + '.' + name
     value['name'] = raw_name if len(raw_name) <= 64 else raw_name[:51] + '.' + catalog.fingerprint(raw_name)[:12]
     return value

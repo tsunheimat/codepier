@@ -1,21 +1,20 @@
 """Security regressions found during final multi-user/OIDC integration review."""
 import pytest
 
-from tests.test_iam_integration import team as team, Browser
+from tests.identity_fixtures import team, Browser, must, set_member, project_policy  # noqa: F401
 from tests.test_oidc_integration import oidc as oidc, start, callback
-from tests.test_roles import must
 
 
-def test_space_admin_cannot_restore_suspended_owner(team):
+def test_member_manager_cannot_restore_suspended_workspace_administrator(team):
     app, browsers = team
     store = app.state.store
-    store.execute("UPDATE memberships SET level='owner' WHERE user_id='alice' AND space_id='team'")
-    store.execute("UPDATE memberships SET level='admin' WHERE user_id='bob' AND space_id='team'")
-    path = '/api/iam/spaces/team/members/alice/suspension'
+    set_member(browsers['owner'],'alice',project_policy('read',manage=('workspace',)))
+    set_member(browsers['owner'],'bob',project_policy('read',manage=('members',)))
+    path = '/api/spaces/team/members/alice/suspension'
     must(browsers['owner'].put(path, json={'blocked': True}))
     denied = browsers['bob'].put(path, json={'blocked': False})
     assert denied.status_code == 403
-    assert denied.json()['error']['code'] == 'OWNER_REQUIRED'
+    assert denied.json()['error']['code'] == 'WORKSPACE_ADMIN_REQUIRED'
     assert store.one("SELECT blocked FROM membership_blocks WHERE space_id='team' AND user_id='alice'")['blocked'] == 1
     must(browsers['owner'].put(path, json={'blocked': False}))
     assert browsers['alice'].get('/api/projects').status_code == 200

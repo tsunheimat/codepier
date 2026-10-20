@@ -84,8 +84,9 @@ class TaskService:
             raise DevError('INSUFFICIENT_SCOPE', 'Task access requires current read and execute scope', 403, required_scope='execute', operation_id=identifier)
         # Ownership alone is insufficient after any dynamic permission change.
         operation = self.runtime.operation_row(identifier, principal)
-        if (operation['space_id'], operation['owner_user_id'], operation['grant_id'], operation['tool']) != (
-                row['space_id'], row['owner_user_id'], row['grant_id'], 'exec'):
+        if ((operation['space_id'],operation['owner_user_id'],operation['grant_id']) != (
+                row['space_id'],row['owner_user_id'],row['grant_id'])
+                or operation['tool'] not in {'exec','routed_exec'}):
             raise DevError('TASK_NOT_FOUND', 'Task binding no longer matches its operation', 404)
         return row, operation
 
@@ -108,9 +109,13 @@ class TaskService:
         with self.store.transaction():
             principal = refresh_principal(self.store, principal)
             operation = self.runtime.operation_row(identifier, principal)
-            if (operation['tool'], operation.get('grant_id'), operation.get('owner_user_id'), operation['space_id'],
-                    operation.get('idem')) != ('exec', principal.grant_id, principal.user_id, principal.space_id,
-                                               args.get('idempotency_key')):
+            # The public exec request is dispatched either through the saved
+            # VPS transport or through its workspace source route. Both retain
+            # the original private operation and exact idempotency binding.
+            if (operation['tool'] not in {'exec','routed_exec'}
+                    or (operation.get('grant_id'),operation.get('owner_user_id'),operation['space_id'],
+                        operation.get('idem')) != (principal.grant_id,principal.user_id,principal.space_id,
+                                                  args.get('idempotency_key'))):
                 raise DevError('TASK_BINDING_INVALID', 'Pending execution does not match its original request', 409)
             self.store.execute("""INSERT OR IGNORE INTO mcp_tasks(task_id,space_id,owner_user_id,grant_id,created)
                 VALUES(?,?,?,?,?)""", (identifier, principal.space_id, principal.user_id, principal.grant_id, time.time()))

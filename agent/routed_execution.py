@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from agent.shell import prepare_shell, shell_denial
 from shared.routing_contracts import RCHConfig, relative_source
@@ -24,10 +24,17 @@ from shared.util import DevError, atomic_json
 def validate_rch_config(value):
     if not isinstance(value, dict) or set(value) - {'enabled', 'executable'}:
         raise ValueError('rch accepts only enabled and an absolute executable path')
-    result = {'enabled': False, 'executable': '/usr/local/bin/rch', **value}
+    # Disabled optional RCH must not prevent an ordinary Windows Runner from
+    # starting merely because the Unix default has no Windows drive. Windows
+    # deployments which enable RCH must explicitly configure their executable.
+    default = '' if os.name == 'nt' else '/usr/local/bin/rch'
+    result = {'enabled': False, 'executable': default, **value}
     if type(result['enabled']) is not bool or not isinstance(result['executable'], str):
         raise ValueError('Invalid local RCH configuration')
-    if not Path(result['executable']).is_absolute() or '\x00' in result['executable']:
+    executable = result['executable']
+    path_type = PureWindowsPath if os.name == 'nt' else PurePosixPath
+    if (result['enabled'] and not executable or executable and not path_type(executable).is_absolute()
+            or '\x00' in executable):
         raise ValueError('rch.executable must be an absolute deployment-owned executable')
     return result
 

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from hub.agent_install import AgentPackage, DeviceLifecycleInput, InstallTicketInput, install_command, make_agent_install_router, validate_root
 from hub.auth import Auth
 from hub.store import Store
-from hub.runtime import Principal
+from tests.current_model import CurrentModel
 from shared.crypto import digest, password_hash
 from shared.util import DevError
 from tests.install_support import package_tree, _real_auth_app
@@ -58,19 +58,16 @@ def test_package_is_deterministic_and_excludes_private_files(tmp_path):
 def test_ticket_is_single_use_rotated_and_secret_never_in_command(tmp_path):
     package_tree(tmp_path / 'source')
     store = Store(tmp_path / 'hub')
-    from tests.legacy_iam_fixture import seed_personal_owner
-    space_id=seed_personal_owner(store,'u','admin')
+    model=CurrentModel(store)
+    model.user('u',username='admin')
     secret = 's' * 48
     device_id = 'd' * 32
-    store.execute('INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)',
-                  (device_id, 'Laptop', store.encrypt(secret), 1,space_id,'u'))
+    model.device(device_id,owner='u',name='Laptop',secret=secret)
 
     class Auth:
         def panel(self, request, write=False):
-            return Principal('panel:admin', 'u', {'read', 'write', 'computer'}, ['*'], admin=True,space_id=space_id)
+            return model.panel('u')
 
-    from tests.legacy_iam_fixture import attach_session_security
-    attach_session_security(store)
     runtime = SimpleNamespace(store=store)
     app = FastAPI()
     @app.exception_handler(DevError)
@@ -152,23 +149,22 @@ def test_agent_lifecycle_endpoints_pin_package_and_require_exact_uninstall_name(
     source = tmp_path / 'source'
     package_tree(source)
     store = Store(tmp_path / 'hub')
-    from tests.legacy_iam_fixture import seed_personal_owner
-    space_id=seed_personal_owner(store,'u','admin')
+    model=CurrentModel(store)
+    model.user('u',username='admin')
     device_id = 'd' * 32
-    store.execute('INSERT INTO devices(id,name,secret,enabled,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?)',
-                  (device_id, 'Studio Mac', store.encrypt('s' * 48), 1, time.time(),space_id,'u'))
+    model.device(device_id,owner='u',name='Studio Mac',secret='s'*48)
     calls = []
 
     class AdminAuth:
         def panel(self, request, write=False):
-            return Principal('panel:admin', 'u', {'read', 'write', 'computer'}, ['*'], admin=True,space_id=space_id)
+            return model.panel('u')
 
     class Runtime:
         def __init__(self):
             self.store = store
 
         async def dispatch_device_action(self, action, args, target, principal):
-            calls.append((action, args, target, principal.admin))
+            calls.append((action, args, target, principal.instance_admin))
             return {'operation_id': f'op-{len(calls)}', 'pending': True, 'state': 'queued'}
 
     app = FastAPI()

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.regression_plan import merge_summaries
+from scripts.regression_platform import read_native_proof
 
 
 def main():
@@ -18,6 +19,7 @@ def main():
     parser.add_argument('reports', type=Path, nargs='+')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--coverage', action='store_true', help='Also combine every shard coverage file, preserving the originals')
+    parser.add_argument('--native-windows', type=Path, help='Required same-source actual Windows evidence for platform-specific cases')
     args = parser.parse_args()
     try:
         if any(path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) for path in args.reports):
@@ -30,7 +32,7 @@ def main():
             if path.is_symlink() or path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError('A shard report is not bounded regular input')
             reports.append(json.loads(path.read_text(encoding='utf-8')))
-        result = merge_summaries(reports)
+        result = merge_summaries(reports, native_windows=read_native_proof(args.native_windows))
         if args.coverage:
             if not all(report.get('coverage_requested') and not report.get('coverage_error') for report in reports):
                 raise ValueError('A shard lacks verified coverage measurements')

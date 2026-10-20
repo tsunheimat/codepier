@@ -11,12 +11,12 @@ from agent.core_files import CoreFiles
 from agent.resource_queue import Claim, ResourceQueue
 from hub.runtime import Principal, Runtime
 from hub.store import Store
-from hub.vps import VPSInput, VPSAssignments
+from hub.vps import VPSInput, VPSBindingSave
 from hub.core_tools import result as core_result
 from scripts.mcp_stdio_bridge import prepare_request
 from shared.contracts import TOOLS, tool_definitions
-from shared.crypto import digest, token
-from shared.tool_protocol import wire_version, negotiate, require_compatible
+from shared.crypto import digest, token, password_hash
+from shared.tool_protocol import wire_version, negotiate, require_compatible, advertisement
 from shared.core_contracts import CORE_ACTIONS, REPLACED_MCP_TOOLS, CORE_TOOLS
 from shared.query_contracts import QUERY_TOOLS
 from shared.util import DevError, atomic_json
@@ -41,23 +41,43 @@ def agent(tmp_path):
 @pytest.fixture
 def runtime(tmp_path):
     store = Store(tmp_path / 'hub')
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store,'owner','admin')
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','home',?,?,'legacy','owner')", (store.encrypt(token()), time.time()))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev','/tmp/fixture','','write',1,?,'legacy','owner')", (time.time(),))
+    from hub.permissions import owner_policy
+    now = time.time()
+    root = tmp_path / 'fixture'
+    root.mkdir()
+    with store.transaction():
+        store.db.execute('INSERT INTO users VALUES(?,?,?,?)', ('owner', 'admin', password_hash('test-workspace-password'), now))
+        store.db.execute('INSERT INTO spaces(id,label,owner_user_id,created) VALUES(?,?,?,?)', ('fixture', 'Fixture workspace', 'owner', now))
+        store.db.execute('INSERT INTO memberships(space_id,user_id,policy) VALUES(?,?,?)', ('fixture', 'owner', owner_policy().model_dump_json()))
+        store.db.execute('INSERT INTO devices(id,name,secret,created,owner_user_id,info) VALUES(?,?,?,?,?,?)',
+                         ('dev', 'home', store.encrypt(token()), now, 'owner', json.dumps({'shell_enabled': True})))
+        store.db.execute('INSERT INTO space_devices(space_id,device_id) VALUES(?,?)', ('fixture', 'dev'))
+        store.db.execute('INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode,allow_tasks) VALUES(?,?,?,?,?,?,?,?)',
+                         ('folder', 'fixture', 'Fixture folder', 'device', 'dev', str(root), 'write', 1))
+        store.db.execute('INSERT INTO projects(id,space_id,alias,alias_key,folder_id,owner_user_id,created) VALUES(?,?,?,?,?,?,?)',
+                         ('proj', 'fixture', 'Fixture', 'fixture', 'folder', 'owner', now))
     instance = Runtime(store)
     instance.wait_seconds = 0
-    principal = Principal('panel:admin', 'owner', {'read', 'write', 'execute', 'computer'}, ['*'], admin=True, space_id='legacy')
+    principal = Principal('panel:admin', 'owner', {'read'}, [], space_id='fixture', user_epoch=1)
     yield instance, principal
     store.close()
 
 
 def reader_principal(instance):
-    # Scope tests use an actual persisted fixed grant. A panel principal's
-    # in-memory admin flag is intentionally NOT authoritative under live IAM.
-    from tests.legacy_iam_fixture import seed_grant
-    seed_grant(instance.store,'reader','owner',scopes=('read',),projects=('proj',))
-    return Principal('mcp:reader:test','owner',{'read'},['proj'],grant_id='reader')
+    # Authenticate a real immutable Connection -> Space + Profile binding.
+    # No synthetic in-memory scope or obsolete grant can bypass live policy.
+    from hub.auth import Auth
+    from starlette.requests import Request
+    now, profile_id = time.time(), 'prf_' + uuid.uuid4().hex
+    policy = {'project_rules': [{'projects': ['proj'], 'actions': ['read']}]}
+    instance.store.execute('INSERT INTO access_profiles(id,space_id,label,label_key,policy,created_by,created,updated) VALUES(?,?,?,?,?,?,?,?)',
+                           (profile_id, 'fixture', 'Reader', profile_id, json.dumps(policy), 'owner', now, now))
+    auth = Auth(instance.store)
+    owner = Principal('panel:admin', 'owner', {'read'}, [], space_id='fixture', user_epoch=1)
+    connection = auth.issue_connection(owner, 'Core fixture reader', profile_id, 1)
+    request = Request({'type': 'http', 'method': 'POST', 'path': '/mcp',
+                       'headers': [(b'authorization', ('Bearer ' + connection['token']).encode())]})
+    return auth.bearer(request)
 
 
 def request(project, name, **args):
@@ -73,15 +93,19 @@ def file_call(agent, name, **args):
     return CoreFiles(instance.engine).call(name, project, call['args'])
 
 
-def test_catalog_compact_and_legacy_compatibility():
+def test_catalog_compact_and_protocol_boundaries():
     core = tool_definitions('core')
-    assert {t['name'] for t in core} == CORE_TOOLS | QUERY_TOOLS | {'get_profile', 'get_access_context'}
-    # Typed outcomes plus explicit query tools: measured ~85 KB; retain a bounded catalog.
-    assert len(json.dumps(core).encode()) < 95000
+    assert {t['name'] for t in core} == CORE_TOOLS | QUERY_TOOLS | {'get_profile', 'get_access_context',
+        'session', 'get_execution_options', 'folders_list', 'projects_create'}
+    # The new Session/options/folder tools add schemas, not untyped catch-alls.
+    assert len(json.dumps(core, ensure_ascii=False).encode()) < 110000
     assert {'browser', 'computer', 'exec', 'edit'} <= {t['name'] for t in tool_definitions('full')}
     assert not {'browser_open', 'computer_action', 'vps_exec', 'fs_read', 'shell_exec'} & {t['name'] for t in tool_definitions('full')}
-    with pytest.raises(DevError, match='不兼容'):
-        require_compatible(negotiate({'version': '1.13.0'}), 'exec')
+    with pytest.raises(ValueError):
+        negotiate({'version':'1.13.0'})
+    frame=advertisement('a'*64);frame['tool_contracts']['exec']=1
+    with pytest.raises(DevError,match='不兼容'):
+        require_compatible(negotiate(frame),'exec')
 
 
 def test_original_snapshot_edits_preserve_crlf_bom_and_backup(agent):
@@ -204,10 +228,10 @@ async def test_facades_enforce_action_scopes_and_process_waits_are_parallel(runt
     caller = reader_principal(instance)
     with pytest.raises(DevError) as denied:
         await instance.invoke('computer', {'operation': 'apps', 'project': 'Fixture'}, caller)
-    assert denied.value.code == 'INSUFFICIENT_SCOPE' and denied.value.details['required_scope'] == 'computer'
+    assert denied.value.code == 'WORKSPACE_POLICY_DENIED'
     with pytest.raises(DevError) as denied:
         await instance.invoke('browser', {'operation': 'open', 'project': 'Fixture', 'url': 'https://example.invalid', 'idempotency_key': 'open-browser'}, caller)
-    assert denied.value.code == 'INSUFFICIENT_SCOPE'
+    assert denied.value.code == 'WORKSPACE_POLICY_DENIED'
     result = await instance.invoke('workspace', {}, caller)
     assert result['projects'][0]['alias'] == 'Fixture'
     calls = []
@@ -228,23 +252,28 @@ async def test_facades_enforce_action_scopes_and_process_waits_are_parallel(runt
 @pytest.mark.asyncio
 async def test_saved_vps_target_keeps_credentials_private_and_binding_pinned(runtime):
     instance, principal = runtime
-    connection = instance.vps.save(VPSInput(name='Test', host='vps.example.invalid', password='fixture-password', project_ids=['proj'], execution_project_id='proj'), principal)
-    args = {'project': 'Fixture', 'target': connection['target'], 'command': 'true', 'yield_seconds': 0, 'idempotency_key': 'saved-connection'}
+    resource = instance.vps.save(VPSInput(name='Test', host='vps.example.invalid', idempotency_key='fixture-vps-resource'), principal)
+    connection = instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', runner_device_id='dev',
+        connection_ref='production', display_mode='top_level', idempotency_key='fixture-vps-binding'), principal)
+    args = {'target': connection['target'], 'command': 'true', 'yield_seconds': 0, 'idempotency_key': 'saved-connection'}
     receipt = await instance.invoke('exec', args, principal)
     row = instance.store.one('SELECT * FROM operations WHERE id=?', (receipt['operation_id'],))
     request_data = json.loads(instance.store.decrypt(row['payload']))
     assert request_data['vps_ref']['id'] == connection['id']
-    assert 'fixture-password' not in json.dumps(request_data) + row['args_summary']
-    transport = instance.vps.transport(request_data, 'proj')
-    assert transport['tool'] == 'exec' and transport['core_ssh']['password'] == 'fixture-password'
+    assert row['project_id'] is None  # Whole VPS does not require a fictitious local project.
+    assert 'password' not in json.dumps(request_data) + row['args_summary']
+    transport = instance.vps.transport(request_data, None)
+    assert transport['tool'] == 'exec'
+    assert transport['project']['_ssh_target'] == {'vps_id': connection['id'], 'resource_id': resource['id'], 'connection_ref': 'production'}
     assert transport['args'] == request_data['args']
     retry = await instance.invoke('exec', args, principal)
     assert retry['operation_id'] == receipt['operation_id']
     saved=instance.vps.get(connection['id'],principal)
-    instance.vps.save(VPSInput(**{k:saved[k] for k in ('name','host','port','username','project_ids')},execution_project_id=None,expected_version=saved['version']),principal,connection['id'])
-    assert instance.permission_error(row, request_data)
+    instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', runner_device_id='dev',
+        connection_ref='production', enabled=False, expected_version=saved['version'], idempotency_key='disable-vps-binding'), principal, connection['id'])
+    assert instance.permission_error(row, principal=principal)
     with pytest.raises(DevError):
-        instance.vps.transport(request_data, 'proj')
+        instance.vps.transport(request_data, None)
 
 
 def test_desktop_native_images_survive_facade_and_batch_poll():
@@ -268,9 +297,12 @@ def test_bridge_does_not_invent_lookup_filters_or_workspace_arguments():
 @pytest.mark.asyncio
 async def test_complete_capability_discovery_and_no_unmapped_public_tool(runtime):
     instance, principal = runtime
-    assert set(TOOLS) - CORE_TOOLS - QUERY_TOOLS - set(REPLACED_MCP_TOOLS) == {'integration_control', 'validations_accept', 'get_profile', 'get_access_context'}
+    assert set(TOOLS) - CORE_TOOLS - QUERY_TOOLS - set(REPLACED_MCP_TOOLS) == {
+        'integration_control', 'validations_accept', 'get_profile', 'get_access_context',
+        'session', 'get_execution_options', 'project_routes_get'}
     for profile in ('core', 'coding', 'full'):
-        assert {t['name'] for t in tool_definitions(profile)} == CORE_TOOLS | QUERY_TOOLS | {'get_profile', 'get_access_context'}
+        assert {t['name'] for t in tool_definitions(profile)} == CORE_TOOLS | QUERY_TOOLS | {
+            'get_profile', 'get_access_context', 'session', 'get_execution_options', 'folders_list', 'projects_create'}
     for name, operations in CORE_ACTIONS.items():
         for operation, backend in operations.items():
             help = await instance.invoke('workspace', {'operation': 'help', 'tool': name, 'action': operation}, principal)
@@ -300,7 +332,7 @@ async def test_advanced_aliases_do_not_bypass_scopes(runtime, name, operation, o
     with pytest.raises(DevError) as denied:
         await instance.invoke(name, {'operation': operation, 'project': 'Fixture',
             'options': options, 'idempotency_key': 'advanced-operation'}, reader)
-    assert denied.value.code == 'INSUFFICIENT_SCOPE'
+    assert denied.value.code == 'WORKSPACE_POLICY_DENIED'
 
 
 @pytest.mark.asyncio
@@ -322,9 +354,13 @@ def test_help_describes_public_batch_ids_and_skill_options():
     skills = help_result('workspace', 'skills')['inputSchema']
     Draft202012Validator(skills).validate({'operation': 'skills', 'project': 'Fixture', 'options': {'include_disabled': True}})
     assert 'include_disabled' not in skills['properties']
-    conversations = help_result('conversations', 'associate')['inputSchema']
-    Draft202012Validator(conversations).validate({'operation': 'associate',
-        'identity': {'platform': 'custom-client', 'conversation_identifier': 'provided-id'}})
-    assert help_result()['tools']['conversations']['operations'] == ['associate', 'get', 'list']
+    with pytest.raises(DevError) as retired:
+        help_result('conversations', 'associate')
+    assert retired.value.code == 'UNKNOWN_OPERATION'
+    assert 'conversations' not in help_result()['tools']
+    session = help_result('session', 'open')['inputSchema']
+    Draft202012Validator(session).validate({'operation': 'open', 'project': 'Fixture',
+        'idempotency_key': 'open-original-session'})
+    assert not {'space_id', 'profile_id'} & session['properties'].keys()
     assert not any(op.startswith('workflow_') or op == 'handoff'
         for entry in help_result()['tools'].values() for op in entry['operations'])

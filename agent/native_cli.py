@@ -50,19 +50,11 @@ class NativeCLI:
 
     @staticmethod
     def security(db, kind, rid, project, *, create=False):
-        """Trust only metadata on the authenticated Hub project envelope.
-
-        Tool args cannot choose an owner. Existing secured records remain denied
-        to older Hubs that omit ownership. Legacy local records may be adopted
-        only by the Hub-verified device owner or instance recovery operator.
-        """
+        """Only explicit authenticated workspace owners may access local records."""
         rid=identifier(rid)
         owner=project.get('_native_owner')
         space=project.get('_native_space')
         row=db.execute('SELECT * FROM native_security WHERE kind=? AND id=?',(kind,rid)).fetchone()
-        if owner is None:
-            if row:raise DevError('CLI_OWNER_REQUIRED','此会话需要支持多用户身份的 Hub',403)
-            return None
         if not isinstance(owner,str) or not owner.startswith('user:') or len(owner)>300 or not isinstance(space,str) or not 1<=len(space)<=100:
             raise DevError('CLI_OWNER_INVALID','本机请求缺少可信身份范围',403)
         operator=project.get('_native_operator') is True
@@ -73,9 +65,8 @@ class NativeCLI:
         table='sessions' if kind=='session' else 'attachments'
         exists=db.execute('SELECT id FROM '+table+' WHERE id=?',(rid,)).fetchone()
         if exists:
-            if project.get('_native_allow_legacy') is not True:
-                raise DevError('CLI_OWNER_DENIED','旧本机记录仅允许设备主理人明确访问',403)
-        elif not create:
+            raise DevError('CLI_OWNER_DENIED','This local record has no verified workspace ownership',403)
+        if not create:
             raise DevError('CLI_NOT_FOUND','会话或附件不存在',404)
         db.execute('INSERT INTO native_security(kind,id,owner,space) VALUES(?,?,?,?)',(kind,rid,owner,space))
         return {'kind':kind,'id':rid,'owner':owner,'space':space}

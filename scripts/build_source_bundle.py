@@ -51,17 +51,9 @@ ROOT_FILES = {
     'requirements.txt',
     'ruff.toml',
 }
-# Development-only root inputs rejected by the installed 1.13 updater.
-# Keep this explicit: newly added roots must fail the compatibility gate.
-PANEL_UPDATE_EXCLUDES = frozenset({
-    '.prettierrc.json', 'pyproject.toml', 'requirements.in',
-    'requirements-agent.in', 'requirements-bridge.in', 'requirements-compat.in',
-    'requirements-dev.in', 'requirements-tools.in',
-})
-
 EXTENSIONS = {'.py','.js','.mjs','.cjs','.ts','.tsx','.html','.css','.json','.toml','.yaml','.yml',
               '.md','.txt','.sh','.ps1','.cmd','.bat','.svg','.png','.jpg','.jpeg','.webp','.ico',
-              '.xml','.service','.plist','.example'}
+              '.xml','.sql','.service','.plist','.example'}
 EXCLUDED_NAMES = {'.rekey','.codepier-updater','__pycache__','node_modules','.git','.pytest_cache','.venv','.venv-compat',
                   'data','private','agent-state','hub-data','uploads','backups','checkpoints','.DS_Store',
                   '.work','dist','.ruff_cache','.mypy_cache','.idea','.vscode'}
@@ -78,11 +70,10 @@ EVIDENCE_FILES = {'full-regression-final.xml','focused-verified.xml','worker-rea
 
 REQUIRED_FILES = {
     'hub/principal.py', 'hub/tool_router.py', 'hub/gateway/service.py', 'hub/iam.py', 'hub/oidc.py',
-    'hub/access_profiles.py','shared/access_profile_contracts.py','web/access-profiles.js',
+    'hub/access_profiles.py','shared/access_profile_contracts.py','web/spaces.js','web/spaces.css','hub/schema.sql','shared/workspace_contracts.py','hub/workspace_api.py','agent/execution_sessions.py','agent/execution.py',
     'web/access-profiles.css','docs/ACCESS_PROFILES.md','web/identity.js','web/mcp-gateway.js',
     '.prettierrc.json',
     'agent/background_browser.py',
-    'agent/brand_upgrade.py',
     'agent/chat_catalog.py',
     'agent/chat_worker.py',
     'agent/claude_cli.py',
@@ -125,17 +116,11 @@ REQUIRED_FILES = {
     'requirements-agent.txt',
     'scripts/agent_lifecycle.py',
     'scripts/install_agent.py',
-    'scripts/migrate_hub.py',
-    'scripts/migrate_hub_data.py',
-    'scripts/migrate_hub_networks.py',
-    'scripts/migrate_hub_proxy.py',
+    'scripts/bootstrap_hub.py',
     'scripts/panel_update_runtime.py',
     'scripts/panel_update_source.py',
     'scripts/panel_updater.py',
-    'scripts/rename_checkout.py',
     'shared/audit_redaction.py',
-    'shared/brand_browser.py',
-    'shared/brand_migration.py',
     'shared/integration_contracts.py',
     'shared/mcp_protocol.py',
     'shared/native_cli.py',
@@ -174,12 +159,13 @@ REQUIRED_FILES = {
 }
 
 PUBLIC_DOCS = {
+    'docs/WORKSPACE_REFACTOR_VALIDATION.md',
     'docs/PROJECT_ROUTING.md',
     'docs/AUTH_CONTINUITY.md',
     'docs/EXTERNAL_PLUGINS.md',
     'docs/RESOURCE_MODEL.md', 'docs/CONVERSATIONS.md',
     'docs/PERSONAL_SPACES.md',
-    'docs/MCP_GATEWAY.md', 'docs/MULTIUSER_OIDC.md', 'docs/DYNAMIC_ROLES.md', 'docs/ACCESS_PROFILES.md', 'docs/UPSTREAM_INTEGRATION.md',
+    'docs/MCP_GATEWAY.md', 'docs/MULTIUSER_OIDC.md', 'docs/WORKSPACES.md', 'docs/ACCESS_PROFILES.md', 'docs/UPSTREAM_INTEGRATION.md',
     'docs/FILE_IMPORT.md',
     'docs/CORE_TOOLS.md',
     'docs/AGENT_INSTALL.md',
@@ -190,7 +176,6 @@ PUBLIC_DOCS = {
     'docs/CLAUDE_CLI.md',
     'docs/CLI-GLOBAL-FLOW-20260918.md',
     'docs/CLI_SESSIONS.md',
-    'docs/CODEPIER-MIGRATION.md',
     'docs/COMPUTER_USE.md',
     'docs/DEVELOPMENT.md',
     'docs/DEVTOOLS-FLOW-20260918.md',
@@ -258,9 +243,7 @@ def include(relative, *, public=False):
     return relative.suffix.lower() in EXTENSIONS or relative.name in {'LICENSE','Dockerfile','Caddyfile'}
 
 
-def build(destination, *, public=False, panel_update=False):
-    if panel_update and not public:
-        raise ValueError("Panel update bundles require the public profile")
+def build(destination, *, public=False):
     destination = destination.resolve()
     if ROOT not in destination.parents or destination.suffix.lower() != '.zip' or destination.relative_to(ROOT).parts[0] not in {'dist', '.work'}:
         raise ValueError('Bundle destination must be a ZIP inside dist/ or .work/, never a runtime source asset')
@@ -285,7 +268,7 @@ def build(destination, *, public=False, panel_update=False):
         for name in sorted(names):
             source = current/name
             relative = source.relative_to(ROOT)
-            if not include(relative, public=public) or (panel_update and relative.as_posix() in PANEL_UPDATE_EXCLUDES):
+            if not include(relative, public=public):
                 continue
             before = source.lstat()
             if not stat.S_ISREG(before.st_mode) or source.is_symlink():
@@ -305,8 +288,6 @@ def build(destination, *, public=False, panel_update=False):
                 raise RuntimeError('Source bundle exceeds 128 MiB uncompressed')
             files.append((relative.as_posix(),raw,before.st_mode & 0o777))
     required = REQUIRED_FILES - ({'LOCAL_RELEASE.json'} if public else set())
-    if panel_update:
-        required -= PANEL_UPDATE_EXCLUDES
     missing = required - {name for name,_,_ in files}
     if missing:
         raise RuntimeError('Bundle is missing runtime files: '+', '.join(sorted(missing)))
@@ -336,7 +317,7 @@ def build(destination, *, public=False, panel_update=False):
         Path(temporary).unlink(missing_ok=True)
     result={'path':str(destination.relative_to(ROOT)),'bytes':destination.stat().st_size,
             'sha256':digest(destination.read_bytes()),'files':len(files)+1,'source_bytes':total,
-            'verified':True,'source_only':True,'public_profile':public,'panel_update_profile':panel_update,'excluded':'credentials, runtime DBs/state, environments, caches, old operation logs, font files, previous archives',
+            'verified':True,'source_only':True,'public_profile':public,'excluded':'credentials, runtime DBs/state, environments, caches, old operation logs, font files, previous archives',
             'skipped_selected_files':skipped,'inventory':inventory}
     metadata=destination.with_suffix('.manifest.json')
     metadata.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
@@ -356,14 +337,10 @@ def source_version():
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path)
-    parser.add_argument('--panel-update',action='store_true',help='Build the update archive compatible with installed 1.13 updaters; requires --public')
     parser.add_argument('--public',action='store_true',help='Omit local release records and historical evidence; use this profile for GitHub')
     args=parser.parse_args()
-    if args.panel_update and not args.public:
-        parser.error('--panel-update requires --public')
-    suffix = '-source.zip' if args.panel_update else '-source-full.zip'
-    destination = args.output or ROOT/'dist'/('codepier-'+source_version()+suffix)
-    print(json.dumps(build(destination,public=args.public,panel_update=args.panel_update),ensure_ascii=False,indent=2))
+    destination = args.output or ROOT/'dist'/('codepier-'+source_version()+'-source.zip')
+    print(json.dumps(build(destination,public=args.public),ensure_ascii=False,indent=2))
 
 
 if __name__=='__main__':

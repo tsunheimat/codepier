@@ -11,8 +11,6 @@ class Principal:
     grant_id: str | None = None
     admin: bool = False
     profile_id: str | None = None
-    authorization_mode: str = "fixed"
-    role_id: str | None = None
     space_id: str | None = None
     instance_admin: bool = False
     user_epoch: int | None = None

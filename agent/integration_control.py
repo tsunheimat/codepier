@@ -35,6 +35,10 @@ class Controls:
 
     def guard(self,name,project):
         # Older frames without identity cannot use a missing flag as an exemption.
+        if name in {'exec', 'session'} and project.get('_vps_context'):
+            # Whole-VPS admission is checked by the saved SSH reference. It is
+            # not a local project and has no fabricated directory pause state.
+            return
         metadata=project.get('_execution_policy') or {}
         panel=metadata.get('origin')=='panel' and project.get('_integration_admin') is True
         if panel or name in SAFE_WHILE_PAUSED:return

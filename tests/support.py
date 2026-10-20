@@ -4,10 +4,24 @@ import contextlib, json, os, socket, subprocess, sys, time, uuid
 from pathlib import Path
 import httpx
 from hub.store import Store
+from hub import iam
 from shared.crypto import password_hash, token
 from shared.util import atomic_json
 
 BASE = Path(__file__).resolve().parent.parent
+
+
+def control_client(url):
+    """Independent fixture setup/assertions, not the browser's HTTP transport.
+
+    These observations pause while real browser actions run. Keep authentication
+    cookies, but not idle TCP sockets that can race the server's keep-alive close.
+    No request retry is installed: a reset after a submitted mutation still fails
+    immediately rather than sending the mutation again or fabricating a result.
+    """
+    return httpx.Client(base_url=url, timeout=35, trust_env=False,
+                        limits=httpx.Limits(max_keepalive_connections=0))
+
 
 def wait_for(fn, timeout=12):
     end=time.monotonic()+timeout
@@ -85,22 +99,26 @@ class Stack:
             subprocess.run(['git','-C',str(path),'-c','user.name=CodePier Test','-c','user.email=codepier@example.invalid','commit','-qm','Initial test fixture'],check=True,capture_output=True)
         self.hubdir=self.directory/'hub-data'
         store=Store(self.hubdir)
-        store.execute('INSERT INTO users VALUES (?,?,?,?)',(uuid.uuid4().hex,'admin',password_hash(self.password),time.time())); store.close()
+        self.user_id=uuid.uuid4().hex
+        with store.transaction():
+            store.db.execute('INSERT INTO users VALUES (?,?,?,?)',(self.user_id,'admin',password_hash(self.password),time.time()))
+            iam.create_personal_space(store,self.user_id,'Account workspace')
+        store.close()
         self.hub_log=(self.directory/'hub.log').open('w'); self.agent_log=(self.directory/'agent.log').open('w')
         self.env={**os.environ,'HUB_PUBLIC_URL':self.url,'MCP_PUBLIC_URL':self.url,'HUB_DATA_DIR':str(self.hubdir),'PYTHONUNBUFFERED':'1'}
         self.hub=None; self.agent=None
         self.start_hub()
-        self.client=httpx.Client(base_url=self.url,timeout=35,trust_env=False)
+        self.client=control_client(self.url)
         self.login()
-        self.space_id=self.must(self.client.get('/api/iam/me'))['default_space_id']
-        if space_label:
-            self.space_id=self.must(self.client.post('/api/iam/spaces',json={
-                'label':space_label,'idempotency_key':uuid.uuid4().hex}))['id']
-            self.client.headers['X-CodePier-Space']=self.space_id
+        # Test accounts have no ambient workspace. Select an explicit fresh
+        # resource container and use it in each setup URL, never in a header.
+        self.space_id=self.must(self.client.post('/api/spaces',json={
+            'label':space_label or 'Integration workspace','idempotency_key':uuid.uuid4().hex}))['id']
         r=self.client.post('/api/devices',json={'name':'HOME / DEVELOPMENT NODE','hub_url':self.url}); self.must(r)
         self.pairing=r.json()['pairing']; self.device=self.pairing['device_id']
         self.config_path=self.directory/'agent-config'/'config.json'
         self.config={**self.pairing,'state_dir':str(self.directory/'agent-state'),'allowed_roots':[{'path':str(self.root),'writable':True,'allow_tasks':True}],
+          'shell':{'enabled':True,'projects':['Imago','Nexus','Lumen']},
           'tasks':{
             'smoke':{'command':[sys.executable,'-u','-c','print("PASS: local task completed")'],'projects':['Imago','Nexus','Lumen'],'timeout':15,'description':'本机示例检查'},
             'slow':{'command':[sys.executable,'-u','-c','import time; print("STARTED",flush=True); time.sleep(20); print("DONE")'],'projects':['Imago'],'timeout':60},
@@ -108,24 +126,47 @@ class Stack:
             'failure':{'command':[sys.executable,'-u','-c','import sys; print("EXPECTED FAILURE"); sys.exit(3)'],'projects':['Imago'],'timeout':5}
           }}
         atomic_json(self.config_path,self.config); self.start_agent()
+        self.must(self.client.put(f'/api/spaces/{self.space_id}/devices/{self.device}',json={
+            'expected_version':0,'idempotency_key':uuid.uuid4().hex}))
+        self.folder=self.create_folder({'name':'Integration sources','source_kind':'device',
+            'device_id':self.device,'device_path':str(self.root),'mode':'write','allow_tasks':True})
         self.projects=[]
         for p in (self.imago,self.nexus,self.lumen):
-            self.projects.append(self.create_project({'alias':p.name,'root':str(p),'device_id':self.device,'description':p.name+' 本地联调示例','mode':'write','allow_tasks':True}))
+            self.projects.append(self.create_project({'alias':p.name,'folder_id':self.folder['id'],'subpath':p.name,
+                'description':p.name+' 本地联调示例'}))
         self.project=self.projects[0]
-        r=self.client.post('/api/grants',json={'label':'ChatGPT · integration fixture','scopes':['read','write','execute'],'projects':[p['id'] for p in self.projects],'days':1});self.must(r)
-        self.pat=r.json()['token'];self.grant=r.json()['grant_id']
+        self.profile=self.create_profile({'project_rules':[{'projects':[p['id'] for p in self.projects],
+            'actions':['read','write','execute']}]},label='Integration project access')
+        created=self.create_connection(self.profile)
+        self.pat=created['token'];self.grant=created['connection_id']
     @staticmethod
     def must(r):
         assert r.is_success, f'{r.status_code}: {r.text[:1000]}'
         return r.json()
-    def create_project(self, body):
+    def validated_create(self, kind, body):
+        # Inputs are the new model's actual schema. No old-field or endpoint
+        # translation occurs in this fixture. Retry only the same saved request
+        # after observing its original validation operation.
         body={'idempotency_key':uuid.uuid4().hex,**body}
-        response=self.client.post('/api/projects',json=body)
+        path=f'/api/spaces/{self.space_id}/{kind}'
+        response=self.client.post(path,json=body)
         if response.status_code==409 and response.json().get('error',{}).get('code')=='VALIDATION_PENDING':
             operation=self.poll(response.json()['error']['operation_id'],timeout=45)
             assert operation['state']=='succeeded',operation
-            response=self.client.post('/api/projects',json=body)
+            response=self.client.post(path,json=body)
         return self.must(response)
+    def create_folder(self, body):
+        return self.validated_create('folders',body)
+    def create_project(self, body):
+        return self.validated_create('projects',body)
+    def create_profile(self, policy, *, label=None):
+        return self.must(self.client.post(f'/api/spaces/{self.space_id}/profiles',json={
+            'label':label or 'Integration '+uuid.uuid4().hex,'policy':policy,'idempotency_key':uuid.uuid4().hex}))
+    def create_connection(self, profile, *, live=False, external=False):
+        return self.must(self.client.post(f'/api/spaces/{self.space_id}/connections',json={
+            'name':'Integration connection','profile_id':profile['id'],'profile_version':profile['version'],
+            'consent_mode':'live' if live else 'fixed','confirm_live_profile':live,
+            'confirm_external_mcp':external,'idempotency_key':uuid.uuid4().hex}))
     def login(self):
         r=self.client.post('/api/login',json={'username':'admin','password':self.password});self.must(r);self.client.headers['X-RD-CSRF']=r.json()['csrf']
     def start_hub(self):
@@ -157,7 +198,7 @@ class Stack:
     def call(self,name,args=None,raw=False):
         r=self.client.post('/api/tools/call',json={'tool':name,'arguments':args or {}})
         return r if raw else self.must(r)
-    def fs(self,name,**args): return self.call(name,{'project':'Imago',**args})
+    def fs(self,name,**args): return self.call(name,{'project':self.project['id'],**args})
     def rpc(self,method,params=None,token_value=None,id=1,headers=None):
         h={'Accept':'application/json, text/event-stream','Content-Type':'application/json','Authorization':'Bearer '+(token_value or self.pat),'MCP-Protocol-Version':'2025-11-25',**(headers or {})}
         return self.client.post('/mcp',headers=h,json={'jsonrpc':'2.0','id':id,'method':method,'params':params or {}})

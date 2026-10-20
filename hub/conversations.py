@@ -16,6 +16,7 @@ from typing import Literal
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import ValidationError
 
+from hub import iam
 from hub.db_worker import database_endpoint
 from hub.principal import refresh_principal
 from shared.conversation_contracts import ConversationAssociate, ConversationIdentity, Conversations as Arguments
@@ -92,14 +93,8 @@ class ConversationRegistry:
         self.runtime, self.store = runtime, runtime.store
         self.write_errors = 0
 
-    @staticmethod
-    def scope(principal):
-        clause = 'space_id=? AND owner_user_id=?'
-        values = [principal.space_id, principal.user_id]
-        if principal.grant_id:
-            clause += ' AND grant_id=?'
-            values.append(principal.grant_id)
-        return clause, values
+    def scope(self, principal):
+        return iam.owner_scope_sql(self.store, principal)
 
     def load(self, identifier, principal):
         principal = refresh_principal(self.store, principal)
@@ -133,6 +128,10 @@ class ConversationRegistry:
         return self.upsert(identity, principal)['id'] if identity else None
 
     def resource(self, kind, identifier, principal):
+        from hub.resource_context import in_resource
+        if kind == 'project' and principal.space_id is not None:
+            identifier = self.runtime.project(identifier, principal)['id']
+        principal = in_resource(self.store, principal, {'project':'projects','vps':'space_vps','mcp':'gateway_bindings'}[kind], identifier)
         if kind == 'project':
             row = self.runtime.project(identifier, principal)
             return {'type': kind, 'id': row['id'], 'name': row['alias']}
@@ -153,6 +152,8 @@ class ConversationRegistry:
             row = self.runtime.operation_row(identifier, principal)
             return {'type': kind, **{k: row[k] for k in ('id', 'tool', 'state', 'created', 'updated')}}
         from hub.gateway.policy import require_tool
+        from hub.resource_context import in_resource
+        principal = in_resource(self.store, principal, 'gateway_calls', identifier)
         row = self.store.one('SELECT * FROM gateway_calls WHERE id=? AND space_id=? AND user_id=?',
                              (identifier, principal.space_id, principal.user_id))
         if not row or principal.grant_id and row['grant_id'] != principal.grant_id:
@@ -165,6 +166,8 @@ class ConversationRegistry:
 
     def link(self, identifier, principal, resources=(), operations=()):
         row = self.load(identifier, principal)
+        from hub.resource_context import in_resource
+        principal = in_resource(self.store, principal, 'conversations', identifier)
         # A human may edit their label/URL, but cannot copy receipts from one
         # grant to another just because both grants use the same Profile.
         for item in operations:
@@ -236,6 +239,13 @@ class ConversationRegistry:
     def invoke(self, args, principal):
         principal = refresh_principal(self.store, principal)
         if args['operation'] == 'associate':
+            from hub.resource_context import in_resource
+            if args.get('conversation_id'):
+                principal = in_resource(self.store, principal, 'conversations', args['conversation_id'])
+            for resource in args.get('resources', []):
+                principal = in_resource(self.store, principal, {'project':'projects','vps':'space_vps','mcp':'gateway_bindings'}[resource['type']], resource['id'])
+            if principal.space_id is None:
+                raise DevError('WORKSPACE_REQUIRED', 'A new association needs an explicit workspace resource', 400)
             with self.store.transaction():
                 row = self.load(args['conversation_id'], principal) if args['conversation_id'] else self.upsert(ConversationIdentity.model_validate(args['identity']), principal)
                 if args['identity'] and args['conversation_id']:

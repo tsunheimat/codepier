@@ -14,9 +14,9 @@ CodePier · 码头 — 面板安装与更新
       --enable-panel-update 安装独立宿主机更新服务（Linux/systemd，需 root）
       --non-interactive 无人值守；首次安装必须提供 host 和密码文件或 CODEPIER_ADMIN_PASSWORD
 需要 Docker Engine、Compose 插件和主机 Python 3.9+（只使用标准库）。
-旧版更新自动迁移已识别的项目名与数据卷；保留账号、密钥、权限和历史。
-自定义数据挂载或新旧安装冲突会停止，不会创建空面板冒充升级成功。
-HTTPS 安装须保留原 COMPOSE_FILE，连同 Caddy 数据及证书卷一起迁移。
+只支持当前工作空间架构；旧数据库、账号、Token、服务名与数据卷不迁移。
+旧数据或不完整资料会明确拒绝，不会清空或重新初始化来冒充升级成功。
+使用独立空数据卷建立新安装；当前安装自身的更新保留显式 COMPOSE_FILE 与证书卷。
 HELP
 }
 while [[ $# -gt 0 ]]; do
@@ -32,8 +32,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ ! -L .env ]] || { echo '.env 不能是符号链接；未修改任何配置。' >&2; exit 1; }
-# Canonical environment wins; the old operator name remains a read-only input alias.
-export CODEPIER_ADMIN_PASSWORD="${CODEPIER_ADMIN_PASSWORD:-${RD_ADMIN_PASSWORD:-}}"
+# Only the current explicit bootstrap credential is accepted.
+export CODEPIER_ADMIN_PASSWORD="${CODEPIER_ADMIN_PASSWORD:-}"
 if [[ -n "$password_file" ]]; then
   [[ "$password_file" == /* ]] || password_file="$caller_directory/$password_file"
   [[ -f "$password_file" && ! -L "$password_file" && -r "$password_file" ]] || { echo '密码文件不存在、不可读或是符号链接' >&2; exit 1; }
@@ -48,18 +48,12 @@ docker compose version >/dev/null
 lock="$root/.codepier-install.lock"
 mkdir "$lock" 2>/dev/null || { echo '另一个安装进程或未完成安装锁存在；请先检查 .codepier-install.lock。' >&2; exit 1; }
 printf '%s\n' "$$" > "$lock/pid"
-migration_started=0
 env_tmp=''
 cleanup() {
   status=$?
   trap - EXIT
-  if ((status != 0 && migration_started == 1)); then
-    # Before first new write, restore the old containers. After that boundary,
-    # preserve both data versions and report recovery_required, never stale rollback.
-    "$bootstrap_python" "$root/scripts/migrate_hub.py" rollback --root "$root" || true
-  fi
   [[ -z "$env_tmp" ]] || rm -f -- "$env_tmp"
-  unset CODEPIER_ADMIN_PASSWORD RD_ADMIN_PASSWORD
+  unset CODEPIER_ADMIN_PASSWORD
   if [[ -f "$lock/pid" && "$(cat "$lock/pid")" == "$$" ]]; then rm -f -- "$lock/pid"; rmdir "$lock" 2>/dev/null || true; fi
   exit "$status"
 }
@@ -97,19 +91,15 @@ secure_host_path(Path(sys.executable))
 PYHOST
 fi
 docker compose config --quiet
-# Finish the image build while the old installation is still running.
+# Build the selected current source, but do not stop or adopt another install.
 docker compose build hub
-"$bootstrap_python" scripts/rename_checkout.py --root "$root" --apply
-root=$(pwd -P)
-lock="$root/.codepier-install.lock"
-migration_started=1
-"$bootstrap_python" scripts/migrate_hub.py prepare --root "$root"
-# Inspect with a genuinely read-only mount. A failed proxy migration or missing
-# initialization input still restores the legacy installation at this point.
-hub_data_volume=$("$bootstrap_python" scripts/migrate_hub.py probe-volume --root "$root")
+# Resolve actual current volumes through the full Compose selection. The helper
+# never searches old project names, copies databases, moves checkouts or rewrites
+# proxy settings. Existing certificate/data volumes are not modified here.
+hub_data_volume=$("$bootstrap_python" scripts/bootstrap_hub.py --root "$root")
 needs_init=0
-if docker compose run --rm --no-deps --volume "$hub_data_volume:/app/data:ro" hub python -c 'import os,sys,sqlite3; from pathlib import Path; p=Path(os.environ["HUB_DATA_DIR"])/"hub.sqlite3"; sys.exit(3) if not p.exists() else None; s=sqlite3.connect(p.as_uri()+"?mode=ro",uri=True); found=s.execute("SELECT id FROM users LIMIT 1").fetchone(); s.close(); sys.exit(0 if found else 3)'; then
-  echo '检测到已有管理员，保留原账号和数据。'
+if docker compose run --rm --no-deps --volume "$hub_data_volume:/app/data:ro" hub python -m hub.installation; then
+  echo '只读校验已确认当前版本数据库；保留该安装的账号与资料。'
 else
   probe_status=$?
   if ((probe_status != 3)); then echo '无法检查管理员或数据卷；没有尝试重新初始化。' >&2; exit "$probe_status"; fi
@@ -119,21 +109,18 @@ else
     echo '首次无人值守初始化需要 --password-file 或 CODEPIER_ADMIN_PASSWORD；未创建账号。' >&2; exit 1
   fi
 fi
-# The read-only Compose probe created networks, but did not open a writable store.
-"$bootstrap_python" scripts/migrate_hub.py proxy-trust --root "$root"
-"$bootstrap_python" scripts/migrate_hub.py write-boundary --root "$root"
+# A successful read-only probe is the only path to new owner initialization.
+# Never retry a failed probe as initialization, or silently reset an old store.
 if ((needs_init == 1)); then
   if [[ -n "${CODEPIER_ADMIN_PASSWORD:-}" ]]; then
     docker compose run --rm --no-deps -e CODEPIER_ADMIN_PASSWORD hub python -m hub init --username "${username:-admin}"
   else
     docker compose run --rm --no-deps hub python -m hub init --username "${username:-admin}"
   fi
-  unset CODEPIER_ADMIN_PASSWORD RD_ADMIN_PASSWORD
+  unset CODEPIER_ADMIN_PASSWORD
 fi
 # Preserve the caller's full Compose selection, including a configured HTTPS proxy.
 docker compose up -d --wait --wait-timeout 90
-"$bootstrap_python" scripts/migrate_hub.py commit --root "$root"
-migration_started=0
 echo 'CodePier 已启动且健康检查通过。查看日志：docker compose logs -f hub'
 if ((enable_panel_update == 1)); then
   "$bootstrap_python" "$root/scripts/panel_updater.py" install --root "$root"

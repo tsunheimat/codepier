@@ -10,10 +10,9 @@ import time
 
 
 def is_supervised():
-    """Recognize old launchd installations without rewriting their identity."""
+    """Supervise only the explicitly current service identity."""
     return (os.environ.get('CODEPIER_SUPERVISED') == '1'
-            or os.environ.get('XPC_SERVICE_NAME') in
-            {'com.codepier.agent', 'com.liangchanghua.remote-dev-agent'})
+            or os.environ.get('XPC_SERVICE_NAME')=='com.codepier.agent')
 
 
 class Watchdog:

@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 import re
 import stat
-import runpy
 import tempfile
 import sys
 import zipfile
@@ -24,7 +23,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from scripts.build_source_bundle import DIRECTORIES, EXCLUDED_NAMES, REQUIRED_FILES, PUBLIC_DOCS, PANEL_UPDATE_EXCLUDES, include
+from scripts.build_source_bundle import DIRECTORIES, EXCLUDED_NAMES, REQUIRED_FILES, PUBLIC_DOCS, include
 
 
 CREDENTIAL_PATTERNS = {
@@ -273,28 +272,25 @@ def check_archive(path, expected):
 
 
 def check_panel_update(path, expected):
-    """Verify actual release bytes with both the frozen 1.13 and current updater."""
+    """Verify the single complete source archive with the current updater."""
     from scripts import panel_update_source
-    files = {name: item for name, item in expected.items() if name not in PANEL_UPDATE_EXCLUDES}
-    result = check_archive(path, files)
+    result = check_archive(path, expected)
     with zipfile.ZipFile(path) as archive:
         version = json.loads(archive.read('RELEASE.json'))['version']
     release = {'version': version, 'bytes': result['bytes'], 'sha256': result['sha256']}
-    legacy = runpy.run_path(str(ROOT / 'tests/fixtures/panel_update_source_v1_13_0.py'))
-    with tempfile.TemporaryDirectory(prefix='codepier-upgrade-check-') as directory:
-        for label, unpack in [('1.13.0', legacy['unpack_bundle']), ('current', panel_update_source.unpack_bundle)]:
-            try:
-                unpack(path, Path(directory) / label, release)
-            except Exception as exc:
-                raise ValueError('Panel updater compatibility failed: ' + label + ': ' + str(exc)) from exc
-    return {**result, 'panel_updaters_verified': ['1.13.0', 'current']}
+    with tempfile.TemporaryDirectory(prefix='codepier-current-update-check-') as directory:
+        try:
+            panel_update_source.unpack_bundle(path, Path(directory) / 'current', release)
+        except Exception as exc:
+            raise ValueError('Current panel updater rejected the source archive: ' + str(exc)) from exc
+    return {**result, 'panel_updaters_verified': ['current']}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--panel-update', action='store_true', help='Verify the panel update profile and installed updater compatibility')
+    parser.add_argument('--panel-update', action='store_true', help='Verify that the current updater accepts the complete source archive')
     args = parser.parse_args()
     if args.panel_update and not args.bundle:
         parser.error('--panel-update requires --bundle')

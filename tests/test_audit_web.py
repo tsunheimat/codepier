@@ -62,18 +62,18 @@ function modalAdapter(){
   run('modal=()=>makeModal();');
 }
 async function scenario(name){
-  if(name==='identity_stale_boot_keeps_space_and_draft'){
-    editor('private unsent');type('private unsent');run("S.space_id='team';");
-    fetchImpl=async()=>response({id:'owner',spaces:[],default_space_id:'different',
+  if(name==='identity_stale_boot_keeps_view_and_draft'){
+    editor('private unsent');type('private unsent');run("location.hash='#spaces/team/projects';");
+    fetchImpl=async()=>response({id:'owner',spaces:[],
       identity_access:{code:'ENTITLEMENTS_UNAVAILABLE',message:'retry fixture',retryable:true}});
     let error;try{await run('CodePierIdentity.bootstrap()');}catch(e){error=e;}
     assert.equal(error.code,'ENTITLEMENTS_UNAVAILABLE');
-    assert.equal(run('S.space_id'),'team');assert.equal(work().content,'private unsent');
+    assert.equal(run('location.hash'),'#spaces/team/projects');assert.equal(work().content,'private unsent');
     assert.ok(run('S.session'));assert.equal(run('S.page'),'workbench');
     run("S.page='identity'");await run('CodePierIdentity.bootstrap()');
     assert.equal(run('S.page'),'identity');assert.ok(run('S.session'));
   }else if(name.startsWith('identity_retry_')){
-    editor();run("S.space_id='team';S.renderSeq=1");context.retryCalls=0;
+    editor();run("location.hash='#spaces/team/projects';S.renderSeq=1");context.retryCalls=0;
     run('recoverPanelAccess=()=>{retryCalls++;return Promise.resolve();}');
     const code=name==='identity_retry_permanent'?'ENTITLEMENTS_STALE':'ENTITLEMENTS_UNAVAILABLE';
     run(`schedulePanelAccessRetry({code:'${code}'})`);
@@ -81,7 +81,7 @@ async function scenario(name){
     if(name==='identity_retry_permanent'){assert.equal(retry,undefined);return;}
     assert.ok(retry);
     if(name==='identity_retry_new_login')run("S.session={csrf:'other'}");
-    if(name==='identity_retry_new_space')run("S.space_id='other'");
+    if(name==='identity_retry_new_workspace_view')run("location.hash='#spaces/other/projects'");
     if(name==='identity_retry_navigation')run("S.page='identity'");
     if(name==='identity_retry_new_render')run('S.renderSeq++');
     if(name==='identity_retry_logout')run('S.session=null');
@@ -127,8 +127,8 @@ async function scenario(name){
     editor();const request=deferred();fetchImpl=()=>request.promise;const pending=run("api('/api/devices')");run("S.session={csrf:'new'}");request.resolve(response({error:{message:'expired'}},401));
     await assert.rejects(pending,e=>e.code==='SESSION_CHANGED');assert.equal(run('S.session.csrf'),'new');
   }else if(name==='metadata_bootstrap_keeps_pending_request'){
-    editor();run("S.space_id='team';S.session.user_id='u'");const session=run('S.session'), old=deferred();
-    fetchImpl=async path=>path==='/api/iam/me'?response({id:'u',instance_admin:false,spaces:[{id:'team',level:'member'}],default_space_id:'team'}):old.promise;
+    editor();run("location.hash='#spaces/team/projects';S.session.user_id='u'");const session=run('S.session'), old=deferred();
+    fetchImpl=async path=>path==='/api/iam/me'?response({id:'u',instance_admin:false,spaces:[{id:'team',kind:'workspace'}]}):old.promise;
     const pending=run("api('/api/devices')");await run('CodePierIdentity.bootstrap()');
     assert.equal(run('S.session'),session);old.resolve(response({devices:['kept']}));assert.deepEqual((await pending).devices,['kept']);
   }else if(name==='resource_401_preserves_live_login'){
@@ -165,13 +165,18 @@ async function scenario(name){
     editor();run("S.session.user_id='u';endSession=(discard)=>{S.session=null;S.discarded=discard;}");
     fetchImpl=async path=>path==='/api/session'?response({authenticated:true,user_id:'u',csrf:'different-login'}):response({error:{code:'UPSTREAM_AUTH_FAILED'}},401);
     await assert.rejects(run("post('/api/resource')"),e=>e.code==='UPSTREAM_AUTH_FAILED');assert.equal(run('S.session'),null);assert.equal(run('S.discarded'),true);
-  }else if(name==='space_change_rejects_pending_receipt'){
-    editor();run("S.space_id='a'");const receipt=deferred();context.receipt=receipt.promise;
-    const pending=assert.rejects(run('settled(receipt)'),e=>e.code==='SESSION_CHANGED');run("S.space_id='b'");receipt.resolve({operation_id:'old',pending:false});await pending;
-  }else if(name==='late_probe_cannot_clear_new_space'){
-    editor();run("S.space_id='a'");const probe=deferred();fetchImpl=async path=>path==='/api/session'?probe.promise:response({error:{code:'LOGIN_REQUIRED'}},401);
-    const pending=assert.rejects(run("api('/api/devices')"),e=>e.code==='SESSION_CHANGED');await tick();run("S.space_id='b'");
-    probe.resolve(response({authenticated:false}));await pending;assert.equal(run('S.space_id'),'b');assert.ok(run('S.session'));
+  }else if(name==='workspace_navigation_rejects_pending_receipt'){
+    editor();run("location.hash='#spaces/a/projects'");const receipt=deferred();context.receipt=receipt.promise;
+    const pending=assert.rejects(run('settled(receipt)'),e=>e.code==='SESSION_CHANGED');run("location.hash='#spaces/b/projects'");receipt.resolve({operation_id:'old',pending:false});await pending;
+  }else if(name==='expired_cookie_is_account_scoped_after_workspace_navigation'){
+    editor();run("location.hash='#spaces/a/projects';endSession=()=>{S.session=null;S.ended=(S.ended||0)+1;}");
+    const probe=deferred();let reads=0;fetchImpl=async path=>{reads++;return path==='/api/session'?probe.promise:response({error:{code:'LOGIN_REQUIRED'}},401);};
+    const pending=assert.rejects(run("api('/api/devices')"),e=>e.code==='LOGIN_REQUIRED');await tick();run("location.hash='#spaces/b/projects'");
+    // A different resource view is not a different login. A confirmed expired
+    // cookie must end that same account's access, not keep a stale session alive.
+    probe.resolve(response({authenticated:false}));await pending;
+    assert.equal(run('location.hash'),'#spaces/b/projects');assert.equal(run('S.session'),null);
+    assert.equal(run('S.ended'),1);assert.equal(reads,2);
   }else if(name==='project_addition_keeps_session'){
     editor();const session=run('S.session');fetchImpl=async()=>response({});run('connectEvents()');
     run('S.events').onmessage({data:JSON.stringify({type:'project',data:{id:'future'}})});assert.equal(run('S.session'),session);
@@ -196,7 +201,7 @@ async function scenario(name){
   }else if(name==='event_connections_release_timer'){
     editor();fetchImpl=async()=>response({});run("S.page='projects';connectEvents()");const first=run('S.events');first.onmessage({data:JSON.stringify({type:'device'})});const id=run('S.eventTimer');assert.ok(timers.has(id));run('connectEvents()');assert.equal(first.closed,true);assert.equal(timers.has(id),false);
   }else if(name==='login_boot_failure_has_retry_surface'){
-    editor();fetchImpl=async()=>{throw Error('offline');};await run('bootAuthenticated()');assert.match(elements.get('#app').innerHTML,/retry-identity/);assert.equal(run('S.events'),null);assert.equal(run('S.space_id'),null);
+    editor();fetchImpl=async()=>{throw Error('offline');};await run('bootAuthenticated()');assert.match(elements.get('#app').innerHTML,/retry-identity/);assert.equal(run('S.events'),null);assert.equal(run('Object.hasOwn(S,"space_id")'),false);
   }else throw Error(name);
 }
 scenario(process.argv[1]).then(()=>console.log('SCENARIO_COMPLETED')).catch(error=>{console.error(error);process.exitCode=1;});
@@ -205,10 +210,10 @@ scenario(process.argv[1]).then(()=>console.log('SCENARIO_COMPLETED')).catch(erro
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for UI behavior tests")
 @pytest.mark.parametrize("scenario", [
-    "identity_stale_boot_keeps_space_and_draft",
+    "identity_stale_boot_keeps_view_and_draft",
     "identity_retry_current",
     "identity_retry_new_login",
-    "identity_retry_new_space",
+    "identity_retry_new_workspace_view",
     "identity_retry_navigation",
     "identity_retry_new_render",
     "identity_retry_logout",
@@ -231,8 +236,8 @@ scenario(process.argv[1]).then(()=>console.log('SCENARIO_COMPLETED')).catch(erro
     "parallel_401s_share_cookie_probe",
     "late_probe_cannot_clear_new_login",
     "changed_cookie_does_not_adopt_old_work",
-    "space_change_rejects_pending_receipt",
-    "late_probe_cannot_clear_new_space",
+    "workspace_navigation_rejects_pending_receipt",
+    "expired_cookie_is_account_scoped_after_workspace_navigation",
     "project_addition_keeps_session",
     "null_json_retries_are_bounded",
     "uncertain_task_reuses_key_after_reload",

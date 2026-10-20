@@ -19,12 +19,13 @@ from hub.store import Store
 from shared.crypto import digest
 from shared.core_contracts import CORE_TOOLS
 from shared.query_contracts import QUERY_TOOLS
-from tests.test_iam_integration import team as team, shared_role, assign
+from tests.identity_fixtures import (team, must, call, data, set_member, make_profile,
+    make_connection, project_policy, pending_oauth, select_oauth_space)  # noqa: F401
 from tests.test_mcp_gateway import gw as gw, configured, connector, account, publish
 from tests.test_oidc_integration import oidc as oidc, start
 from tests.test_oidc_review_regressions import seed_identity
-from tests.test_roles import role, profile, credential, must, role_oauth
-from tests.test_access_profiles import call, data
+from tests.test_access_profiles import exchange
+from urllib.parse import parse_qs, urlparse
 
 
 def operation(store, owner, *, space='team', visibility='private'):
@@ -39,11 +40,11 @@ def operation(store, owner, *, space='team', visibility='private'):
 
 
 def test_call_log_watch_filters_detail_and_cursor_respect_private_space(team):
-    app,b=team;shared_role(app,b,['read'])
+    app,b=team;set_member(b['owner'],'alice',project_policy('read'))
     store=app.state.store
     own=[operation(store,'alice') for _ in range(2)]
     other=operation(store,'bob')
-    cross=operation(store,'owner',space='legacy')
+    cross=operation(store,'owner',space='other-team')
     shared=operation(store,'bob',visibility='space')
     result=must(b['alice'].get('/api/call-log',params={'limit':1,'watch':','.join([*own,other,cross,shared])}))
     visible=set(own+[shared])
@@ -52,60 +53,74 @@ def test_call_log_watch_filters_detail_and_cursor_respect_private_space(team):
     assert cross not in json.dumps(result) and other not in json.dumps(result)
     assert {p['id'] for p in result['projects']}=={'project-team'}
     assert b['alice'].get('/api/call-log/'+other).status_code==404
-    assert b['alice'].get('/api/call-log/'+cross).status_code==404
+    cross_denied=b['alice'].get('/api/call-log/'+cross)
+    assert cross_denied.status_code==403
+    assert 'PRIVATE' not in cross_denied.text and 'owner' not in cross_denied.text
     assert b['bob'].get('/api/call-log',params={'limit':1,'cursor':result['next_cursor']}).status_code==400
     store.execute("INSERT INTO membership_blocks VALUES('team','alice',1)")
-    assert b['alice'].get('/api/call-log',params={'watch':own[0]}).status_code==403
+    revoked=b['alice'].get('/api/call-log',params={'watch':own[0]})
+    assert revoked.status_code==200 and revoked.json()['operations']==[] and revoked.json()['updates']==[]
 
 
-@pytest.mark.parametrize('legacy',['fs_read','shell_exec','devices_list','projects_create'])
+@pytest.mark.parametrize('legacy',['fs_read','shell_exec','devices_list','workflows_create'])
 def test_removed_public_native_tools_never_fall_through_to_gateway(team,monkeypatch,legacy):
-    app,b=team;r=shared_role(app,b,['read','write','execute'])
-    p=profile(b['alice'],r);g=must(credential(b['alice'],r,p))
+    app,b=team;policy=project_policy('read','write','execute')
+    set_member(b['owner'],'alice',policy)
+    p=make_profile(b['owner'],policy);g=make_connection(b['alice'],p)
     async def no_fallback(*args,**kwargs):
         raise AssertionError('Unknown/removed native tool reached an external backend')
     monkeypatch.setattr(app.state.gateway,'call',no_fallback)
-    # Deliberately bypass the migration helper: assert the actual public contract.
+    # Use the actual public entrypoint; never translate a removed native tool.
     response=b['alice'].post('/mcp',headers={'Authorization':'Bearer '+g['token'],'Accept':'application/json, text/event-stream'},json={
         'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':legacy,'arguments':{}}})
     payload=response.json()['result']
     assert payload['isError']
-    assert json.loads(payload['content'][0]['text'])['error']['code']=='TOOL_REMOVED'
+    assert json.loads(payload['content'][0]['text'])['error']['code']=='UNKNOWN_TOOL'
 
 
-def test_native_catalog_is_nine_core_plus_stable_identity(team):
-    app,b=team;r=shared_role(app,b);p=profile(b['alice'],r);g=must(credential(b['alice'],r,p))
+def test_native_catalog_is_only_current_workspace_tools_and_connection_identity(team):
+    app,b=team;set_member(b['owner'],'alice',project_policy('read'))
+    p=make_profile(b['owner'],project_policy('read'));g=make_connection(b['alice'],p)
     response=b['alice'].post('/mcp',headers={'Authorization':'Bearer '+g['token'],'Accept':'application/json, text/event-stream'},json={
         'jsonrpc':'2.0','id':1,'method':'tools/list','params':{}})
     tools=response.json()['result']['tools']
-    assert {t['name'] for t in tools}==CORE_TOOLS|QUERY_TOOLS|{'get_profile','get_access_context'}
+    assert {t['name'] for t in tools}==CORE_TOOLS|QUERY_TOOLS|{
+        'get_profile','get_access_context','session','get_execution_options','folders_list','projects_create'}
     assert next(t for t in tools if t['name']=='get_profile')['_meta']['openai/profile'] is True
 
 
-def test_first_pat_consent_atomic_and_fixed_grant_cannot_opt_in(gw):
+@pytest.mark.parametrize('live',[False,True])
+def test_first_connection_external_consent_is_explicit_atomic_and_identity_bound(gw,live):
     app,b,backend=gw
     c=connector(b);a=account(b,c);binding=publish(b,a)
-    r=role(b['owner'],project_rules=[],connector_rules=[{'binding_id':binding['id'],'tools':['echo']}])
-    assign(b['owner'],r,'alice');p=profile(b['alice'],r)
+    policy={'connector_rules':[{'binding_id':binding['id'],'tools':['echo']}]}
+    set_member(b['owner'],'alice',policy);p=make_profile(b['owner'],policy)
     before=app.state.store.one('SELECT count(*) AS n FROM grants')['n']
-    rejected=credential(b['alice'],r,p,confirm_external_mcp='yes')
+    body={'name':'External connection','profile_id':p['id'],'profile_version':p['version'],
+        'consent_mode':'live' if live else 'fixed','confirm_live_profile':live,
+        'confirm_external_mcp':'yes','idempotency_key':uuid.uuid4().hex}
+    rejected=b['alice'].post('/api/spaces/team/connections',json=body)
     assert rejected.status_code==422
     assert app.state.store.one('SELECT count(*) AS n FROM grants')['n']==before
-    g=must(credential(b['alice'],r,p,confirm_external_mcp=True))
-    assert app.state.store.one('SELECT grant_id FROM gateway_consents WHERE grant_id=?',(g['grant_id'],))
+    g=must(b['alice'].post('/api/spaces/team/connections',json={**body,'confirm_external_mcp':True}),201)
+    assert app.state.store.one('SELECT grant_id FROM gateway_consents WHERE grant_id=?',(g['connection_id'],))
     assert not call(b['alice'],g['token'],'kiln__echo',{'value':'allowed'}).json()['result']['isError']
     before=app.state.store.one('SELECT count(*) AS n FROM grants')['n']
     fixed=b['owner'].post('/api/grants',json={'label':'fixed','scopes':['read'],'projects':['project-team'],'confirm_external_mcp':True})
-    assert fixed.status_code==403
+    assert fixed.status_code==404
     assert app.state.store.one('SELECT count(*) AS n FROM grants')['n']==before
 
 
 def test_first_oauth_consent_includes_external_binding_without_second_grant(gw):
     app,b,backend=gw
     c=connector(b);a=account(b,c);binding=publish(b,a)
-    r=role(b['owner'],project_rules=[],connector_rules=[{'binding_id':binding['id'],'tools':['echo']}])
-    assign(b['owner'],r,'alice');p=profile(b['alice'],r)
-    _,tokens=role_oauth(b['alice'],r,p,confirm_external_mcp=True)
+    policy={'connector_rules':[{'binding_id':binding['id'],'tools':['echo']}]}
+    set_member(b['owner'],'alice',policy);p=make_profile(b['owner'],policy)
+    pending=pending_oauth(b['alice']);selected=select_oauth_space(b['alice'],pending)
+    decided=must(b['alice'].post('/api/oauth/requests/'+pending['id']+'/decide',json={
+        'allow':True,'space_id':'team','profile_id':p['id'],'profile_version':p['version'],
+        'selection_version':selected['selection_version'],'consent_mode':'fixed','confirm_external_mcp':True}))
+    tokens=must(exchange(b['alice'],{**pending,'code':parse_qs(urlparse(decided['redirect']).query)['code'][0]}))
     response=call(b['alice'],tokens['access_token'],'kiln__echo',{'value':'oauth'})
     assert not response.json()['result']['isError']
     row=app.state.store.one('SELECT grant_id FROM tokens WHERE hash=?',(digest(tokens['access_token']),))
@@ -124,7 +139,7 @@ def test_rotation_covers_gateway_oidc_and_preserves_retry_and_idempotency(gw,oid
                   (identity['id'],'OIDC_UPSTREAM_ERROR',digest(identity['upstream_tokens']),provider['version'],identity['checked_at']))
     expected={}
     for table,column in keyring.CIPHER_COLUMNS:
-        primary='state_hash' if table=='oidc_transactions' else 'id'
+        primary={'oidc_transactions':'state_hash','oauth_refresh_receipts':'predecessor_hash'}.get(table,'id')
         for row in store.all(f"SELECT {primary} AS id,{column} AS cipher FROM {table} WHERE {column} IS NOT NULL AND {column}!=''"):
             expected[(table,column,primary,row['id'])]=store.decrypt(row['cipher'])
     assert {'oidc_providers','oidc_transactions','external_identities','gateway_accounts','gateway_calls','gateway_secrets'}<={k[0] for k in expected}

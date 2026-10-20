@@ -16,7 +16,7 @@ from hub.oidc import LOGOUT_EVENT, SigningKeyRefreshRequired
 from hub.oidc_resilience import SyncScheduler
 from shared.util import DevError
 from tests.test_oidc_integration import oidc as oidc, team as team, start, callback, login
-from tests.test_roles import must
+from tests.identity_fixtures import must
 
 
 def seed_identity(app, provider, identifier='sync-user', **overrides):
@@ -124,7 +124,7 @@ def group_policy(oidc,kind):
     if kind=='required':
         app.state.store.execute('UPDATE oidc_providers SET required_group=? WHERE id=?',('developers',provider['id']))
     elif kind=='mapping':
-        must(b['owner'].post('/api/iam/oidc/providers/'+provider['id']+'/mappings',json={'group_name':'developers','space_id':'team','level':'member'}),201)
+        must(b['owner'].post('/api/iam/oidc/providers/'+provider['id']+'/mappings',json={'group_name':'developers','space_id':'team','policy':{}}),201)
     return app.state.oidc
 
 

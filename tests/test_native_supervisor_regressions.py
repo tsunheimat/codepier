@@ -1,14 +1,13 @@
 """Independent regressions for native replay ordering and offline history safety."""
 from contextlib import closing
-from types import SimpleNamespace
 import time
 import uuid
 import base64
 
 import pytest
-from hub.native_cli import NativeService
+from hub.runtime import Runtime
 from hub.store import Store
-from tests.legacy_iam_fixture import seed_owner
+from tests.current_model import CurrentModel
 from shared.native_cli import database
 
 
@@ -19,21 +18,22 @@ class NoAck:
 
 @pytest.fixture
 def native_cache(tmp_path):
-    project = {'id': uuid.uuid4().hex, 'device_id': uuid.uuid4().hex,
-               'root': '/a/project', 'mode': 'write', 'allow_tasks': True, 'space_id': 'legacy', 'owner_user_id': 'u'}
-    store = Store(tmp_path / 'hub')
-    seed_owner(store, 'u', 'admin')
-    store.execute("INSERT INTO devices(id,name,secret,created,owner_user_id,space_id) VALUES(?,'Fixture',?,1,'u','legacy')",
-                  (project['device_id'], store.encrypt('fixture')))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,created,owner_user_id,space_id) VALUES(?,'Fixture','fixture',?,?,'write',1,1,'u','legacy')",
-                  (project['id'], project['device_id'], project['root']))
-    service = NativeService(SimpleNamespace(store=store))
-    row = {'id': uuid.uuid4().hex, 'project_id': project['id'], 'device_id': project['device_id'],
-           'root': project['root'], 'cwd': project['root'], 'provider': 'codex', 'title': 'Owned session',
-           'status': 'running', 'created': time.time()-50, 'updated': time.time()-20,
-           'size': 5, 'exit_code': None, 'error': ''}
-    yield service, project, row
-    store.close()
+    store=Store(tmp_path/'hub');model=CurrentModel(store)
+    model.user('u',username='admin');space=model.workspace('native-cache-space',owner='u')
+    device=uuid.uuid4().hex;project_id=uuid.uuid4().hex
+    model.device(device,owner='u');model.bind_device(space,device)
+    root=tmp_path/'source';root.mkdir()
+    folder=model.folder('native-cache-folder',space=space,device=device,path=root)
+    model.project(project_id,space=space,folder=folder,owner='u',alias='Fixture')
+    runtime=Runtime(store);service=runtime.native
+    project=service.project(project_id,model.panel('u',space))
+    row={'id':uuid.uuid4().hex,'project_id':project_id,'device_id':device,
+        'root':str(root),'cwd':str(root),'provider':'codex','title':'Owned session',
+        'status':'running','created':time.time()-50,'updated':time.time()-20,
+        'size':5,'exit_code':None,'error':'','mode':'terminal','native_thread':'','chat_settings':'{}',
+        '_native_owner':'user:u','_native_space':space}
+    try:yield service,project,row
+    finally:store.close()
 
 
 @pytest.mark.asyncio

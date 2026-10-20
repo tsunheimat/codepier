@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import dataclasses
 import hashlib
 import json
 import os
@@ -18,7 +17,7 @@ from shared.build_info import BuildIdentity,source_identity
 from shared.contracts import TOOLS
 from shared.util import DevError, VERSION
 from tests.test_audit_agent import local_agent
-from tests.operation_fixture import env,operation,call
+from tests.operation_fixture import env,operation,call,restrict,other_connection
 
 
 def args(name,**values):
@@ -142,7 +141,8 @@ def test_search_cancel_budget_and_scoped_root(local_agent,tmp_path):
 
 def test_diagnostics_filter_devices_and_blocking_operation_ids(env):
     runtime,owner=env
-    visible=operation(env,finish=False);hidden=operation(env,grant='another',finish=False)
+    visible=operation(env,finish=False)
+    hidden=operation(other_connection(env),finish=False)
     runtime.diagnostics.ingest(visible,[{'seq':1,'stage':'waiting_project','elapsed_ms':100,'detail':{'blocked_by':[hidden]}}])
     trace=call(env,'operations_trace',operation_id=visible)
     assert trace['events'][0]['blocked_by']==[]
@@ -150,8 +150,9 @@ def test_diagnostics_filter_devices_and_blocking_operation_ids(env):
     assert unknown['client_catalog']['matches'] is None and len(unknown['devices'])==1
     match=call(env,'diagnostics_get',client_catalog_sha256=unknown['hub']['catalog_sha256'])
     assert match['client_catalog']['matches'] is True
-    no_access=(runtime,dataclasses.replace(owner,projects=[]))
+    no_access=restrict(env,projects=[])
     assert call(no_access,'diagnostics_get')['devices']==[]
+    restrict(env,projects=['p','p2'],actions=['read','write','execute'])
     runtime.complete({'id':visible},{'ok':True,'data':{'exit_code':0},'trace':[{'seq':2,'stage':'executing','elapsed_ms':101,'detail':{'blocked_by':[hidden]}}]})
     assert hidden not in json.dumps(call(env,'operations_get',operation_id=visible))
 

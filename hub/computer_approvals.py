@@ -1,6 +1,5 @@
 """Panel-only human consent codepier. No MCP tool can decide native permission."""
 import time
-import json
 from hub.principal import refresh_principal
 from shared.util import DevError
 from hub import iam
@@ -37,8 +36,9 @@ class ComputerApprovals:
         try:
             if op['grant_id'] and not rt.store.one('SELECT id FROM tokens WHERE grant_id=? AND kind IN (?,?) AND expires>? LIMIT 1',(op['grant_id'],'pat','access',time.time())):
                 return False
-            request=json.loads(rt.store.decrypt(op['payload']))
-            return not rt.permission_error(op,request)
+            # Authorization reads the original encrypted request itself; a
+            # decoded request is not an authenticated Principal.
+            return not rt.permission_error(op)
         except (ValueError,TypeError,KeyError):
             return False
 

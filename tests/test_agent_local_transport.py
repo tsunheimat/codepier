@@ -1,8 +1,11 @@
 """Agent local one-shot session, startup cleanup, and CLI admission regressions."""
 from __future__ import annotations
 
+from shared.tool_protocol import advertisement, catalog_digest
+
 import asyncio
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -42,7 +45,7 @@ class Socket:
         self.receives += 1
         if self.receives == 1:
             return json.dumps({"type": "challenge", "challenge": self.challenge})
-        return self.channel.pack({"type": "wrong" if self.reject else "ready"})
+        return self.channel.pack({"type": "wrong" if self.reject else "ready", **advertisement(catalog_digest())})
 
     async def send(self, packet):
         data = self.channel.unpack(packet)
@@ -70,7 +73,6 @@ async def test_local_run_handshakes_once_never_dials_or_watches_config(local_age
 
     monkeypatch.setattr("agent.runner.websockets.connect", forbidden)
     monkeypatch.setattr(agent, "watch_config", forbidden)
-    monkeypatch.setattr("agent.brand_upgrade.watch", forbidden)
     await asyncio.wait_for(agent.run(local_transport=socket), 3)
     assert socket.receives == 2 and socket.hello["type"] == "hello"
     assert socket.hello["journal_id"]
@@ -160,7 +162,7 @@ async def test_real_cli_eof_releases_state_lock_without_ws_fallback(tmp_path):
         await transport.send_json({"type": "challenge", "challenge": challenge})
         hello = channel.unpack(await asyncio.wait_for(transport.recv(), 10))
         assert hello["type"] == "hello"
-        await transport.send(channel.pack({"type": "ready"}))
+        await transport.send(channel.pack({"type": "ready", **advertisement(catalog_digest())}))
         packet = channel.unpack(await asyncio.wait_for(transport.recv(), 5))
         assert packet["type"] in {"heartbeat", "native_sessions"}
         await transport.close()
@@ -200,7 +202,7 @@ main()
     child = await asyncio.create_subprocess_exec(sys.executable, "-c", code, str(tmp_path / "config.json"),
         cwd=REPO, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
-        assert await asyncio.wait_for(child.stderr.readline(), 10) == b"init diagnostic\n"
+        assert await asyncio.wait_for(child.stderr.readline(),10)==b"init diagnostic"+os.linesep.encode()
         assert await asyncio.wait_for(child.stderr.readline(), 2) == b"init-ready\n"
         child.stdin.close()
         await asyncio.wait_for(child.wait(), 3)

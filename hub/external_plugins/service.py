@@ -10,7 +10,7 @@ import unicodedata
 from hub.gateway import catalog, policy
 from hub.external_plugins.contracts import Registry, map_arguments, public_definition, validate_value
 from hub.external_plugins.rules import allows
-from hub.roles import require_role
+from hub.permissions import require_access
 from shared.util import DevError
 
 
@@ -52,7 +52,7 @@ class ExternalPlugins:
             (principal.space_id, value, key))
         if not project:
             raise DevError('PLUGIN_PROJECT_DENIED', 'Project is not accessible', 404)
-        require_role(self.store, principal, 'read', project_id=project['id'])
+        require_access(self.store, principal, 'read', project_id=project['id'])
         return project['id']
 
     def resolve(self, principal, integration_id, action_name, project_value='', *, consent=True):
@@ -89,7 +89,7 @@ class ExternalPlugins:
         if consent:
             grant = self.store.one('SELECT * FROM grants WHERE id=?', (principal.grant_id,))
             approved = self.store.one('SELECT * FROM external_plugin_consents WHERE grant_id=?', (principal.grant_id,))
-            if (not approved or any(approved[k] != grant[k] for k in ('space_id', 'user_id', 'profile_id', 'role_id'))
+            if (not approved or any(approved[k] != grant[k] for k in ('space_id', 'user_id', 'profile_id'))
                     or json.loads(approved['snapshot']).get(route_key(row['id'], action_name, project)) != digest):
                 raise DevError('PLUGIN_CONSENT_REQUIRED', 'Review and explicitly consent to the current plugin action/target', 403)
         return {'context': context, 'plan': plan, 'action': action, 'integration': row,
@@ -125,7 +125,7 @@ class ExternalPlugins:
         try:
             for record in self.records(principal):
                 context, row = record['context'], record['integration']
-                definition = public_definition(row['alias'], context['action'], record['action'], principal.authorization_mode)
+                definition = public_definition(row['alias'], context['action'], record['action'])
                 tools[definition['name']] = definition
         except DevError:
             return []
@@ -139,7 +139,7 @@ class ExternalPlugins:
             except DevError:
                 continue
             for action_name, action in spec.actions.items():
-                definition = public_definition(row['alias'], action_name, action, principal.authorization_mode)
+                definition = public_definition(row['alias'], action_name, action)
                 if definition['name'] != name:
                     continue
                 validate_value(definition['inputSchema'], arguments)

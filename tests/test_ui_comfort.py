@@ -42,7 +42,7 @@ def test_desktop_essentials_fit_and_text_is_readable(stack,engine,scheme,width,h
         errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
         _login(page,stack);_set_scheme(page,scheme)
         measurements=[]
-        for route in ['overview','projects','devices','workbench','settings','native']:
+        for route in ['overview','resources/projects','resources/devices','workbench','settings','native']:
             _navigate(page,route)
             result=page.evaluate(MEASURE)
             assert result['documentWidth']<=width+1,(route,result['documentWidth'])
@@ -56,11 +56,11 @@ def test_desktop_essentials_fit_and_text_is_readable(stack,engine,scheme,width,h
                 table=page.locator('.workspace-operations .table-scroll')
                 expect(table).to_have_attribute('tabindex','0')
                 expect(table).to_have_attribute('role','region')
-            if route=='projects' and height>=720:
+            if route=='resources/projects' and height>=720:
                 within(page,'.workspace-project-row',width,height)
                 # Every project still exposes its original native/editor actions.
                 assert page.locator('[data-action="open-project"]').count()==3
-            if route=='devices':
+            if route=='resources/devices':
                 within(page,'.workspace-device-actions',width,height)
                 assert page.locator('.workspace-device').first.evaluate('''card =>
                     card.querySelector('.workspace-device-actions').getBoundingClientRect().bottom <=
@@ -79,7 +79,7 @@ def test_desktop_essentials_fit_and_text_is_readable(stack,engine,scheme,width,h
                 within(page,'#chat-root,#chat-compose,#chat-send,#chat-model-picker',width,height)
                 expect(page.locator('.chat-new-button')).to_be_visible()
             result['route']=route;measurements.append(result)
-            page.screenshot(path=str(OUT/f'{engine}-{scheme}-{width}-{height}-{route}.png'),animations='disabled')
+            page.screenshot(path=str(OUT/f'{engine}-{scheme}-{width}-{height}-{route.replace(chr(47), chr(45))}.png'),animations='disabled')
         (OUT/f'{engine}-{scheme}-{width}-{height}.json').write_text(json.dumps(measurements,ensure_ascii=False,indent=2))
         assert not errors,errors
         browser.close()
@@ -174,8 +174,8 @@ def test_mobile_reflow_and_navigation_remain_reachable(stack,engine,width,height
         within(page,'.side-bottom',width,height)
         page.keyboard.press('Escape')
         page.locator('.mobile-dock [data-nav="resources"]').click()
-        page.locator('[data-product-area="resources"][data-product-tab="projects"]').click()
-        expect(page.locator('#page h1')).to_have_text('资源')
+        page.locator('.product-tabs [data-nav="resources/projects"]').click()
+        expect(page.locator('#page h1')).to_have_text('资源库')
         report=page.evaluate(MEASURE);assert report['documentWidth']<=width+1
         assert not report['failures'],report['failures']
         page.screenshot(path=str(OUT/f'{engine}-{width}-mobile.png'),animations='disabled')

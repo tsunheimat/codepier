@@ -224,7 +224,9 @@ export function createModal({
   const lifetime = createPanel({ owner: () => S.session });
   let editorRoute = null,
     pendingBack = false,
-    pendingEditor = null;
+    pendingEditor = null,
+    backCompletion = Promise.resolve(),
+    completeBack = null;
   const enterEditor = () => {
     editorRoute = { id: uid() };
     history.pushState({ ...history.state, codepierEditor: editorRoute.id }, '', location.href);
@@ -234,6 +236,9 @@ export function createModal({
       pendingBack = false;
       if (pendingEditor?.isConnected && S.session) enterEditor();
       pendingEditor = null;
+      const complete = completeBack;
+      completeBack = null;
+      complete?.();
       return;
     }
     if (editorRoute && history.state?.codepierEditor !== editorRoute.id) {
@@ -296,6 +301,11 @@ export function createModal({
       editorRoute = null;
       if (owned) {
         pendingBack = true;
+        // Consumers which navigate after a successful save must await the
+        // actual traversal, not race a queued history.back() with pushState.
+        backCompletion = new Promise((resolve) => {
+          completeBack = resolve;
+        });
         history.back();
       }
     }
@@ -303,6 +313,7 @@ export function createModal({
       focus = focus.closest('.tool-menu')?.querySelector('summary');
     if (focus?.isConnected && focus.getClientRects().length && !focus.closest('[inert]'))
       focus.focus({ preventScroll: true });
+    return backCompletion;
   }
   function modal(title, body, footer = '', large = false, closable = true) {
     const origin = $('.modal') ? S.modalLastFocus : document.activeElement;
@@ -314,7 +325,7 @@ export function createModal({
     $('#app').inert = true;
     const dialog = $('.modal');
     const complex = dialog.querySelector(
-      '#role-form,#profile-form,#vps-form,#project-form,#device-form,#device-rename,#agent-command-form,#grant-form,#connection-form,#conversation-form,#project-mcp-form,#artifact-form,.gw-tools,#gw-form [name="networks"],#iam-issuer,#iam-group_name',
+      '#workspace-form,#ext-form,#device-form,#device-rename,#agent-command-form,#conversation-form,#project-mcp-form,#artifact-form,.gw-tools,#gw-form [name="networks"],#iam-issuer,#iam-group_name',
     );
     if (complex || large) {
       dialog.classList.add('modal-editor');
@@ -334,7 +345,9 @@ export function createModal({
         const dirty = (event) => {
           const control = event.target;
           if (
-            control.matches?.('input[name],select[name],textarea[name],#device-rename') &&
+            control.matches?.(
+              'input[name],select[name],textarea[name],[data-policy-kind],#device-rename',
+            ) &&
             !control.readOnly
           )
             dialog.dataset.editorDirty = 'true';

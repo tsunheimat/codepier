@@ -1,154 +1,143 @@
-"""Delivery-v2 legacy/current wire matrix with real crypto, journal and file writes.
+"""Explicit current Hub/Runner handshake and immutable operation wire epochs.
 
-Legacy cases freeze the pre-negotiation hello/ready/call shape. This is wire-level
-compatibility evidence, not a claim that every historical binary was executed.
+No pre-negotiation compatibility matrix. Missing old protocol fields are rejected;
+current encrypted framing, real writes, no replay and result recovery are retained.
 """
 import copy
 import json
 import time
 from types import SimpleNamespace
+
 import pytest
-from shared.crypto import SecureChannel, token
-from shared.tool_protocol import advertisement, catalog_digest, negotiate, require_compatible, validate_call_epoch
+
+from shared.crypto import SecureChannel,token
+from shared.tool_protocol import advertisement,catalog_digest,negotiate,require_compatible,validate_call_epoch
 from shared.util import DevError
 from agent.runner import Agent
-from hub.runtime import Runtime, Principal
+from hub.runtime import Runtime
 from hub.store import Store
-from tests.legacy_iam_fixture import seed_personal_owner
+from tests.current_model import CurrentModel
+from tests.test_reliability import runtime as runtime  # noqa: F401
 
 
-@pytest.mark.parametrize('old_hub', [True, False], ids=['legacy-hub-wire', 'current-hub-wire'])
-@pytest.mark.parametrize('old_agent', [True, False], ids=['legacy-agent-wire', 'current-agent-wire'])
 @pytest.mark.asyncio
-async def test_bidirectional_wire_matrix_preserves_one_write_and_recovery(tmp_path, old_hub, old_agent):
-    root = tmp_path / 'project';root.mkdir()
-    secret = token(32)
-    config = tmp_path / 'config.json'
-    config.write_text(json.dumps({'hub_url':'127.0.0.1:9','device_id':'dev','secret':secret,'state_dir':str(tmp_path/'state'),
-        'allowed_roots':[{'path':str(root),'writable':True,'allow_tasks':True}],'tasks':{}}))
-    agent = Agent(config)
-    store = Store(tmp_path / 'hub')
-    space_id = seed_personal_owner(store)
-    runtime = Runtime(store);runtime.wait_seconds = 0
+async def test_current_encrypted_handshake_preserves_exactly_one_write_and_recovery(tmp_path):
+    root=tmp_path/'project';root.mkdir();secret=token(32)
+    config=tmp_path/'config.json'
+    config.write_text(json.dumps({'hub_url':'127.0.0.1:9','device_id':'dev','secret':secret,
+        'state_dir':str(tmp_path/'state'),'allowed_roots':[{'path':str(root),'writable':True,'allow_tasks':True}],'tasks':{}}))
+    agent=Agent(config);store=Store(tmp_path/'hub');model=CurrentModel(store)
+    model.user('owner');space=model.workspace('wire-space',owner='owner')
+    model.device('dev',owner='owner',secret=secret);model.bind_device(space,'dev')
+    folder=model.folder('wire-folder',space=space,device='dev',path=root)
+    model.project('proj',space=space,folder=folder,owner='owner',alias='Fixture')
+    principal=model.panel('owner',space);runtime=Runtime(store);runtime.wait_seconds=0
     try:
-        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','fixture',?, ?,?,'owner')", (store.encrypt(secret), time.time(), space_id))
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev',?,'','write',1,?,?,'owner')", (str(root), time.time(), space_id))
-        principal = Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True,space_id=space_id)
-        challenge = token(32)
-        hub_channel = SecureChannel(secret, challenge, 'dev', 'hub')
-        agent_channel = SecureChannel(secret, challenge, 'dev', 'agent')
-        hello = {'type':'hello','version':'1.13.0','journal_id':agent.journal.journal_id,'delivery_protocol':2}
-        if not old_agent: hello.update(advertisement(agent.build.catalog_sha256))
-        hello = hub_channel.unpack(agent_channel.pack(hello))
-        assert hello['delivery_protocol'] == 2
-        peer = SimpleNamespace(last_seen=time.time(), journal_id=hello['journal_id'], unusable=False,
-                               tool_protocol=None if old_hub else negotiate(hello))
-        ready = {'type':'ready','delivery_protocol':2}
-        if not old_hub: ready.update(advertisement(catalog_digest()))
-        ready = agent_channel.unpack(hub_channel.pack(ready))
-        if not old_agent: assert negotiate(ready).legacy == old_hub
-        packets = []
+        challenge=token(32);hub_channel=SecureChannel(secret,challenge,'dev','hub')
+        agent_channel=SecureChannel(secret,challenge,'dev','agent')
+        hello={'type':'hello','journal_id':agent.journal.journal_id,'delivery_protocol':2,
+            'workspace_protocol':1,'project_routing_protocol':1,**advertisement(agent.build.catalog_sha256)}
+        hello=hub_channel.unpack(agent_channel.pack(hello))
+        peer=SimpleNamespace(last_seen=time.time(),journal_id=hello['journal_id'],unusable=False,
+            workspace_protocol=hello['workspace_protocol'],project_routing_protocol=hello['project_routing_protocol'],
+            tool_protocol=negotiate(hello))
+        ready={'type':'ready','delivery_protocol':2,**advertisement(catalog_digest())}
+        ready=agent_channel.unpack(hub_channel.pack(ready))
+        assert negotiate(ready).public(catalog_digest())['contract_protocol']==1
+        packets=[]
         async def report(event):
-            packet = hub_channel.unpack(agent_channel.pack(event))
-            ack = await store.run(runtime._receive_operation_event, 'dev', peer, packet)
+            packet=hub_channel.unpack(agent_channel.pack(event))
+            ack=await store.run(runtime._receive_operation_event,'dev',peer,packet)
             if ack:
-                decoded = agent_channel.unpack(hub_channel.pack(ack))
-                agent.journal.ack(decoded['id'])
+                decoded=agent_channel.unpack(hub_channel.pack(ack));agent.journal.ack(decoded['id'])
             return True
         async def deliver(packet):
-            outgoing = dict(packet)
-            if old_hub: outgoing.pop('tool_contract_version', None)
-            received = agent_channel.unpack(hub_channel.pack(outgoing))
-            packets.append(copy.deepcopy(received))
-            if old_agent: received.pop('tool_contract_version', None)
-            if received['type'] == 'call': await agent.handle(received)
-            elif received['type'] == 'probe': await agent.report_status(received['id'])
-        peer.send = deliver;agent.send = report
-        args = {'project':'Fixture','path':'once.txt','content':'only once','expected_sha256':'new','idempotency_key':'wire-matrix'}
-        receipt = await runtime.invoke('fs_write', args, principal)
-        assert store.one('SELECT space_id,owner_user_id FROM operations WHERE id=?',(receipt['operation_id'],)) == {'space_id':space_id,'owner_user_id':'owner'}
-        assert not store.one("SELECT 1 FROM spaces WHERE kind='legacy'")
-        runtime.connections['dev'] = peer
-        await runtime.deliver(receipt['operation_id'])
-        assert (root / 'once.txt').read_text() == 'only once'
-        assert runtime.operation(receipt['operation_id'], principal)['state'] == 'succeeded'
-        await deliver(packets[0])
-        assert len(agent.journal.history(str(root), 'once.txt')) == 1
-        repeated = await runtime.invoke('fs_write', args, principal)
-        assert repeated['operation_id'] == receipt['operation_id']
+            received=agent_channel.unpack(hub_channel.pack(packet));packets.append(copy.deepcopy(received))
+            if received['type']=='call':await agent.handle(received)
+            elif received['type']=='probe':await agent.report_status(received['id'])
+        peer.send=deliver;agent.send=report
+        args={'project':'Fixture','path':'once.txt','content':'only once','expected_sha256':'new','idempotency_key':'current-wire-once'}
+        receipt=await runtime.invoke('fs_write',args,principal)
+        assert store.one('SELECT space_id,owner_user_id FROM operations WHERE id=?',(receipt['operation_id'],))=={
+            'space_id':space,'owner_user_id':'owner'}
+        runtime.connections['dev']=peer;await runtime.deliver(receipt['operation_id'])
+        assert (root/'once.txt').read_text()=='only once'
+        assert runtime.operation(receipt['operation_id'],principal)['state']=='succeeded'
+        assert packets[0]['tool_contract_version']==1
+        await deliver(packets[0]);assert len(agent.journal.history(str(root),'once.txt'))==1
+        assert (await runtime.invoke('fs_write',args,principal))['operation_id']==receipt['operation_id']
     finally:
-        await store.aclose()
-        agent.journal.db.close();agent.instance_lock.close()
+        await store.aclose();agent.journal.db.close();agent.instance_lock.close()
 
 
-@pytest.mark.parametrize('problem', ['protocol','boolean_protocol','missing_version','old_version','hash','tools','boolean_epoch','tool_name'])
+@pytest.mark.parametrize('frame',[{}, {'version':'1.13.0'}, {'delivery_protocol':2},
+    {'version':'1.17.0','tool_contracts':{'fs_write':1},'catalog_sha256':'a'*64}])
+def test_missing_negotiation_never_assumes_a_compatible_old_peer(frame):
+    with pytest.raises(ValueError,match='Unsupported tool contract protocol'):negotiate(frame)
+    with pytest.raises(DevError) as denied:require_compatible(None,'fs_write')
+    assert denied.value.code=='AGENT_UPGRADE_REQUIRED'
+
+
+@pytest.mark.parametrize('problem',['protocol','boolean_protocol','missing_version','old_version','hash','tools','boolean_epoch','tool_name'])
 def test_malformed_advertisements_fail_closed(problem):
-    frame = advertisement('a' * 64)
-    if problem == 'protocol': frame['contract_protocol'] = 2
-    elif problem == 'boolean_protocol': frame['contract_protocol'] = True
-    elif problem == 'missing_version': frame.pop('version')
-    elif problem == 'old_version': frame['version'] = '0.9.0'
-    elif problem == 'hash': frame['catalog_sha256'] = 'invalid'
-    elif problem == 'tools': frame['tool_contracts'] = []
-    elif problem == 'boolean_epoch': frame['tool_contracts']['fs_write'] = True
-    elif problem == 'tool_name': frame['tool_contracts']['../escape'] = 1
-    with pytest.raises(ValueError): negotiate(frame)
+    frame=advertisement('a'*64)
+    if problem=='protocol':frame['contract_protocol']=2
+    elif problem=='boolean_protocol':frame['contract_protocol']=True
+    elif problem=='missing_version':frame.pop('version')
+    elif problem=='old_version':frame['version']='0.9.0'
+    elif problem=='hash':frame['catalog_sha256']='invalid'
+    elif problem=='tools':frame['tool_contracts']=[]
+    elif problem=='boolean_epoch':frame['tool_contracts']['fs_write']=True
+    else:frame['tool_contracts']['../escape']=1
+    with pytest.raises(ValueError):negotiate(frame)
 
 
-def test_additive_catalog_difference_is_not_a_breaking_tool_change():
-    frame = advertisement('b' * 64);frame['tool_contracts']['future_read'] = 1
-    peer = negotiate(frame)
-    require_compatible(peer, 'fs_write')
-    assert peer.public('a' * 64)['catalog_matches'] is False
-    frame['tool_contracts']['fs_write'] = 2
-    with pytest.raises(DevError): require_compatible(negotiate(frame), 'fs_write')
+def test_additive_catalog_difference_does_not_change_existing_tool_meaning():
+    frame=advertisement('b'*64);frame['tool_contracts']['future_read']=1
+    peer=negotiate(frame);require_compatible(peer,'fs_write')
+    assert peer.public('a'*64)['catalog_matches'] is False
+    assert 'legacy_compatibility' not in peer.public('a'*64)
+    frame['tool_contracts']['fs_write']=2
+    with pytest.raises(DevError):require_compatible(negotiate(frame),'fs_write')
 
 
-def test_minimum_release_and_legacy_epoch_cannot_be_bypassed(monkeypatch):
+def test_minimum_release_and_explicit_wire_epoch_are_both_required(monkeypatch):
     from shared import tool_protocol
-    legacy = negotiate({'version':'1.13.0'})
-    require_compatible(legacy, 'fs_write')
-    monkeypatch.setitem(tool_protocol.TOOL_MINIMUM_RELEASES, 'fs_write', (1, 14, 0))
-    with pytest.raises(DevError): require_compatible(legacy, 'fs_write')
-    monkeypatch.setitem(tool_protocol.TOOL_WIRE_VERSIONS, 'fs_write', 2)
-    with pytest.raises(DevError): validate_call_epoch('fs_write', None)
-    validate_call_epoch('fs_write', 2)
+    frame=advertisement('a'*64);frame['version']='1.13.0';peer=negotiate(frame)
+    require_compatible(peer,'fs_write')
+    monkeypatch.setitem(tool_protocol.TOOL_MINIMUM_RELEASES,'fs_write',(1,14,0))
+    with pytest.raises(DevError):require_compatible(peer,'fs_write')
+    monkeypatch.setitem(tool_protocol.TOOL_WIRE_VERSIONS,'fs_write',2)
+    with pytest.raises(DevError):validate_call_epoch('fs_write',None)
+    validate_call_epoch('fs_write',2)
 
 
-@pytest.mark.parametrize('epoch', [True, 0, 2, '1'])
-def test_invalid_call_epoch_is_rejected(epoch):
-    with pytest.raises(DevError): validate_call_epoch('fs_write', epoch)
+@pytest.mark.parametrize('epoch',[None,True,False,0,2,'1'])
+def test_invalid_or_missing_call_epoch_is_rejected(epoch):
+    with pytest.raises(DevError):validate_call_epoch('fs_write',epoch)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('sent', [False, True])
-async def test_pending_payload_keeps_original_semantics_after_upgrade(tmp_path, monkeypatch, sent):
+@pytest.mark.parametrize('sent',[False,True])
+async def test_semantic_change_never_reexecutes_or_reinterprets_a_pending_request(runtime,monkeypatch,sent):
     from shared import tool_protocol
-    store = Store(tmp_path / 'hub')
-    space_id = seed_personal_owner(store)
-    runtime = Runtime(store);runtime.wait_seconds = 0
-    try:
-        store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES ('dev','fixture',?,?,?,'owner')", (store.encrypt(token()), time.time(), space_id))
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES ('proj','Fixture','fixture','dev','/fixture','','write',1,?,?,'owner')", (time.time(), space_id))
-        principal = Principal('panel:owner','owner',{'read','write','execute'},['*'],admin=True,space_id=space_id)
-        receipt = await runtime.invoke('fs_write', {'project':'Fixture','path':'once','content':'one','expected_sha256':'new','idempotency_key':'epoch-fence'}, principal)
-        row = store.one('SELECT payload FROM operations WHERE id=?', (receipt['operation_id'],))
-        assert json.loads(store.decrypt(row['payload']))['tool_contract_version'] == 1
-        packets = []
-        async def send(packet): packets.append(packet)
-        runtime.connections['dev'] = SimpleNamespace(last_seen=time.time(), journal_id='journal', unusable=False, send=send)
-        if sent:
-            await runtime.deliver(receipt['operation_id'])
-            assert packets[-1]['type'] == 'call'
-            packets.clear()
-        monkeypatch.setitem(tool_protocol.TOOL_WIRE_VERSIONS, 'fs_write', 2)
-        await runtime.deliver(receipt['operation_id'])
-        operation = runtime.operation(receipt['operation_id'], principal)
-        if sent:
-            assert packets == [{'type':'probe','id':receipt['operation_id']}]
-            assert operation['state'] in {'queued','reconnecting'}
-        else:
-            assert not packets and operation['state'] == 'failed'
-            assert operation['result']['error']['code'] == 'TOOL_PROTOCOL_MISMATCH'
-    finally:
-        await store.aclose()
+    runtime,principal=runtime;store=runtime.store
+    receipt=await runtime.invoke('fs_write',{'project':'Imago','path':'once','content':'one',
+        'expected_sha256':'new','idempotency_key':'epoch-fence'},principal)
+    row=store.one('SELECT payload FROM operations WHERE id=?',(receipt['operation_id'],))
+    assert json.loads(store.decrypt(row['payload']))['tool_contract_version']==1
+    packets=[]
+    async def send(packet):packets.append(packet)
+    runtime.connections['dev']=SimpleNamespace(last_seen=time.time(),journal_id='journal',unusable=False,send=send,
+        workspace_protocol=1,project_routing_protocol=1,tool_protocol=negotiate(advertisement(catalog_digest())))
+    if sent:
+        await runtime.deliver(receipt['operation_id']);assert packets[-1]['type']=='call';packets.clear()
+    monkeypatch.setitem(tool_protocol.TOOL_WIRE_VERSIONS,'fs_write',2)
+    await runtime.deliver(receipt['operation_id'])
+    operation=runtime.operation(receipt['operation_id'],principal)
+    if sent:
+        assert packets==[{'type':'probe','id':receipt['operation_id']}]
+        assert operation['state'] in {'queued','reconnecting'}
+    else:
+        assert not packets and operation['state']=='failed'
+        assert operation['result']['error']['code']=='TOOL_PROTOCOL_MISMATCH'

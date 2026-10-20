@@ -1,4 +1,6 @@
-* text=auto
+# All text source and lockfiles have identical bytes on every acceptance OS.
+# Binary overrides below remain non-converting.
+* text=auto eol=lf
 *.py text eol=lf
 *.sh text eol=lf
 codepier text eol=lf

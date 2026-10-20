@@ -10,10 +10,16 @@ import pytest
 
 from tests.test_audit_api import api as api
 from tests.test_conversations import rpc, value
-from tests.test_iam_integration import team as team, assign
-from tests.test_mcp_gateway import gw as gw, connector, account, publish
-from tests.test_resource_access import connection
-from tests.test_roles import role, must
+from tests.identity_fixtures import team, must, set_member, make_profile, make_connection, project_policy  # noqa: F401
+from tests.test_mcp_gateway import gw as gw, connector, account, publish, authorize
+from tests.current_model import CurrentModel
+
+
+def execution_connection(app,client):
+    app.state.store.execute("UPDATE space_folders SET allow_tasks=1 WHERE id='audit-folder'")
+    app.state.store.execute("UPDATE devices SET info=? WHERE id='device'",(json.dumps({'shell_enabled':True}),))
+    profile=make_profile(client,{'project_rules':[{'projects':['project'],'actions':['read','execute']}]},space='audit-space')
+    return make_connection(client,profile,space='audit-space')
 
 
 def sessions(client, **filters):
@@ -29,11 +35,12 @@ def test_ten_shared_connection_sessions_overlap_native_and_gateway_on_two_projec
     app, browsers, backend = gw
     client, store = browsers['alice'], app.state.store
     c = connector(browsers); binding = publish(browsers, account(browsers, c))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,space_id,owner_user_id,created) VALUES('project-two','Second','second','device-team','/tmp/second','write',1,'team','owner',?)", (time.time(),))
-    r = role(browsers['owner'], label='worker', project_rules=[{'actions': ['read', 'write', 'execute'], 'all_projects': True}],
-             connector_rules=[{'binding_id': binding['id'], 'tools': ['echo', 'run']}])
-    assign(browsers['owner'], r, 'alice')
-    grant = must(connection(client, r, 'role', confirm_external_mcp=True), 201)
+    CurrentModel(store).project('project-two',space='team',folder='folder-team',owner='owner',alias='Second',subpath='second')
+    policy={'project_rules':[{'actions':['read','write','execute'],'all_projects':True}],
+        'connector_rules':[{'binding_id':binding['id'],'tools':['echo','run']}]}
+    set_member(browsers['owner'],'alice',policy)
+    profile=make_profile(browsers['owner'],policy)
+    grant=make_connection(client,profile,live=True,external=True)
     release, entered = threading.Event(), threading.Event()
     original = backend.handle
 
@@ -76,7 +83,7 @@ def test_ten_shared_connection_sessions_overlap_native_and_gateway_on_two_projec
             second = list(executor.map(lambda i: native(i, 'Second'), range(10)))
             observed = sessions(client)
             assert len(observed['sessions']) == 10
-            assert {s['grant_id'] for s in observed['sessions']} == {grant['grant_id']}
+            assert {s['grant_id'] for s in observed['sessions']} == {grant['connection_id']}
             identifiers = {s['id'] for s in observed['sessions']}
             assert len(identifiers) == 10
             for s in observed['sessions']:
@@ -89,12 +96,10 @@ def test_ten_shared_connection_sessions_overlap_native_and_gateway_on_two_projec
                 assert len(entries(client, session=s['id'])) == 3
             assert sessions(browsers['owner'])['sessions'] == []
             assert sessions(browsers['bob'])['sessions'] == []
-            assert sessions(browsers['legacy'])['sessions'] == []
-            # First fixture user is the instance admin: existing native Audit
-            # visibility remains, but it never reveals another user's sessions
-            # or private downstream gateway responses.
-            admin_rows = entries(browsers['owner'])
-            assert len(admin_rows) == 20 and all(r['kind'] == 'native' and not r['sessions'] for r in admin_rows)
+            assert sessions(browsers['other'])['sessions'] == []
+            # Workspace administration does not confer another Connection's
+            # private history, whether its receipt is from a Runner or gateway.
+            assert entries(browsers['owner'])==[]
             assert not entries(browsers['bob'])
         finally:
             release.set()
@@ -162,9 +167,7 @@ def test_errors_before_resolution_and_authorization_reads_and_resources_are_obse
 def test_gateway_return_is_not_downstream_job_completion_and_private_result_is_redacted(gw):
     app, b, backend = gw
     c = connector(b); binding = publish(b, account(b, c))
-    r = role(b['owner'], label='worker', project_rules=[], connector_rules=[{'binding_id': binding['id'], 'tools': ['run']}])
-    assign(b['owner'], r, 'alice')
-    g = must(connection(b['alice'], r, 'role', confirm_external_mcp=True), 201)
+    _,_,g=authorize(b,binding,tools=['run'],live=True)
     backend.result_override = {'content': [{'type': 'text', 'text': 'job submitted'}],
         'structuredContent': {'job_id': 'fixture-job', 'state': 'running', 'password': 'HIDDEN_DOWNSTREAM_SECRET'}}
     response = rpc(b['alice'], g['token'], 'kiln__run', {}, {'openai/session': 'async-job'})
@@ -187,10 +190,10 @@ def test_gateway_return_is_not_downstream_job_completion_and_private_result_is_r
 def test_gateway_arguments_do_not_impersonate_native_resource_references(gw):
     app, b, backend = gw
     binding = publish(b, account(b, connector(b)))
-    r = role(b['owner'], label='reader', project_rules=[{'actions': ['read'], 'projects': ['project-team']}],
-             connector_rules=[{'binding_id': binding['id'], 'tools': ['run']}])
-    assign(b['owner'], r, 'alice')
-    g = must(connection(b['alice'], r, 'role', confirm_external_mcp=True), 201)
+    policy={**project_policy('read'),'connector_rules':[{'binding_id':binding['id'],'tools':['run']}]}
+    set_member(b['owner'],'alice',policy)
+    profile=make_profile(b['owner'],policy)
+    g=make_connection(b['alice'],profile,live=True,external=True)
     response = rpc(b['alice'], g['token'], 'kiln__run', {'project': 'same-alias'}, {'openai/session': 'external-target'})
     assert response.json()['result']['isError']  # Strict downstream schema rejects this argument.
     assert backend.effects == 0
@@ -202,11 +205,11 @@ def test_gateway_arguments_do_not_impersonate_native_resource_references(gw):
 
 def test_same_host_identifier_does_not_cross_grants_or_space_and_cannot_change_permissions(team):
     app, b = team
-    r = role(b['owner'], label='reader', project_rules=[{'actions': ['read'], 'projects': ['project-team']}])
-    for user in ('alice', 'bob'): assign(b['owner'], r, user)
-    grants = [(b['alice'], must(connection(b['alice'], r, 'role'), 201)),
-              (b['alice'], must(connection(b['alice'], r, 'role'), 201)),
-              (b['bob'], must(connection(b['bob'], r, 'role'), 201))]
+    for user in ('alice','bob'):set_member(b['owner'],user,project_policy('read'))
+    profile=make_profile(b['owner'],project_policy('read'))
+    grants=[(b['alice'],make_connection(b['alice'],profile)),
+        (b['alice'],make_connection(b['alice'],profile)),
+        (b['bob'],make_connection(b['bob'],profile))]
     identities = []
     for client, grant in grants:
         response = rpc(client, grant['token'], metadata={'openai/session': 'same-host-value'})
@@ -216,19 +219,17 @@ def test_same_host_identifier_does_not_cross_grants_or_space_and_cannot_change_p
     assert {s['id'] for s in sessions(b['alice'])['sessions']} == set(identities[:2])
     assert {s['id'] for s in sessions(b['bob'])['sessions']} == {identities[2]}
     denied = rpc(b['alice'], grants[0][1]['token'], 'exec', {'project': 'same-alias', 'command': 'true', 'yield_seconds': 0},
-        {'openai/session': 'same-host-value', 'codepier/conversation': {'role_id': 'admin', 'space_id': 'legacy'}})
+        {'openai/session': 'same-host-value', 'codepier/conversation': {'role_id': 'admin', 'space_id': 'other-team'}})
     assert denied.json()['result']['isError']
     assert not app.state.store.all('SELECT * FROM operations')
     for user in ('owner', 'bob'):
         assert b[user].get('/api/call-log', params={'session': identities[0]}).status_code == 404
-    assert not sessions(b['legacy'])['sessions']
+    assert not sessions(b['other'])['sessions']
 
 
 def test_failed_optional_activity_write_does_not_discard_native_receipt(api, monkeypatch):
     app, client, _ = api
-    app.state.store.execute('UPDATE projects SET allow_tasks=1')
-    r = role(client, label='worker', project_rules=[{'actions': ['read', 'execute'], 'projects': ['project']}])
-    g = must(connection(client, r, 'role'), 201)
+    g=execution_connection(app,client)
     def broken(*args, **kwargs):
         raise RuntimeError('private diagnostic')
     monkeypatch.setattr(app.state.runtime.session_activity, 'begin', broken)
@@ -242,9 +243,7 @@ def test_failed_optional_activity_write_does_not_discard_native_receipt(api, mon
 
 def test_completed_idempotent_replays_keep_receipt_and_link_each_observation(api):
     app, client, _ = api
-    app.state.store.execute('UPDATE projects SET allow_tasks=1')
-    r = role(client, label='worker', project_rules=[{'actions': ['read', 'execute'], 'projects': ['project']}])
-    g = must(connection(client, r, 'role'), 201)
+    g=execution_connection(app,client)
     args = {'project': 'fixture', 'command': 'true', 'yield_seconds': 0, 'idempotency_key': uuid.uuid4().hex}
     first = rpc(client, g['token'], 'exec', args, {'openai/session': 'original'})
     operation = value(first)['operation_id']
@@ -279,19 +278,20 @@ def test_valid_host_identity_survives_bad_optional_title_and_secrets_are_not_met
 def test_restart_preserves_completed_history_and_marks_unfinished_call_unknown(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from hub.app import create_app
-    from hub.principal import Principal
-    from tests.legacy_iam_fixture import seed_owner
     monkeypatch.setenv('HUB_PUBLIC_URL', 'http://testserver')
     monkeypatch.setenv('MCP_PUBLIC_URL', '')
     directory = tmp_path / 'hub'
     app = create_app(str(directory))
-    seed_owner(app.state.store, 'owner', 'admin')
-    grant = app.state.auth.issue_grant(Principal('panel:admin', 'owner', {'read'}, ['*'], admin=True, space_id='legacy'), 'fixture', ['read'], ['*'])
+    model=CurrentModel(app.state.store)
+    model.user('owner',username='admin')
+    model.workspace('activity-space',owner='owner')
+    profile=model.profile(space='activity-space',creator='owner',policy={})
+    grant,_=model.connection(user='owner',space='activity-space',profile=profile)
     with TestClient(app) as client:
         response = rpc(client, grant['token'], metadata={'openai/session': 'finished-read'})
         value(response)
         complete = app.state.store.one('SELECT * FROM audit_activity')
-        principal = app.state.runtime.grant_principal(app.state.store.one('SELECT * FROM grants WHERE id=?', (grant['grant_id'],)))
+        principal = app.state.runtime.grant_principal(grant['connection_id'])
         # Persist the same admission checkpoint a process crash can leave behind.
         interrupted = app.state.runtime.session_activity.begin(principal, 'tools/call', {'name': 'project_query'}, {'openai/session': 'lost-request'})
     restored = create_app(str(directory))
@@ -300,7 +300,7 @@ def test_restart_preserves_completed_history_and_marks_unfinished_call_unknown(t
         assert store.one('SELECT * FROM audit_activity WHERE id=?', (complete['id'],)) == complete
         lost = store.one('SELECT * FROM audit_activity WHERE id=?', (interrupted['id'],))
         assert lost['state'] == 'unknown' and lost['error_code'] == 'HUB_RESTARTED'
-        principal = restored.state.runtime.grant_principal(store.one('SELECT * FROM grants WHERE id=?', (grant['grant_id'],)))
+        principal = restored.state.runtime.grant_principal(grant['connection_id'])
         result = restored.state.runtime.session_activity.sessions(principal)
         row = next(s for s in result['sessions'] if s['id'] == interrupted['session_id'])
         assert row['active_count'] == 0 and row['attention_count'] == 1 and row['state'] == 'attention'

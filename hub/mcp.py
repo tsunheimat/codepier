@@ -11,7 +11,7 @@ from shared.config import env_csv
 from hub.db_worker import database_endpoint
 from hub.principal import refresh_principal
 from hub.tool_router import ToolRouter
-from shared.role_contracts import ROLE_SCOPE
+from shared.workspace_contracts import WORKSPACE_SCOPE
 import json,os
 from fastapi import APIRouter,Request
 from fastapi.responses import JSONResponse,Response
@@ -72,14 +72,13 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
         origin=request.headers.get('origin')
         public_base=await runtime.store.run(public_url)
         request_public_url=lambda:public_base
-        authorization=request.query_params.get('authorization','fixed')
-        if authorization not in {'fixed','role'}:return failure(None,-32602,'Unknown authorization mode',400)
-        auth_scope=ROLE_SCOPE if authorization=='role' else 'read'
+        if any(key in request.query_params for key in ('authorization','role','space','profile')):
+            return failure(None,-32602,'MCP identity is bound by the connection, not URL selectors',400)
+        auth_scope=WORKSPACE_SCOPE
         mark('authenticate')
         try:principal=await runtime.store.run(auth.bearer, request)
         except DevError as exc:
             metadata=public_base+'/.well-known/oauth-protected-resource/mcp'
-            if authorization=='role':metadata+='?authorization=role'
             headers={'WWW-Authenticate':f'Bearer resource_metadata="{metadata}", scope="{auth_scope}"'}
             if exc.code in {'ENTITLEMENTS_STALE','ENTITLEMENTS_UNAVAILABLE'}:
                 # The CodePier bearer is valid. Re-consenting to this issuer
@@ -213,9 +212,8 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
                     if exc.details.get('call_id'):result['_meta']={'codepier/callId':exc.details['call_id']}
                     if trace:trace['status']='tool_error';trace['operation_id']=exc.details.get('operation_id')
                     if exc.code=='INSUFFICIENT_SCOPE':
-                        scopes=[ROLE_SCOPE] if principal.authorization_mode=='role' else sorted({'read',exc.details.get('required_scope', TOOLS[name].scope)}) if name in TOOLS else ['read']
+                        scopes=[WORKSPACE_SCOPE]
                         metadata_url=public_base+'/.well-known/oauth-protected-resource/mcp'
-                        if principal.authorization_mode=='role':metadata_url+='?authorization=role'
                         challenge='Bearer resource_metadata="'+metadata_url+'", error="insufficient_scope", scope="'+' '.join(scopes)+'"'
                         result['_meta']={'mcp/www_authenticate':[challenge]}
             elif method=='resources/list':
@@ -225,7 +223,7 @@ def make_router(auth:Auth,runtime:Runtime,public_url):
             elif method=='resources/read':
                 uri=params.get('uri')
                 if 'read' not in principal.scopes:raise DevError('INSUFFICIENT_SCOPE','缺少读取权限',403)
-                if uri in mcp_apps.RESOURCES or uri in mcp_apps.LEGACY_RESOURCES:item=await runtime.store.run(mcp_apps.read_resource,uri,request_public_url)
+                if uri in mcp_apps.RESOURCES:item=await runtime.store.run(mcp_apps.read_resource,uri,request_public_url)
                 elif uri=='rd://projects':item={'uri':uri,'mimeType':'application/json','text':json.dumps(await runtime.store.run(project_resources,principal),ensure_ascii=False)}
                 elif uri == 'rd://conversations':item={'uri':uri,'mimeType':'text/plain','text':instructions}
                 else:return failure(identifier,-32602 if modern else -32002,'Resource not found',404 if modern else 200)

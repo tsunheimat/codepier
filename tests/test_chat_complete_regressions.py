@@ -59,12 +59,13 @@ def test_logout_cannot_repopulate_private_views_from_late_send(chat_page):
 
 
 @pytest.mark.asyncio
-async def test_base_chat_agent_gets_explicit_complete_feature_upgrade_notice(service):
+async def test_old_chat_contract_has_no_basic_mode_fallback(service):
     obj,project,sid=service
-    obj.runtime.connections['device']=SimpleNamespace(native_protocol=1,native_chat_protocol=1)
+    obj.runtime.connections['device']=SimpleNamespace(native_protocol=1,native_security_protocol=1,native_chat_protocol=1,workspace_protocol=1,project_routing_protocol=1)
     for action,args in [('chat_catalog',{'cli':'pi'}),('chat_queue',{'id':sid}),('chat_cancel',{}),('chat_steer',{}),('start',{'mode':'chat','model':'p/model'})]:
-        with pytest.raises(DevError,match='基础聊天版'):
+        with pytest.raises(DevError) as denied:
             await obj.request(action,project,args)
+        assert denied.value.code=='CLI_CHAT_AGENT_UPDATE_REQUIRED'
     assert not obj.pending
 
 

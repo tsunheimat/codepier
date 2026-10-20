@@ -104,4 +104,4 @@ New fixed connections snapshot resource-use rules; device-read/project-creation 
 
 A real upgrade does not automatically choose routes or grant VPS access. Older Hub binaries must not operate a database containing these new consent snapshots; rollback requires a matching pre-upgrade database/key backup. This delivery provides source and isolated migration evidence, not an in-place downgrade or live upgrade acceptance.
 
-Product setup/compatibility details: [resource and access model](RESOURCE_MODEL.md), [conversation associations](CONVERSATIONS.md), [VPS](VPS.md), [role consent](DYNAMIC_ROLES.md).
+Product setup/compatibility details: [resource and access model](RESOURCE_MODEL.md), [conversation associations](CONVERSATIONS.md), [VPS](VPS.md), [role consent](WORKSPACES.md).

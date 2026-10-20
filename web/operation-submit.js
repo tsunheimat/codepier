@@ -4,11 +4,11 @@ function bindOperationSubmit(dialog, form, button, name, readArgs, done) {
   let pending = null,
     receipt = null;
   const session = S.session,
-    space = S.space_id;
+    space = location.hash;
   const controls = () => $$('input,textarea,select', form);
   const submit = () =>
     busy(button, async () => {
-      if (session !== S.session || space !== S.space_id || !dialog.isConnected) return;
+      if (session !== S.session || space !== location.hash || !dialog.isConnected) return;
       if (!pending) {
         if (!form.reportValidity()) return;
         pending = { ...readArgs(), idempotency_key: 'panel-operation-' + uid() };
@@ -19,11 +19,11 @@ function bindOperationSubmit(dialog, form, button, name, readArgs, done) {
         receipt = receipt?.operation_id ? receipt : await tool(name, pending);
         CodePierIntegrations.rememberOperation(name, pending, receipt);
         const result = await settled(Promise.resolve(receipt));
-        if (session !== S.session || space !== S.space_id) return;
+        if (session !== S.session || space !== location.hash) return;
         CodePierIntegrations.forgetOperation(pending.idempotency_key);
         if (dialog.isConnected) await done(result);
       } catch (error) {
-        if (session !== S.session || space !== S.space_id) return;
+        if (session !== S.session || space !== location.hash) return;
         if (error.operation_id) {
           receipt = { pending: true, operation_id: error.operation_id };
           CodePierIntegrations.rememberOperation(name, pending, receipt);

@@ -76,11 +76,11 @@ def test_chat_native_defaults_and_protected_launch(chat):
     with pytest.raises(ValueError): obj.action('chat_arbitrary_rpc',p,{'id':sid,'receipt':uuid.uuid4().hex})
 
 
-def test_public_old_sync_rows_default_terminal(chat):
+def test_public_sync_requires_current_explicit_metadata(chat):
     obj,p,sid=chat
     row=next(r for r in obj.rows() if r['id']==sid)
     for key in ('mode','native_thread','chat_settings'): row.pop(key)
-    assert public(row)['mode']=='terminal'
+    with pytest.raises(ValueError,match='explicit current'):public(row)
 
 
 def test_resume_must_same_mapping_directory_and_stopped(chat):

@@ -1,0 +1,63 @@
+/* Workspace pages use the existing CodePier design tokens and keyboard controls. */
+.ws-options {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 12px 0;
+  display: flex;
+  gap: 12px 20px;
+  flex-wrap: wrap;
+}
+.ws-options legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+.ws-options .check {
+  margin: 0;
+  min-width: 110px;
+}
+.ws-json {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ws-wrap {
+  overflow-wrap: anywhere;
+}
+#workspace-form input,
+#workspace-form select,
+#workspace-form textarea {
+  max-width: 100%;
+}
+#workspace-form [hidden] {
+  display: none !important;
+}
+#workspace-page .product-tabs {
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+#workspace-page .grant-row,
+#workspace-inventory .grant-row {
+  gap: 16px;
+  align-items: flex-start;
+}
+#workspace-page .grant-row > div:first-child,
+#workspace-inventory .grant-row > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+#workspace-page pre,
+#workspace-inventory code {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  #workspace-page .grant-row,
+  #workspace-inventory .grant-row {
+    flex-direction: column;
+  }
+  #workspace-page .actions,
+  #workspace-inventory .actions {
+    flex-wrap: wrap;
+  }
+}

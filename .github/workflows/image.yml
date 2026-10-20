@@ -122,10 +122,10 @@ jobs:
           curl --silent --show-error --fail --max-time 5 --output /dev/null http://127.0.0.1:8765/agent/manifest.json
           [[ "$(docker exec candidate id -u)" == 0 ]] || { echo '::error::Hub is not running as UID 0'; exit 1; }
 
-      - name: Candidate must boot from legacy-owned data and a root-owned copy
+      - name: Candidate must admit current data and reject old data without migration
         shell: bash
         run: |
-          python3 scripts/check_codepier_migration_docker.py \
+          python3 scripts/check_installation_docker.py \
             --image codepier:candidate --output dist/image/root-volume-check.json
 
       - name: Candidate logs and cleanup

@@ -27,9 +27,23 @@ class HubIntegrations:
 
     def guard(self,name,args,project,principal):
         if name in ADMIN_TOOLS and not principal.admin:raise DevError('OWNER_REQUIRED','此操作只允许面板主理人执行',403)
-        if principal.admin or name in SAFE:return
+        if principal.admin or name in SAFE or project.get('_vps_context'):return
         if name in MUTATING or TOOLS[name].scope in {'execute','computer'}:
             if self.state(project)['paused']:raise DevError('REMOTE_PAUSED','该项目已暂停新的 MCP 修改和执行；只读与原操作状态查询仍可用',409)
+
+    def before_delivery(self, op, request, principal):
+        if not op.get('project_id') or request['project'].get('_vps_context'):
+            return
+        project = {**request['project'], 'device_id': op['device_id']}
+        self.guard(op['tool'], request['args'], project, principal)
+
+    def disclosure_guard(self, op, principal):
+        from hub.permissions import require_access
+        from shared.computer_contracts import COMPUTER_TOOLS
+        if op['tool'] in ADMIN_TOOLS and not principal.admin:
+            raise DevError('WORKSPACE_ADMIN_REQUIRED', 'Administrative operation receipts require workspace management', 403)
+        if op.get('project_id') and (op['tool'] in COMPUTER_TOOLS or op['tool'] in {'browser_open','browser_snapshot','browser_action'}):
+            require_access(self.store, principal, 'computer', project_id=op['project_id'])
 
     def prepare(self,identifier,name,args,project,principal):
         if name!='integration_control' or args['action']=='status':return

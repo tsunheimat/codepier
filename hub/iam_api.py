@@ -1,322 +1,349 @@
-"""Human administration of Spaces, membership and delegated roles.
-
-Every mutation is CSRF-protected and serialized with its current authorization,
-optimistic version and last-owner check. Tokens/IdP credentials are never listed.
-"""
+"""Explicit workspace administration with direct member policies, not Roles."""
 from __future__ import annotations
-from hub.db_worker import database_endpoint
+
 import json
 import time
 import uuid
+from dataclasses import replace
+from typing import Literal
+
 from fastapi import APIRouter, Request
 from pydantic import Field
-from typing import Literal
-from hub.access import AccessModel
+
 from hub import iam
+from hub.db_worker import database_endpoint
+from hub.permissions import AccessPolicy, _policy, owner_policy, validate_policy, member_policy, intersect_policies
+from hub.workspace_mutations import label_key, mutate, version
 from shared.crypto import token, digest
+from shared.workspace_contracts import WorkspaceModel
 from shared.util import DevError
 
-class SpaceCreate(AccessModel):
-    label: str = Field(min_length=1,max_length=100)
-    idempotency_key: str = Field(min_length=8,max_length=128)
 
-class SpaceEdit(AccessModel):
-    label: str = Field(min_length=1,max_length=100)
+class SpaceCreate(WorkspaceModel):
+    label: str = Field(min_length=1, max_length=100)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class SpaceEdit(WorkspaceModel):
+    label: str = Field(min_length=1, max_length=100)
     active: bool = True
     expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
-class MemberEdit(AccessModel):
-    level: Literal['owner','admin','member','guest'] = 'member'
+
+class MemberEdit(WorkspaceModel):
+    policy: AccessPolicy
     active: bool = True
-    expected_version: int = Field(default=0,ge=0)
+    expected_version: int = Field(default=0, ge=0)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
-class AssignmentEdit(AccessModel):
-    active: bool = True
-    may_delegate: bool = False
-    expected_version: int = Field(default=0,ge=0)
 
-class UserEdit(AccessModel):
+class UserEdit(WorkspaceModel):
     active: bool = True
     instance_admin: bool = False
     expected_version: int = Field(ge=1)
 
-class InviteCreate(AccessModel):
-    level: Literal['admin','member','guest'] = 'member'
-    days: int = Field(default=7,ge=1,le=30)
 
-class InviteAccept(AccessModel):
-    invitation: str = Field(min_length=20,max_length=200,repr=False)
+class InviteCreate(WorkspaceModel):
+    policy: AccessPolicy
+    days: int = Field(default=7, ge=1, le=30)
 
-class BlockEdit(AccessModel):
+
+class InviteAccept(WorkspaceModel):
+    invitation: str = Field(min_length=20, max_length=200, repr=False)
+
+
+class BlockEdit(WorkspaceModel):
     blocked: bool
 
-class ShareEdit(AccessModel):
-    visibility: Literal['private','space']
+
+class ShareEdit(WorkspaceModel):
+    visibility: Literal['private', 'space']
 
 
-def spaces_for(store,user_id):
-    rows=store.all('SELECT DISTINCT s.* FROM spaces s JOIN memberships m ON m.space_id=s.id WHERE m.user_id=? AND m.active=1 AND s.active=1 AND (m.expires IS NULL OR m.expires>?) ORDER BY s.created,s.id',(user_id,time.time()))
-    result=[]
+def spaces_for(store, user_id):
+    rows = store.all('''SELECT DISTINCT s.* FROM spaces s JOIN memberships m ON m.space_id=s.id
+        WHERE m.user_id=? AND m.active=1 AND s.active=1 AND (m.expires IS NULL OR m.expires>?) ORDER BY s.created,s.id''', (user_id, time.time()))
+    result = []
     for row in rows:
-        try: member=iam.membership(store,user_id,row['id'])
-        except DevError: continue
-        result.append({**row,'level':member['level']})
+        try:
+            member = iam.membership(store, user_id, row['id'])
+        except DevError:
+            continue
+        result.append({**row, 'management': member['policy']['manage']})
     return result
 
 
-def make_iam_router(auth,runtime):
-    router,store=APIRouter(prefix='/api/iam'),runtime.store
-    def admin(request,space_id,write=False):
-        p=auth.admin(request,write)
-        if p.space_id!=space_id: raise DevError('SPACE_FORBIDDEN','请求空间与当前空间不一致',403)
-        return p
-    def owner_guard(space_id,user_id,level,active):
-        old=store.one("SELECT * FROM memberships WHERE space_id=? AND user_id=? AND source='manual'",(space_id,user_id))
-        if old and old['active'] and old['level']=='owner' and (level!='owner' or not active):
-            others=store.one("SELECT count(DISTINCT m.user_id) AS n FROM memberships m JOIN iam_users u ON u.user_id=m.user_id WHERE m.space_id=? AND m.user_id<>? AND m.active=1 AND m.level='owner' AND u.active=1 AND (m.expires IS NULL OR m.expires>?) AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=m.space_id AND b.user_id=m.user_id AND b.blocked=1)",(space_id,user_id,time.time()))
-            if not others['n']: raise DevError('LAST_OWNER','不能移除或暂停最后一位空间主理人；请先转移所有权',409)
-    def wake(p,action,target='',detail=None):
-        iam.audit(store,p,action,target,detail=detail)
-        runtime.publish('iam',{'space_id':p.space_id,'user_id':target or p.user_id})
+def delegation_guard(store, principal, policy):
+    validate_policy(store, principal.space_id, policy)
+    if principal.admin:
+        return
+    own = member_policy(store, principal.user_id, principal.space_id)
+    requested = intersect_policies(store, principal.space_id, policy)
+    effective = intersect_policies(store, principal.space_id, own, policy)
+    if (not set(policy.manage) <= set(own.manage) or requested.model_dump() != effective.model_dump()
+            or any(r.all_projects for r in policy.project_rules) or any(r.all_vps for r in policy.vps_rules)):
+        raise DevError('DELEGATION_EXCEEDED', 'A member manager cannot delegate beyond their own direct workspace rights', 403)
+
+
+def administrator_guard(store, space_id, user_id, policy, active):
+    """Do not remove the final active holder of workspace management capability."""
+    current = store.all('''SELECT m.* FROM memberships m JOIN iam_users u ON u.user_id=m.user_id
+        WHERE m.space_id=? AND m.active=1 AND u.active=1 AND (m.expires IS NULL OR m.expires>?)
+        AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=m.space_id AND b.user_id=m.user_id AND b.blocked=1)''', (space_id, time.time()))
+    before = {row['user_id'] for row in current if 'workspace' in _policy(row).manage}
+    after = {row['user_id'] for row in current if row['user_id'] != user_id and 'workspace' in _policy(row).manage}
+    if active and 'workspace' in policy.manage:
+        after.add(user_id)
+    if user_id in before and not after:
+        raise DevError('LAST_WORKSPACE_ADMIN', 'Keep at least one active member with direct workspace management rights', 409)
+
+
+def make_iam_router(auth, runtime):
+    router, store = APIRouter(), runtime.store
+
+    def wake(principal, action, target='', detail=None):
+        iam.audit(store, principal, action, target, detail=detail)
+        runtime.publish('iam', {'space_id': principal.space_id, 'user_id': target or principal.user_id})
         runtime.wake_delivery()
 
-    @router.get('/me')
+    @router.get('/api/iam/me')
     @database_endpoint(store)
-    def me(request:Request):
-        session=auth.session(request);u=iam.user_security(store,session['user_id'])
+    def me(request: Request):
+        session = auth.session(request)
+        user = iam.user_security(store, session['user_id'])
         identity_access = None
         try:
             iam.check_identity(store, session.get('identity_id'))
         except DevError as exc:
             if exc.code not in {'ENTITLEMENTS_STALE', 'ENTITLEMENTS_UNAVAILABLE'}:
                 raise
-            # Only the session-bound identity can pause this context. Other
-            # linked identities must not disable a local recovery login.
             identity_access = {'code': exc.code, 'message': exc.message, **exc.details}
         from hub.identity_status import public_identity
-        ids=[public_identity(store,row) for row in store.all(
-            'SELECT i.*,p.label,p.version AS provider_version FROM external_identities i JOIN oidc_providers p ON p.id=i.provider_id WHERE i.user_id=?',(u['id'],))]
-        return {'id':u['id'],'username':u['username'],'display_name':u['display_name'] or u['username'],
-                'instance_admin':bool(u['instance_admin']),'local_login':bool(u['local_login']),
-                'spaces':spaces_for(store,u['id']),'default_space_id':iam.default_space(store,u['id']),
-                'identities':ids,'identity_access':identity_access,'session_expires':session['expires'],
-                'disabled_spaces':store.all("SELECT DISTINCT s.* FROM spaces s JOIN memberships m ON m.space_id=s.id WHERE m.user_id=? AND m.level='owner' AND m.active=1 AND s.active=0 AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=m.space_id AND b.user_id=m.user_id AND b.blocked=1)",(u['id'],))}
+        identities = [public_identity(store, row) for row in store.all(
+            'SELECT i.*,p.label,p.version AS provider_version FROM external_identities i JOIN oidc_providers p ON p.id=i.provider_id WHERE i.user_id=?', (user['id'],))]
+        disabled = []
+        for row in store.all('''SELECT DISTINCT s.* FROM spaces s JOIN memberships m ON m.space_id=s.id
+                WHERE m.user_id=? AND m.active=1 AND s.active=0 AND (m.expires IS NULL OR m.expires>?)
+                AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=m.space_id AND b.user_id=m.user_id AND b.blocked=1)''', (user['id'], time.time())):
+            policies = store.all('SELECT policy FROM memberships WHERE user_id=? AND space_id=? AND active=1 AND (expires IS NULL OR expires>?)', (user['id'], row['id'], time.time()))
+            if any('workspace' in _policy(p).manage for p in policies):
+                disabled.append(row)
+        return {'id': user['id'], 'username': user['username'], 'display_name': user['display_name'] or user['username'],
+                'instance_admin': bool(user['instance_admin']), 'local_login': bool(user['local_login']),
+                'spaces': spaces_for(store, user['id']), 'identities': identities, 'identity_access': identity_access,
+                'session_expires': session['expires'], 'disabled_spaces': disabled}
 
-    @router.get('/spaces')
+    @router.get('/api/spaces')
     @database_endpoint(store)
-    def spaces(request:Request):
-        s=auth.session(request)
-        return {'spaces':spaces_for(store,s['user_id'])}
+    def spaces(request: Request):
+        account = auth.panel(request)
+        return {'spaces': spaces_for(store, account.user_id)}
 
-    @router.post('/spaces',status_code=201)
+    @router.get('/api/spaces/{space_id}')
     @database_endpoint(store)
-    def create_space(request:Request,body:SpaceCreate):
-        p=auth.panel(request,True)
-        fingerprint=digest(json.dumps(body.model_dump(exclude={'idempotency_key'}),sort_keys=True))
-        with store.lock,store.db:
-            store.db.execute('BEGIN IMMEDIATE');p=auth.panel(request,True)
-            old=store.one("SELECT * FROM iam_replays WHERE user_id=? AND space_id='' AND action='spaces.create' AND idem=?",(p.user_id,body.idempotency_key))
-            if old:
-                if old['fingerprint']!=fingerprint:raise DevError('IDEMPOTENCY_CONFLICT','幂等键已使用',409)
-                return json.loads(old['receipt'])
-            if len(spaces_for(store,p.user_id))>=30:raise DevError('SPACE_LIMIT','账号最多加入30个空间',409)
-            sid='sp_'+uuid.uuid4().hex
-            store.db.execute('INSERT INTO spaces(id,label,kind,created) VALUES(?,?,?,?)',(sid,body.label.strip(),'team',time.time()))
-            store.db.execute("INSERT INTO memberships(space_id,user_id,level) VALUES(?,?,'owner')",(sid,p.user_id))
-            result=store.one('SELECT * FROM spaces WHERE id=?',(sid,))
-            store.db.execute("INSERT INTO iam_replays VALUES(?,'','spaces.create',?,?,?,?)",(p.user_id,body.idempotency_key,fingerprint,json.dumps(result),time.time()))
-            wake(p,'space.created',sid)
-        return result
+    def workspace(space_id: str, request: Request):
+        principal = auth.panel(request)
+        row = store.one('SELECT * FROM spaces WHERE id=?', (space_id,))
+        return {**row, 'management': member_policy(store, principal.user_id, space_id).manage}
 
-    @router.put('/spaces/{space_id}')
+    @router.post('/api/spaces', status_code=201)
     @database_endpoint(store)
-    def edit_space(space_id:str,request:Request,body:SpaceEdit):
-        with store.lock,store.db:
-            store.db.execute('BEGIN IMMEDIATE');p=admin(request,space_id,True)
-            if iam.membership(store,p.user_id,space_id)['level']!='owner':raise DevError('OWNER_REQUIRED','只有主理人可修改空间',403)
-            row=store.one('SELECT * FROM spaces WHERE id=?',(space_id,))
-            if row['version']!=body.expected_version:raise DevError('VERSION_CONFLICT','空间已变化',409)
-            if row['kind']!='team' and not body.active:raise DevError('PERSONAL_SPACE_REQUIRED','个人/恢复空间不能停用',409)
-            store.db.execute('UPDATE spaces SET label=?,active=?,version=version+1 WHERE id=?',(body.label.strip(),int(body.active),space_id));wake(p,'space.updated',space_id)
-        return store.one('SELECT * FROM spaces WHERE id=?',(space_id,))
+    def create_space(request: Request, body: SpaceCreate):
+        principal = auth.panel(request, True)
+        def save(current):
+            if len(spaces_for(store, current.user_id)) >= 100:
+                raise DevError('WORKSPACE_LIMIT', 'The account workspace limit has been reached', 409)
+            identifier = 'sp_' + uuid.uuid4().hex
+            label, _ = label_key(body.label)
+            store.db.execute('INSERT INTO spaces(id,label,owner_user_id,created) VALUES(?,?,?,?)', (identifier, label, current.user_id, time.time()))
+            store.db.execute('INSERT INTO memberships(space_id,user_id,policy) VALUES(?,?,?)', (identifier, current.user_id, owner_policy().model_dump_json()))
+            wake(replace(current, space_id=identifier), 'workspace.created', identifier)
+            return store.one('SELECT * FROM spaces WHERE id=?', (identifier,))
+        return mutate(store, principal, 'workspace.create', body.idempotency_key, body.model_dump(), save)
 
-    @router.post('/spaces/{space_id}/restore')
+    @router.put('/api/spaces/{space_id}')
     @database_endpoint(store)
-    def restore_space(space_id:str,request:Request,body:SpaceEdit):
+    def edit_space(space_id: str, request: Request, body: SpaceEdit):
+        principal = iam.require_space_capability(store, auth.panel(request, True), 'workspace')
+        def save(current):
+            iam.require_space_capability(store, current, 'workspace')
+            row = store.one('SELECT * FROM spaces WHERE id=?', (space_id,))
+            version(row, body.expected_version)
+            label, _ = label_key(body.label)
+            store.db.execute('UPDATE spaces SET label=?,active=?,version=version+1 WHERE id=?', (label, int(body.active), space_id))
+            wake(current, 'workspace.updated', space_id)
+            return store.one('SELECT * FROM spaces WHERE id=?', (space_id,))
+        return mutate(store, principal, 'workspace.update:'+space_id, body.idempotency_key, body.model_dump(), save)
+
+    @router.post('/api/spaces/{space_id}/restore')
+    @database_endpoint(store)
+    def restore_space(space_id: str, request: Request, body: SpaceEdit):
         with store.transaction():
-            session=auth.session_write(request)
-            iam.check_identity(store,session['identity_id'])
-            owner=store.one("SELECT 1 AS ok FROM memberships m WHERE m.space_id=? AND m.user_id=? AND m.level='owner' AND m.active=1 AND (m.expires IS NULL OR m.expires>?) AND NOT EXISTS(SELECT 1 FROM membership_blocks b WHERE b.space_id=m.space_id AND b.user_id=m.user_id AND b.blocked=1)",(space_id,session['user_id'],time.time()))
-            row=store.one('SELECT * FROM spaces WHERE id=?',(space_id,))
-            if not owner or not row:raise DevError('SPACE_NOT_FOUND','空间不存在或没有恢复权限',404)
-            if row['version']!=body.expected_version:raise DevError('VERSION_CONFLICT','空间已变化',409)
-            store.db.execute('UPDATE spaces SET active=1,version=version+1 WHERE id=?',(space_id,))
-            store.audit('panel:'+session['username'],'space.restored',space_id,commit=False)
-            runtime.wake_delivery();runtime.publish('iam',{'user_id':session['user_id'],'space_id':space_id})
-        return store.one('SELECT * FROM spaces WHERE id=?',(space_id,))
+            session = auth.session_write(request)
+            iam.check_identity(store, session['identity_id'])
+            row = store.one('SELECT * FROM spaces WHERE id=?', (space_id,))
+            blocked = store.one('SELECT 1 FROM membership_blocks WHERE space_id=? AND user_id=? AND blocked=1', (space_id, session['user_id']))
+            policies = store.all('SELECT policy FROM memberships WHERE user_id=? AND space_id=? AND active=1 AND (expires IS NULL OR expires>?)', (session['user_id'], space_id, time.time()))
+            if blocked or not any('workspace' in _policy(p).manage for p in policies):
+                raise DevError('WORKSPACE_NOT_FOUND', 'Workspace is not available for recovery by this account', 404)
+            version(row, body.expected_version)
+            store.db.execute('UPDATE spaces SET active=1,version=version+1 WHERE id=?', (space_id,))
+            principal = auth.panel(request, True)
+            wake(principal, 'workspace.restored', space_id)
+        return store.one('SELECT * FROM spaces WHERE id=?', (space_id,))
 
-    @router.get('/spaces/{space_id}/members')
+    @router.get('/api/spaces/{space_id}/members')
     @database_endpoint(store)
-    def members(space_id:str,request:Request):
-        admin(request,space_id)
-        rows=store.all('SELECT m.*,u.username,s.display_name,s.active AS user_active,COALESCE(b.blocked,0) AS blocked FROM memberships m JOIN users u ON u.id=m.user_id JOIN iam_users s ON s.user_id=u.id LEFT JOIN membership_blocks b ON b.space_id=m.space_id AND b.user_id=m.user_id WHERE m.space_id=? ORDER BY u.username,m.source',(space_id,))
-        return {'members':rows}
+    def members(space_id: str, request: Request):
+        iam.require_space_capability(store, auth.panel(request), 'members')
+        rows = store.all('''SELECT m.*,u.username,s.display_name,s.active AS user_active,COALESCE(b.blocked,0) AS blocked
+            FROM memberships m JOIN users u ON u.id=m.user_id JOIN iam_users s ON s.user_id=u.id
+            LEFT JOIN membership_blocks b ON b.space_id=m.space_id AND b.user_id=m.user_id
+            WHERE m.space_id=? ORDER BY u.username,m.source''', (space_id,))
+        return {'members': [{**row, 'policy': json.loads(row['policy'])} for row in rows]}
 
-    @router.put('/spaces/{space_id}/members/{user_id}')
+    @router.put('/api/spaces/{space_id}/members/{user_id}')
     @database_endpoint(store)
-    def set_member(space_id:str,user_id:str,request:Request,body:MemberEdit):
-        with store.lock,store.db:
-            store.db.execute('BEGIN IMMEDIATE');p=admin(request,space_id,True)
-            iam.user_security(store,user_id)
-            if store.one("SELECT kind FROM spaces WHERE id=?",(space_id,))['kind']=='personal' and user_id!=p.user_id:
-                raise DevError('PERSONAL_SPACE_PRIVATE','共享成员请使用团队空间',403)
-            old=store.one("SELECT * FROM memberships WHERE space_id=? AND user_id=? AND source='manual'",(space_id,user_id))
-            if (old['version'] if old else 0)!=body.expected_version:raise DevError('VERSION_CONFLICT','成员已变化',409)
-            if (body.level=='owner' or old and old['level']=='owner') and iam.membership(store,p.user_id,space_id)['level']!='owner':raise DevError('OWNER_REQUIRED','只有主理人可转移所有权',403)
-            owner_guard(space_id,user_id,body.level,body.active)
-            store.db.execute("INSERT INTO memberships(space_id,user_id,source,level,active) VALUES(?,?,'manual',?,?) ON CONFLICT(space_id,user_id,source) DO UPDATE SET level=excluded.level,active=excluded.active,version=memberships.version+1",(space_id,user_id,body.level,int(body.active)))
-            wake(p,'membership.updated',user_id,body.model_dump())
-        return store.one("SELECT * FROM memberships WHERE space_id=? AND user_id=? AND source='manual'",(space_id,user_id))
+    def set_member(space_id: str, user_id: str, request: Request, body: MemberEdit):
+        principal = iam.require_space_capability(store, auth.panel(request, True), 'members')
+        def save(current):
+            iam.require_space_capability(store, current, 'members')
+            iam.user_security(store, user_id)
+            old = store.one("SELECT * FROM memberships WHERE space_id=? AND user_id=? AND source='manual'", (space_id, user_id))
+            if (old['version'] if old else 0) != body.expected_version:
+                raise DevError('VERSION_CHANGED', 'The member policy changed; reload before saving', 409)
+            if old and 'workspace' in _policy(old).manage and not current.admin:
+                raise DevError('WORKSPACE_ADMIN_REQUIRED', 'Only a workspace administrator can change another administrator', 403)
+            delegation_guard(store, current, body.policy)
+            administrator_guard(store, space_id, user_id, body.policy, body.active)
+            store.db.execute("""INSERT INTO memberships(space_id,user_id,source,policy,active) VALUES(?,?,'manual',?,?)
+                ON CONFLICT(space_id,user_id,source) DO UPDATE SET policy=excluded.policy,active=excluded.active,version=memberships.version+1""",
+                (space_id, user_id, body.policy.model_dump_json(), int(body.active)))
+            wake(current, 'member.updated', user_id, body.model_dump(exclude={'idempotency_key'}))
+            row = store.one("SELECT * FROM memberships WHERE space_id=? AND user_id=? AND source='manual'", (space_id, user_id))
+            return {**row, 'policy': json.loads(row['policy'])}
+        return mutate(store, principal, 'member.update:'+user_id, body.idempotency_key, body.model_dump(), save)
 
-    @router.put('/spaces/{space_id}/members/{user_id}/suspension')
+    @router.put('/api/spaces/{space_id}/members/{user_id}/suspension')
     @database_endpoint(store)
-    def block_member(space_id:str,user_id:str,request:Request,body:BlockEdit):
-        with store.lock,store.db:
-            store.db.execute('BEGIN IMMEDIATE');p=admin(request,space_id,True)
+    def block_member(space_id: str, user_id: str, request: Request, body: BlockEdit):
+        with store.transaction():
+            principal = iam.require_space_capability(store, auth.panel(request, True), 'members')
+            policies = store.all('SELECT policy FROM memberships WHERE space_id=? AND user_id=?', (space_id, user_id))
+            if any('workspace' in _policy(p).manage for p in policies) and not principal.admin:
+                raise DevError('WORKSPACE_ADMIN_REQUIRED', 'Only a workspace administrator can suspend another administrator', 403)
             if body.blocked:
-                iam.membership(store,user_id,space_id)
-            # Restoration is a privilege increase too. A suspended owner's
-            # membership cannot be resolved by membership(), which rejects the
-            # block; inspect the stored owner assignment without bypassing the
-            # acting administrator's live checks.
-            target_owner=store.one("SELECT 1 AS ok FROM memberships WHERE space_id=? AND user_id=? AND level='owner'",(space_id,user_id))
-            if target_owner and iam.membership(store,p.user_id,space_id)['level']!='owner':
-                raise DevError('OWNER_REQUIRED','只有主理人可以暂停或恢复另一主理人',403)
-            if body.blocked:owner_guard(space_id,user_id,'guest',False)
-            store.db.execute('INSERT INTO membership_blocks VALUES(?,?,?) ON CONFLICT(space_id,user_id) DO UPDATE SET blocked=excluded.blocked',(space_id,user_id,int(body.blocked)))
-            wake(p,'membership.suspension',user_id,body.model_dump())
-        return {'blocked':body.blocked}
+                administrator_guard(store, space_id, user_id, AccessPolicy(), False)
+            store.db.execute('INSERT INTO membership_blocks VALUES(?,?,?) ON CONFLICT(space_id,user_id) DO UPDATE SET blocked=excluded.blocked', (space_id, user_id, int(body.blocked)))
+            wake(principal, 'member.suspension', user_id, body.model_dump())
+        return {'blocked': body.blocked}
 
-    @router.get('/spaces/{space_id}/assignments')
+    @router.get('/api/spaces/{space_id}/invites')
     @database_endpoint(store)
-    def assignments(space_id:str,request:Request):
-        p=auth.panel(request)
-        if p.space_id!=space_id:raise DevError('SPACE_FORBIDDEN','空间不匹配',403)
-        where='space_id=?';args=[space_id]
-        if not p.admin:where+=' AND user_id=?';args.append(p.user_id)
-        return {'assignments':store.all('SELECT * FROM role_assignments WHERE '+where,args)}
+    def invitations(space_id: str, request: Request):
+        iam.require_space_capability(store, auth.panel(request), 'members')
+        rows = store.all('SELECT hash AS id,policy,created_by,expires,used_by,created FROM space_invites WHERE space_id=? ORDER BY created DESC LIMIT 200', (space_id,))
+        return {'invitations': [{**row, 'policy': json.loads(row['policy'])} for row in rows]}
 
-    @router.put('/spaces/{space_id}/assignments/{role_id}/{user_id}')
+    @router.delete('/api/spaces/{space_id}/invites/{identifier}')
     @database_endpoint(store)
-    def set_assignment(space_id:str,role_id:str,user_id:str,request:Request,body:AssignmentEdit):
-        with store.lock,store.db:
-            store.db.execute('BEGIN IMMEDIATE');p=admin(request,space_id,True)
-            iam.membership(store,user_id,space_id)
-            if not store.one('SELECT 1 AS ok FROM access_roles WHERE id=? AND space_id=?',(role_id,space_id)):raise DevError('ROLE_NOT_FOUND','角色不存在',404)
-            old=store.one("SELECT * FROM role_assignments WHERE role_id=? AND user_id=? AND source='manual'",(role_id,user_id))
-            if (old['version'] if old else 0)!=body.expected_version:raise DevError('VERSION_CONFLICT','角色分配已改变',409)
-            store.db.execute("INSERT INTO role_assignments(role_id,user_id,space_id,may_delegate,active) VALUES(?,?,?,?,?) ON CONFLICT(role_id,user_id,source) DO UPDATE SET may_delegate=excluded.may_delegate,active=excluded.active,version=role_assignments.version+1",(role_id,user_id,space_id,int(body.may_delegate),int(body.active)))
-            wake(p,'role.assignment',user_id,{'role_id':role_id,**body.model_dump()})
-        return store.one("SELECT * FROM role_assignments WHERE role_id=? AND user_id=? AND source='manual'",(role_id,user_id))
-
-    @router.get('/spaces/{space_id}/invites')
-    @database_endpoint(store)
-    def invitations(space_id:str,request:Request):
-        admin(request,space_id)
-        return {'invitations':store.all('SELECT hash AS id,level,created_by,expires,used_by,created FROM space_invites WHERE space_id=? ORDER BY created DESC LIMIT 200',(space_id,))}
-
-    @router.delete('/spaces/{space_id}/invites/{identifier}')
-    @database_endpoint(store)
-    def revoke_invite(space_id:str,identifier:str,request:Request):
+    def revoke_invite(space_id: str, identifier: str, request: Request):
         with store.transaction():
-            p=admin(request,space_id,True)
-            store.db.execute('DELETE FROM space_invites WHERE hash=? AND space_id=?',(identifier,space_id));wake(p,'invitation.revoked',space_id)
-        return {'ok':True}
+            principal = iam.require_space_capability(store, auth.panel(request, True), 'members')
+            store.db.execute('DELETE FROM space_invites WHERE hash=? AND space_id=?', (identifier, space_id))
+            wake(principal, 'invitation.revoked', identifier)
+        return {'ok': True}
 
-    @router.post('/spaces/{space_id}/invites',status_code=201)
+    @router.post('/api/spaces/{space_id}/invites', status_code=201)
     @database_endpoint(store)
-    def create_invite(space_id:str,request:Request,body:InviteCreate):
-        p=admin(request,space_id,True)
-        if store.one('SELECT kind FROM spaces WHERE id=?',(space_id,))['kind']=='personal':raise DevError('PERSONAL_SPACE_PRIVATE','个人空间不发送团队邀请',403)
-        secret='cpi_'+token();now=time.time()
-        with store.lock,store.db:
-            admin(request,space_id,True)
-            store.db.execute('INSERT INTO space_invites VALUES(?,?,?,?,?,NULL,?)',(digest(secret),space_id,body.level,p.user_id,now+body.days*86400,now))
-            wake(p,'invitation.created',space_id,{'level':body.level})
-        return {'invitation':secret,'expires':now+body.days*86400,'note':'Only displayed once; accept while signed in to the intended account.'}
+    def create_invite(space_id: str, request: Request, body: InviteCreate):
+        with store.transaction():
+            principal = iam.require_space_capability(store, auth.panel(request, True), 'members')
+            delegation_guard(store, principal, body.policy)
+            secret, now = 'cpi_'+token(), time.time()
+            store.db.execute('INSERT INTO space_invites VALUES(?,?,?,?,?,NULL,?)', (digest(secret), space_id, body.policy.model_dump_json(), principal.user_id, now+body.days*86400, now))
+            wake(principal, 'invitation.created', space_id, {'policy': body.policy.model_dump()})
+        return {'invitation': secret, 'expires': now+body.days*86400, 'note': 'This invitation is displayed only once.'}
 
-    @router.post('/invites/accept')
+    @router.post('/api/iam/invites/accept')
     @database_endpoint(store)
-    def accept_invite(request:Request,body:InviteAccept):
-        p=auth.panel(request,True)
-        with store.lock,store.db:
-            store.db.execute('BEGIN IMMEDIATE');p=auth.panel(request,True)
-            row=store.one('SELECT * FROM space_invites WHERE hash=? AND expires>? AND used_by IS NULL',(digest(body.invitation),time.time()))
-            if not row:raise DevError('INVITATION_INVALID','邀请不存在、已过期或已使用',400)
-            if not iam.is_space_admin(store,row['created_by'],row['space_id']):raise DevError('INVITATION_INVALID','邀请人已不具备管理权',400)
-            source='invite:'+digest(body.invitation)[:24]
-            store.db.execute('INSERT INTO memberships(space_id,user_id,source,level) VALUES(?,?,?,?)',(row['space_id'],p.user_id,source,row['level']))
-            store.db.execute('UPDATE space_invites SET used_by=? WHERE hash=?',(p.user_id,row['hash']))
-            wake(p,'invitation.accepted',row['space_id'])
-        return {'space_id':row['space_id']}
+    def accept_invite(request: Request, body: InviteAccept):
+        with store.transaction():
+            principal = auth.panel(request, True)
+            row = store.one('SELECT * FROM space_invites WHERE hash=? AND expires>? AND used_by IS NULL', (digest(body.invitation), time.time()))
+            if not row:
+                raise DevError('INVITATION_INVALID', 'Invitation is invalid, expired or already used')
+            from hub.principal import Principal
+            creator = iam.live_principal(store, Principal('invitation:'+row['created_by'], row['created_by'], {'read'}, [], space_id=row['space_id']))
+            iam.require_space_capability(store, creator, 'members')
+            policy = _policy(row)
+            delegation_guard(store, creator, policy)
+            source = 'invite:'+digest(body.invitation)[:24]
+            store.db.execute('INSERT INTO memberships(space_id,user_id,source,policy) VALUES(?,?,?,?)', (row['space_id'], principal.user_id, source, policy.model_dump_json()))
+            store.db.execute('UPDATE space_invites SET used_by=? WHERE hash=?', (principal.user_id, row['hash']))
+            wake(replace(principal, space_id=row['space_id']), 'invitation.accepted', principal.user_id)
+        return {'space_id': row['space_id']}
 
-    @router.get('/users')
+    @router.get('/api/iam/users')
     @database_endpoint(store)
-    def users(request:Request):
+    def users(request: Request):
         auth.instance(request)
-        return {'users':store.all('SELECT u.id,u.username,u.created,s.active,s.instance_admin,s.local_login,s.version,s.display_name FROM users u JOIN iam_users s ON s.user_id=u.id ORDER BY u.created')}
+        return {'users': store.all('SELECT u.id,u.username,u.created,s.active,s.instance_admin,s.local_login,s.version,s.display_name FROM users u JOIN iam_users s ON s.user_id=u.id ORDER BY u.created')}
 
-    @router.put('/users/{user_id}')
-    async def edit_user(user_id:str,request:Request,body:UserEdit):
+    @router.put('/api/iam/users/{user_id}')
+    async def edit_user(user_id: str, request: Request, body: UserEdit):
         def update():
-            with store.lock,store.db:
-                store.db.execute('BEGIN IMMEDIATE');p=auth.instance(request,True)
-                row=store.one('SELECT * FROM iam_users WHERE user_id=?',(user_id,))
-                if not row:raise DevError('USER_NOT_FOUND','账号不存在',404)
-                if row['version']!=body.expected_version:raise DevError('VERSION_CONFLICT','账号已变化',409)
+            with store.transaction():
+                principal = auth.instance(request, True)
+                row = store.one('SELECT * FROM iam_users WHERE user_id=?', (user_id,))
+                version(row, body.expected_version)
                 if row['active'] and row['instance_admin'] and (not body.active or not body.instance_admin):
-                    if not store.one('SELECT 1 AS ok FROM iam_users WHERE user_id<>? AND instance_admin=1 AND active=1 LIMIT 1',(user_id,)):raise DevError('LAST_ADMIN','不能移除最后一位实例管理员',409)
-                if row['active'] and row['instance_admin'] and row['local_login'] and (not body.active or not body.instance_admin):
-                    if not store.one('SELECT 1 AS ok FROM iam_users WHERE user_id<>? AND instance_admin=1 AND active=1 AND local_login=1 LIMIT 1',(user_id,)):
-                        raise DevError('LAST_RECOVERY_ADMIN','不能移除最后一位可本地登录的恢复管理员',409)
+                    if not store.one('SELECT 1 FROM iam_users WHERE user_id<>? AND instance_admin=1 AND active=1 LIMIT 1', (user_id,)):
+                        raise DevError('LAST_ADMIN', 'Keep at least one active instance administrator', 409)
+                    if row['local_login'] and not store.one('SELECT 1 FROM iam_users WHERE user_id<>? AND instance_admin=1 AND active=1 AND local_login=1 LIMIT 1', (user_id,)):
+                        raise DevError('LAST_RECOVERY_ADMIN', 'Keep at least one local recovery administrator', 409)
                 if not body.active:
-                    for m in store.all("SELECT m.space_id FROM memberships m JOIN spaces s ON s.id=m.space_id WHERE m.user_id=? AND m.active=1 AND m.level='owner' AND s.kind<>'personal'",(user_id,)):
-                        owner_guard(m['space_id'],user_id,'guest',False)
-                store.db.execute('UPDATE iam_users SET active=?,instance_admin=?,version=version+1,epoch=epoch+1 WHERE user_id=?',(int(body.active),int(body.instance_admin),user_id))
-                store.db.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
-                store.db.execute('UPDATE grants SET revoked=1 WHERE user_id=?',(user_id,))
-                wake(p,'user.updated',user_id,body.model_dump())
+                    for space in spaces_for(store, user_id):
+                        if space['kind'] != 'personal':
+                            administrator_guard(store, space['id'], user_id, AccessPolicy(), False)
+                store.db.execute('UPDATE iam_users SET active=?,instance_admin=?,version=version+1,epoch=epoch+1 WHERE user_id=?', (int(body.active), int(body.instance_admin), user_id))
+                store.db.execute('DELETE FROM sessions WHERE user_id=?', (user_id,))
+                store.db.execute('UPDATE grants SET revoked=1 WHERE user_id=?', (user_id,))
+                wake(principal, 'user.updated', user_id, body.model_dump())
                 return store.all('SELECT id FROM devices WHERE owner_user_id=?', (user_id,)) if not body.active else []
-        devices = await store.run(update)
-        for device in devices:
+        for device in await store.run(update):
             await runtime.disconnect_device(device['id'], 'Owner account suspended')
-        return {'id':user_id,**body.model_dump(exclude={'expected_version'}),'version':body.expected_version+1}
+        return {'id': user_id, **body.model_dump(exclude={'expected_version'}), 'version': body.expected_version+1}
 
-    @router.get('/sessions')
+    @router.get('/api/iam/sessions')
     @database_endpoint(store)
-    def sessions(request:Request):
-        session=auth.session(request)
-        return {'sessions':store.all('SELECT s.id_hash AS id,s.expires,ss.authenticated_at,ss.identity_id FROM sessions s LEFT JOIN session_security ss ON ss.session_hash=s.id_hash WHERE s.user_id=? AND s.expires>?',(session['user_id'],time.time())),'current':session['id_hash']}
+    def sessions(request: Request):
+        session = auth.session(request)
+        return {'sessions': store.all('''SELECT s.id_hash AS id,s.expires,ss.authenticated_at,ss.identity_id FROM sessions s
+            LEFT JOIN session_security ss ON ss.session_hash=s.id_hash WHERE s.user_id=? AND s.expires>?''', (session['user_id'], time.time())), 'current': session['id_hash']}
 
-    @router.delete('/sessions/{identifier}')
+    @router.delete('/api/iam/sessions/{identifier}')
     @database_endpoint(store)
-    def delete_session(identifier:str,request:Request):
+    def delete_session(identifier: str, request: Request):
         with store.transaction():
-            session=auth.session_write(request)
-            store.db.execute('DELETE FROM sessions WHERE id_hash=? AND user_id=?',(identifier,session['user_id']))
-            store.audit('panel:'+session['username'],'session.revoked',commit=False)
-        return {'ok':True}
+            session = auth.session_write(request)
+            store.db.execute('DELETE FROM sessions WHERE id_hash=? AND user_id=?', (identifier, session['user_id']))
+            store.audit('panel:'+session['username'], 'session.revoked', commit=False)
+        return {'ok': True}
 
-    @router.put('/share/{kind}/{identifier}')
+    @router.put('/api/spaces/{space_id}/share/{kind}/{identifier}')
     @database_endpoint(store)
-    def share(kind:str,identifier:str,request:Request,body:ShareEdit):
-        table={'artifact':'artifacts'}.get(kind)
-        if not table:raise DevError('INVALID_RESOURCE','只支持共享产物，不共享交互会话',400)
-        with store.lock,store.db:
-            store.db.execute('BEGIN IMMEDIATE');p=auth.panel(request,True)
-            row=store.one(f'SELECT * FROM {table} WHERE id=? AND space_id=?',(identifier,p.space_id))
-            if not row or row['owner_user_id']!=p.user_id:raise DevError('RESOURCE_NOT_FOUND','只能共享自己的记录',404)
-            runtime.project(row['project_id'],p)
-            store.db.execute(f'UPDATE {table} SET visibility=? WHERE id=?',(body.visibility,identifier));wake(p,'record.shared',identifier,{'visibility':body.visibility,'kind':kind})
-        return {'id':identifier,'visibility':body.visibility}
+    def share(kind: str, identifier: str, request: Request, body: ShareEdit):
+        if kind != 'artifact':
+            raise DevError('INVALID_RESOURCE', 'Only artifacts can be shared; interactive sessions remain private')
+        with store.transaction():
+            principal = auth.panel(request, True)
+            row = store.one('SELECT * FROM artifacts WHERE id=? AND space_id=?', (identifier, principal.space_id))
+            if not row or row['owner_user_id'] != principal.user_id:
+                raise DevError('RESOURCE_NOT_FOUND', 'Only the artifact owner can change its visibility', 404)
+            runtime.project(row['project_id'], principal)
+            store.db.execute('UPDATE artifacts SET visibility=? WHERE id=?', (body.visibility, identifier))
+            wake(principal, 'record.shared', identifier, {'visibility': body.visibility})
+        return {'id': identifier, 'visibility': body.visibility}
     return router

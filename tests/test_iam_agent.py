@@ -1,61 +1,78 @@
-"""Two human identities, one authorized role Token and a real disposable Agent."""
+"""Two real human logins, one current Connection and an isolated real Runner."""
+from contextlib import closing
 import json
-import time
 import uuid
-from pathlib import Path
+
+import httpx
 import pytest
+
 from hub.store import Store
-from hub import iam
 from shared.crypto import password_hash
-from tests.test_iam_integration import Browser
-from tests.test_roles import must
-from tests.test_access_profiles import call,data
-from tests.support import running_stack
+from tests.current_model import CurrentModel
+from tests.identity_fixtures import must, call, data
+from tests.support import running_stack, wait_for
 
 
 @pytest.fixture
 def team_agent(tmp_path):
-    with running_stack(tmp_path/'role-agent',space_label='Role integration team') as stack:
+    with running_stack(tmp_path/'workspace-agent',space_label='Direct member integration') as stack:
         yield stack
 
 
-def test_real_agent_new_user_role_create_read_revoke_and_mapping_bounds(team_agent):
-    stack=team_agent
-    space_id=stack.space_id
-    uid='usr-'+uuid.uuid4().hex
-    from contextlib import closing
+def test_real_agent_folder_scoped_create_read_revoke_and_mapping_bounds(team_agent):
+    stack=team_agent;sid=stack.space_id;uid='usr-'+uuid.uuid4().hex
     with closing(Store(stack.hubdir)) as store:
-        with store.transaction():
-            store.db.execute('INSERT INTO users VALUES(?,?,?,?)',(uid,uid,password_hash('temporary-user-password'),time.time()))
-            assert not store.one("SELECT 1 FROM memberships WHERE user_id=? AND space_id='legacy'",(uid,))
-    must(stack.client.put(f'/api/iam/spaces/{space_id}/members/{uid}',json={
-        'level':'member','active':True,'expected_version':0}))
-    # A distinct real password session; the owner client is unchanged.
-    import httpx
-    with httpx.Client(base_url=stack.url,trust_env=False,timeout=30) as client:
+        CurrentModel(store).user(uid,password_hash=password_hash('temporary-user-password'))
+    policy={'project_rules':[{'actions':['read','write'],'all_projects':True}],
+        'folder_rules':[{'folders':[stack.folder['id']],'actions':['read','projects.create']}]}
+    path=f'/api/spaces/{sid}/members/{uid}'
+    membership=must(stack.client.put(path,json={'policy':policy,'active':True,
+        'expected_version':0,'idempotency_key':uuid.uuid4().hex}))
+    profile=stack.create_profile(policy,label='Explicit Folder creation')
+    with httpx.Client(base_url=stack.url,trust_env=False,timeout=35) as client:
         session=must(client.post('/api/login',json={'username':uid,'password':'temporary-user-password'}))
-        client.headers['X-RD-CSRF']=session['csrf'];client.headers['X-CodePier-Space']=space_id
-        role=must(stack.client.post('/api/access-roles',json={'label':'Secretary '+uid,'project_rules':[{'actions':['read','write'],'created_projects':True}],
-          'device_rules':[{'actions':['devices.read','projects.create'],'devices':[stack.device],'root_prefixes':[str(stack.root)],'max_project_mode':'write','allow_tasks':False}],
-          'idempotency_key':uuid.uuid4().hex}),201)
-        assignment=must(stack.client.put(f'/api/iam/spaces/{space_id}/assignments/'+role['id']+'/'+uid,json={'active':True,'may_delegate':True,'expected_version':0}))
-        profile=must(client.post('/api/access-profiles',json={'label':'My secretary','role_id':role['id'],'idempotency_key':uuid.uuid4().hex}),201)
-        grant=must(client.post('/api/grants',json={'label':'secretary','scopes':['codepier.role_access'],'authorization_mode':'role','profile_id':profile['id'],'profile_version':profile['version'],'role_version':role['version'],'confirm_dynamic_role':True}))
-        directory=stack.root/'new-private';directory.mkdir();(directory/'readme.txt').write_text('allowed-test-data')
-        args={'alias':'New-'+uid,'device_id':stack.device,'root':str(directory),'mode':'write','allow_tasks':False,'idempotency_key':uuid.uuid4().hex}
-        from tests.support import wait_for
-        results=[]
+        client.headers.update({'X-RD-CSRF':session['csrf'],'Origin':stack.url})
+        grant=must(client.post(f'/api/spaces/{sid}/connections',json={
+            'name':'Folder creator','profile_id':profile['id'],'profile_version':profile['version'],
+            'consent_mode':'live','confirm_live_profile':True,'idempotency_key':uuid.uuid4().hex}),201)
+        token=grant['token']
+        folders=data(call(client,token,'folders_list'))['folders']
+        assert [folder['id'] for folder in folders]==[stack.folder['id']]
+        directory=stack.root/'new-private';directory.mkdir()
+        (directory/'readme.txt').write_text('allowed-test-data')
+        args={'alias':'New-'+uid,'folder_id':stack.folder['id'],'subpath':'new-private',
+            'idempotency_key':uuid.uuid4().hex}
         def create():
-            result=data(call(client,grant['token'],'projects_create',args));results.append(result)
-            return result if not result.get('pending') else None
-        created=wait_for(create,timeout=20)
-        pid=created.get('id') or created.get('project',{}).get('id')
-        assert pid,created
-        receipt=data(call(client,grant['token'],'fs_read',{'project':pid,'path':'readme.txt'}))
+            response=call(client,token,'projects_create',args)
+            value=response.json()['result']
+            if value.get('isError'):
+                error=value['structuredContent']['error']
+                assert error['code']=='VALIDATION_PENDING',value
+                receipt=stack.poll(error['operation_id'],timeout=45)
+                assert receipt['state']=='succeeded',receipt
+                return None
+            return data(response)
+        created=wait_for(create,timeout=60)
+        assert created['id'] and created['accessible']
+        assert data(call(client,token,'projects_create',args))['id']==created['id']
+        receipt=data(call(client,token,'read',{'project':created['id'],'path':'readme.txt'}))
         if receipt.get('pending'):receipt=stack.poll(receipt['operation_id'])['result']['data']
         assert 'allowed-test-data' in json.dumps(receipt)
-        must(stack.client.put(f'/api/iam/spaces/{space_id}/assignments/'+role['id']+'/'+uid,json={'active':False,'may_delegate':True,'expected_version':assignment['version']}))
-        denied=call(client,grant['token'],'fs_write',{'project':pid,'path':'forbidden.txt','content':'must-not-write','expected_sha256':'new','idempotency_key':uuid.uuid4().hex})
-        assert denied.status_code==403,denied.text
+        for subpath in ('../outside','/absolute','C:\\outside'):
+            response=call(client,token,'projects_create',{**args,'subpath':subpath,'idempotency_key':uuid.uuid4().hex})
+            assert response.json()['result']['isError']
+            assert response.json()['result']['structuredContent']['error']['code']=='INVALID_ARGUMENTS'
+        # Folder creation grants no global inventory mutation or Shell authority.
+        denied=call(client,token,'exec',{'project':created['id'],'command':'touch forbidden-shell',
+            'yield_seconds':0,'idempotency_key':uuid.uuid4().hex})
+        assert denied.json()['result']['isError'] and not (directory/'forbidden-shell').exists()
+        must(stack.client.put(path,json={'policy':{},'active':True,'expected_version':membership['version'],
+            'idempotency_key':uuid.uuid4().hex}))
+        denied=call(client,token,'write',{'project':created['id'],'path':'forbidden.txt','content':'must-not-write',
+            'expected_sha256':'new','idempotency_key':uuid.uuid4().hex})
+        assert denied.json()['result']['isError']
         assert not (directory/'forbidden.txt').exists()
-        assert client.get('/api/projects',headers={'X-CodePier-Space':'unrelated-space'}).status_code in {403,404}
+        identity=data(call(client,token))
+        assert identity['connection']['id']==grant['connection_id'] and identity['projects']==[]
+        assert client.get('/api/projects',headers={'X-CodePier-Space':'unrelated-space'}).status_code==400
+        assert client.get('/api/session').json()['authenticated']

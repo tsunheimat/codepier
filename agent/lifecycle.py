@@ -70,11 +70,19 @@ class LifecycleManager:
     def _service_target(self) -> Path | None:
         if not self.base:
             return None
-        from shared.brand_migration import service_name, service_target, SERVICE_NAMES
         kind, scope = self._service_kind()
-        if kind not in SERVICE_NAMES:
+        expected = {'launchd': LABEL, 'systemd': UNIT, 'schtasks': TASK}.get(kind)
+        if not expected or self._metadata().get('service_name') not in (None, '', expected):
             return None
-        return service_target(self.base, kind, scope, service_name(self.base, kind, scope))
+        if kind == 'launchd':
+            target = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
+        elif kind == 'systemd':
+            folder = Path('/etc/systemd/system') if scope == 'system' else Path.home() / '.config/systemd/user'
+            target = folder / UNIT
+        else:
+            target = self.base / 'service.xml'
+        # Do not resolve an alias to an earlier service or manage its process.
+        return None if target.is_symlink() else target
 
     def _external_python(self) -> Path | None:
         if not self.base:
@@ -160,7 +168,6 @@ class LifecycleManager:
             "layout": "managed-runtime",
             "installed_version": str(metadata.get("installed_version") or VERSION)[:80],
             "product": "CodePier",
-            "brand_migration": str(metadata.get("brand_migration") or ("pending" if self.base.name == ".remote-dev-agent" or metadata.get("service_name") in {"RemoteDevAgent","remote-dev-agent.service","com.liangchanghua.remote-dev-agent"} or target and target.name in {"remote-dev-agent.service","com.liangchanghua.remote-dev-agent.plist"} else "completed")),
             "status": str(metadata.get("status", "ready"))[:40],
             "last_error": str(metadata.get("last_error", ""))[:500],
             "update_ready": bool(service and helper and external_python and uv and handoff),

@@ -37,7 +37,7 @@ main()
     receipts = []
     try:
         for code in ('PARSER_CRASHED', 'PARSER_TIMEOUT'):
-            args = {'project': 'Imago', 'path': filename, 'idempotency_key': uuid.uuid4().hex}
+            args = {'project': s.project['id'], 'path': filename, 'idempotency_key': uuid.uuid4().hex}
             response = s.call('code_symbols', args, raw=True)
             assert response.status_code == 409, response.text
             error = response.json()['error']

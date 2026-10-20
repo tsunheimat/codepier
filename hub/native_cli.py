@@ -26,20 +26,21 @@ class NativeService:
         with closing(database(self.directory)): pass
 
     def project(self,value,principal):
+        from hub.resource_context import project_context
+        principal=project_context(self.runtime.store,principal,value)
         p=self.runtime.project(value,principal)
         p=self.runtime.routing.select(p, 'native', {}, principal)
         self.runtime.authorize(principal,'execute',project_id=p['id'])
         self.runtime.authorize(principal,'write',project_id=p['id'])
         if not p['device_enabled'] or p['mode']!='write' or not p['allow_tasks']:
             raise DevError('CLI_FORBIDDEN','节点须启用，项目须允许写入与执行',403)
-        device=self.runtime.store.one('SELECT owner_user_id FROM devices WHERE id=?',(p['device_id'],))
         return {**p,'_native_owner':'user:'+principal.user_id,'_native_space':principal.space_id,
-                '_native_operator':bool(principal.instance_admin),
-                '_native_allow_legacy':bool(principal.instance_admin or device and device['owner_user_id']==principal.user_id)}
+                '_native_operator':bool(principal.instance_admin)}
 
     def ownership(self,sid,principal,project,*,create=False):
         store=self.runtime.store
-        principal=iam.live_principal(store,principal)
+        from hub.resource_context import project_context
+        principal=project_context(store,principal,project['id'])
         row=store.one('SELECT * FROM native_ownership WHERE id=?',(sid,))
         if row:
             if row['space_id']!=principal.space_id or row['project_id']!=project['id'] or row['device_id']!=project['device_id']:
@@ -48,23 +49,16 @@ class NativeService:
                 raise DevError('CLI_NOT_FOUND','找不到当前身份的私有会话',404)
             return row
         if not create:
-            with closing(database(self.directory)) as db:
-                cached=db.execute('SELECT id,project_id,device_id FROM sessions WHERE id=?',(sid,)).fetchone()
-            if not cached or not project.get('_native_allow_legacy') or cached['project_id']!=project['id'] or cached['device_id']!=project['device_id']:
-                raise DevError('CLI_NOT_FOUND','找不到当前身份的会话',404)
-        # Adopt old cached records for their device owner, never whichever user
-        # happens to access a shared project first.
+            raise DevError('CLI_NOT_FOUND','No verified workspace owner exists for this session',404)
         owner=principal.user_id
-        if not create:
-            device=store.one('SELECT owner_user_id FROM devices WHERE id=?',(project['device_id'],))
-            owner=device['owner_user_id'] if device else None
-            if not owner:raise DevError('CLI_OWNER_UNVERIFIED','旧会话归属需要管理员核实',409)
         store.db.execute('INSERT INTO native_ownership(id,space_id,owner_user_id,project_id,device_id,created) VALUES(?,?,?,?,?,?)',
                          (sid,principal.space_id,owner,project['id'],project['device_id'],time.time()))
         return store.one('SELECT * FROM native_ownership WHERE id=?',(sid,))
 
     def upload_owner(self,fid,principal,project,*,create=False):
         identifier(fid);store=self.runtime.store
+        from hub.resource_context import project_context
+        principal=project_context(store,principal,project['id'])
         row=store.one('SELECT * FROM native_upload_ownership WHERE id=?',(fid,))
         if row:
             if row['space_id']!=principal.space_id or row['project_id']!=project['id'] or row['user_id']!=principal.user_id:
@@ -94,16 +88,12 @@ class NativeService:
             self.runtime.routing.require_protocol(con)
         if not con or not self.runtime.online(project['device_id']):
             raise DevError('CLI_OFFLINE','节点离线；已同步历史可读，控制待重新连接后重试',409)
-        if getattr(con,'native_security_protocol',0)!=1 and not (project.get('_native_operator') and project.get('_native_space')=='legacy'):
+        if getattr(con,'native_security_protocol',0)!=1:
             raise DevError('CLI_AGENT_UPDATE_REQUIRED','多用户原生会话要求升级 Agent 以校验会话/附件归属',409)
         if getattr(con,'native_protocol',0)!=1:
             raise DevError('CLI_AGENT_UPDATE_REQUIRED','此节点 Agent 尚不支持原生会话，请先在节点管理更新 Agent',409)
-        if (action.startswith('chat_') or action=='start' and args.get('mode')=='chat') and getattr(con,'native_chat_protocol',0) not in (1,2,3):
+        if (action.startswith('chat_') or action=='start' and args.get('mode')=='chat') and getattr(con,'native_chat_protocol',0)!=3:
             raise DevError('CLI_CHAT_AGENT_UPDATE_REQUIRED','此节点 Agent 尚不支持结构化对话；请更新该节点 Agent 后重试',409)
-        if action in {'start', 'chat_catalog'} and args.get('cli') == 'claude' and getattr(con, 'native_chat_protocol', 0) < 3:
-            raise DevError('CLI_CHAT_AGENT_UPDATE_REQUIRED', '此节点的 Agent 尚不支持 Claude，请先更新 Agent', 409)
-        if (action in {'chat_catalog','chat_command','chat_queue','chat_cancel','chat_steer'} or action=='start' and args.get('mode')=='chat' and (args.get('model') or args.get('effort'))) and getattr(con,'native_chat_protocol',0)<2:
-            raise DevError('CLI_CHAT_AGENT_UPDATE_REQUIRED','此节点仍是基础聊天版 Agent；模型目录和完整控制需要更新 Agent，旧会话仍保留',409)
         return con
 
     async def request(self, action, project, args, *, reauthenticate=None):
@@ -154,13 +144,23 @@ class NativeService:
             for row in rows:
                 try:
                     sid=identifier(row['id'])
+                    # Validate the current sync shape before persisting ownership.
+                    # Missing mode is not an old terminal record to adopt.
+                    if row.get('mode') not in {'chat','terminal'}:continue
                     p=self.runtime.store.one('SELECT * FROM projects WHERE id=?',(row['project_id'],))
-                    if p and p.get('routing_managed'):
-                        from hub.project_routing import configured_route
-                        selected=configured_route(self.runtime.store,p,'native')
-                        p={**p,'device_id':selected['device']['id'],'root':selected['root']}
-                    if p and p['device_id']!=device: continue
-                    if not p or p['root']!=row['root'] or p['mode']!='write' or not p['allow_tasks']: continue
+                    if not p:
+                        continue
+                    # A sync packet never adopts an owner-less local record.
+                    # The account and workspace must already be explicit.
+                    owner=row.get('_native_owner','')
+                    if not owner.startswith('user:') or row.get('_native_space')!=p['space_id']:
+                        continue
+                    from hub.principal import Principal
+                    source_principal=iam.live_principal(self.runtime.store,Principal(
+                        'native-sync:'+owner,owner[5:],set(),[],space_id=p['space_id']))
+                    p=self.project(p['id'],source_principal)
+                    if p['device_id']!=device or p['root']!=row['root']:
+                        continue
                     if row['device_id']!=device or row['provider'] not in ('pi','codex','claude') or row['status'] not in LIVE|{'exited','interrupted','quota_error','cleared','deleted'}: continue
                     if any(not isinstance(row[k],str) or len(row[k])>2048 for k in ('title','cwd','root','error')): continue
                     prior=db.execute('SELECT * FROM sessions WHERE id=?',(sid,)).fetchone()
@@ -182,19 +182,14 @@ class NativeService:
                     store=self.runtime.store
                     owner=row.get('_native_owner','');space=row.get('_native_space','')
                     bound=store.one('SELECT * FROM native_ownership WHERE id=?',(sid,))
-                    device_row=store.one('SELECT owner_user_id FROM devices WHERE id=?',(device,))
-                    fallback=device_row['owner_user_id'] if device_row else None
                     if bound:
-                        if bound['space_id']!=p['space_id'] or bound['project_id']!=p['id'] or bound['device_id']!=device:continue
-                        if owner and (owner!='user:'+bound['owner_user_id'] or space!=p['space_id']):continue
-                        if not owner and bound['owner_user_id']!=fallback:continue
+                        if (bound['space_id'],bound['project_id'],bound['device_id'],bound['owner_user_id'])!=(p['space_id'],p['id'],device,owner[5:]):
+                            continue
                     else:
-                        uid=owner[5:] if owner.startswith('user:') and space==p['space_id'] else fallback if not owner else None
-                        if not uid or not store.one('SELECT id FROM users WHERE id=?',(uid,)):continue
-                        store.execute('INSERT OR IGNORE INTO native_ownership(id,space_id,owner_user_id,project_id,device_id,created) VALUES(?,?,?,?,?,?)',(sid,p['space_id'],uid,p['id'],device,time.time()))
+                        store.execute('INSERT INTO native_ownership(id,space_id,owner_user_id,project_id,device_id,created) VALUES(?,?,?,?,?,?)',
+                            (sid,p['space_id'],owner[5:],p['id'],device,time.time()))
                     normalized=public(row)
-                    if normalized.get('mode','terminal') not in {'chat','terminal'}: continue
-                    if prior and prior['mode']!=normalized.get('mode','terminal'): continue
+                    if prior and prior['mode']!=normalized['mode']: continue
                     keys=list(normalized)
                     if not prior or any(prior[k]!=normalized[k] for k in keys):
                         changed=True
@@ -202,7 +197,7 @@ class NativeService:
                     if row['status'] in {'cleared','deleted'}:
                         db.execute('DELETE FROM output WHERE session=?',(sid,))
                     offsets[sid]=db.execute('SELECT COALESCE(MAX(offset+length(data)),0) FROM output WHERE session=?',(sid,)).fetchone()[0]
-                except (KeyError,ValueError,TypeError): continue
+                except (KeyError,ValueError,TypeError,DevError): continue
             for chunk in chunks:
                 sid=chunk.get('id')
                 if sid not in offsets: continue

@@ -82,8 +82,7 @@ def test_task_errors_update_cancel_and_other_connection_boundaries(task_stack):
     assert failed['result']['structuredContent']['exit_code']==7
     _,seed=launch(s,'sleep 5; printf should-not-run')
     identifier=seed['taskId']
-    other=s.must(s.client.post('/api/grants',json={'label':'other tasks connection',
-        'scopes':['read','write','execute'],'projects':[s.project['id']],'days':1}))
+    other=s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read','write','execute']}]}))
     for method in ('tasks/get','tasks/cancel','tasks/update'):
         params={'taskId':identifier}
         if method=='tasks/update':params['inputResponses']={'fake':{'result':{'approve':True}}}
@@ -95,7 +94,7 @@ def test_task_errors_update_cancel_and_other_connection_boundaries(task_stack):
     assert poll(s,identifier)['status'] in {'cancelled','completed'}
     for method in ('tasks/list','tasks/result'):
         assert modern(s,method).json()['error']['code']==-32601
-    s.client.delete('/api/grants/'+other['grant_id'])
+    s.client.post(f'/api/spaces/{s.space_id}/connections/' + other['connection_id'] + '/revoke')
 
 
 def test_legacy_calls_never_materialize_standard_tasks(task_stack):

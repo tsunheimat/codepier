@@ -1,6 +1,8 @@
 """Agent lifecycle fault injection, using only temporary directories/children."""
 from __future__ import annotations
 
+from shared.tool_protocol import advertisement, catalog_digest
+
 import asyncio
 import copy
 import json
@@ -38,7 +40,7 @@ def local_agent(tmp_path):
 
 
 def request(root, id="operation"):
-    return {"id": id, "tool": "fs_write", "project": {"root": str(root), "alias": "fixture", "mode": "write"},
+    return {"id": id, "tool_contract_version": 1, "tool": "fs_write", "project": {"root": str(root), "alias": "fixture", "mode": "write"},
             "args": {"project": "fixture", "path": "created.txt", "content": "once", "expected_sha256": "new",
                      "idempotency_key": "audit-operation"}}
 
@@ -282,7 +284,7 @@ async def test_config_change_during_handshake_cannot_publish_stale_connection(lo
             if self.receives == 1:
                 return json.dumps({"type": "challenge", "challenge": challenge})
             agent.config = {**agent.config, "hub_url": "http://127.0.0.1:10"}
-            return hub_channel.pack({"type": "ready"})
+            return hub_channel.pack({"type": "ready", **advertisement(catalog_digest())})
 
         def __aiter__(self):
             raise AssertionError("stale connection entered reader")
@@ -342,7 +344,7 @@ async def test_overlapping_projects_cannot_run_tasks_and_file_changes_together(l
         return {}
 
     agent.execute = execute
-    parent_request = {"id": "parent", "tool": "tasks_run", "project": {"root": str(root), "alias": "fixture", "mode": "write"},
+    parent_request = {"id": "parent", "tool_contract_version": 1, "tool": "tasks_run", "project": {"root": str(root), "alias": "fixture", "mode": "write"},
                       "args": {"project": "fixture", "task": "test", "idempotency_key": "audit-parent"}}
     parent_job = asyncio.create_task(agent.handle(parent_request))
     await parent_entered.wait()

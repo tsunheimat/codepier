@@ -16,9 +16,7 @@ from playwright.sync_api import expect
 from shared.util import atomic_json
 from tests.support import running_stack
 from tests.test_mcp_gateway import gw as gw, connector, account, publish
-from tests.test_iam_integration import team as team, assign
-from tests.test_roles import role, must
-from tests.test_resource_access import connection
+from tests.identity_fixtures import team, set_member, make_profile, make_connection, project_policy  # noqa: F401
 from tests.test_conversations import rpc, value
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,7 +58,7 @@ def test_ten_sessions_real_execution_refresh_drilldown_and_bookmarks(audit_stack
         assert len({sid for _, sid in receipts}) == 10
         # A read without correlation remains ordinary usable tool traffic.
         assert not stack.mcp('project_query', {'operation': 'list'}).get('isError')
-        page.goto(stack.url + '/#conversations')
+        page.goto(stack.url + '/#audit/sessions')
         page.fill('#username', 'admin'); page.fill('#password', stack.password)
         page.click('#login-form button')
         expect(page.locator('#audit-sessions')).to_be_visible()
@@ -137,10 +135,10 @@ def test_ten_sessions_real_execution_refresh_drilldown_and_bookmarks(audit_stack
 def test_owner_private_session_and_gateway_ui(gw, chat_browser_pool, who, engine, width):
     app, browsers, backend = gw
     binding = publish(browsers, account(browsers, connector(browsers)))
-    r = role(browsers['owner'], label='reader', project_rules=[{'actions': ['read'], 'projects': ['project-team']}],
-             connector_rules=[{'binding_id': binding['id'], 'tools': ['run']}])
-    assign(browsers['owner'], r, 'alice')
-    g = must(connection(browsers['alice'], r, 'role', confirm_external_mcp=True), 201)
+    policy={**project_policy('read'),'connector_rules':[{'binding_id':binding['id'],'tools':['run']}]}
+    set_member(browsers['owner'],'alice',policy)
+    profile=make_profile(browsers['owner'],policy)
+    g=make_connection(browsers['alice'],profile,live=True,external=True)
     value(rpc(browsers['alice'], g['token'], metadata={'openai/session': 'alice-private-session'}))
     backend.result_override = {'content': [{'type': 'text', 'text': 'job accepted'}], 'structuredContent': {'job_id': 'private-job', 'state': 'running'}}
     remote = rpc(browsers['alice'], g['token'], 'kiln__run', {}, {'openai/session': 'alice-private-session'})

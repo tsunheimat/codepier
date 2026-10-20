@@ -21,8 +21,8 @@ def test_browser_diagnostics_search_symbols_and_download(stack,tmp_path):
             page.screenshot(path=str(directory/'diagnostics-desktop.png'),full_page=True)
             page.click('[data-nav="resources"]')
             project = page.locator('.workspace-project-row').filter(has_text='Imago')
-            project.locator('[data-resource-detail]').click()
-            page.locator('[data-project-artifacts]').click()
+            project.locator('[data-project-detail]').click()
+            page.locator('[data-ws-project-artifacts]').click()
             expect(page.locator('#page h1')).to_have_text('产物交付')
             imago = next(p for p in stack.projects if p['alias'] == 'Imago')
             expect(page.locator('#artifact-project')).to_have_value(imago['id'])
@@ -58,7 +58,7 @@ def test_browser_diagnostics_search_symbols_and_download(stack,tmp_path):
             page.screenshot(path=str(directory/'search-mobile.png'),full_page=True)
             page.locator('.modal [data-action="close-modal"]').first.click()
             page.set_viewport_size({'width':1440,'height':1000})
-            operations=stack.call('operations_list',{'project':'Imago','tool':'code_symbols'})['operations']
+            operations=stack.call('operations_list',{'project':stack.project['id'],'tool':'code_symbols'})['operations']
             identifier=operations[0]['id']
             page.click('[data-nav="diagnostics"]');page.fill('#trace-form input',identifier);page.click('#trace-form button')
             expect(page.locator('#modal-title')).to_contain_text('执行链路')

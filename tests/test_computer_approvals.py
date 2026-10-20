@@ -94,15 +94,21 @@ async def test_appserver_timeout_does_not_retry(tmp_path):
 @pytest.mark.asyncio
 async def test_hub_codepier_live_operation_and_panel_only_routes(tmp_path):
     from hub.store import Store
-    from hub.runtime import Runtime, Principal
-    from shared.crypto import password_hash
+    from hub.runtime import Runtime
+    from tests.current_model import CurrentModel
     import uuid
     store=Store(tmp_path/'hub');rt=Runtime(store)
-    store.execute('INSERT INTO users VALUES (?,?,?,?)',('u','admin',password_hash('fixture-password-123'),time.time()))
-    space_id=store.one("SELECT personal_space_id FROM iam_users WHERE user_id='u'")['personal_space_id']
-    store.execute('INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)',('d','Device',store.encrypt('s'),time.time(),space_id,'u'))
-    store.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?)',('p','Test','test','d','/fixture',time.time(),space_id,'u'))
-    request={'project':{'id':'p','alias':'Test','root':'/fixture'}}
+    model=CurrentModel(store);model.user('u',username='admin')
+    space_id=model.workspace('approval-workspace',owner='u')
+    model.device('d',owner='u',name='Device',secret='s');model.bind_device(space_id,'d')
+    root=tmp_path/'source';root.mkdir()
+    folder=model.folder('approval-folder',space=space_id,device='d',path=root)
+    model.project('p',space=space_id,folder=folder,owner='u',alias='Test')
+    principal=model.panel('u',space_id)
+    # The synthetic in-flight request must carry the current authenticated
+    # context; absence must remain a denial in the production approval gate.
+    request={'project':rt.project('p',principal),'args':{'session_id':'a'*32},
+        'principal_context':{'user_id':'u','space_id':space_id,'user_epoch':principal.user_epoch}}
     store.execute('INSERT INTO operations(id,device_id,project_id,actor,tool,args_summary,fingerprint,state,created,updated,payload,owner_user_id,space_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',('op','d','p','panel:admin','computer_observe','{}','f','running',time.time(),time.time(),store.encrypt(json.dumps(request)),'u',space_id))
     sent=[]
     async def send(data):sent.append(data)
@@ -113,7 +119,6 @@ async def test_hub_codepier_live_operation_and_panel_only_routes(tmp_path):
     inbox=rt.computer_approvals
     inbox.receive('d',connection,{**data,'owner':'grant:other'});assert not inbox.list()
     inbox.receive('d',connection,data);assert len(inbox.list())==1
-    principal=Principal('panel:admin','u',{'computer'},['*'],admin=True,space_id=space_id)
     await inbox.decide(key,'decline',principal)
     assert sent[0]['action']=='decline' and not inbox.list()
     with pytest.raises(DevError):await inbox.decide(key,'accept',principal)

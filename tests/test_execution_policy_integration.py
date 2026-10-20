@@ -48,11 +48,11 @@ def test_mcp_denial_and_panel_exemption_through_real_authenticated_transport(sta
     assert stack.poll(normal_task['operation_id'])['state'] == 'succeeded'
 
     # Cookie+CSRF-authenticated owner invocation is still allowed, using only our stub.
-    admin_receipt = stack.call('shell_exec', {**args, 'idempotency_key':uuid.uuid4().hex})
+    admin_receipt = stack.call('shell_exec', {**args,'project':stack.project['id'], 'idempotency_key':uuid.uuid4().hex})
     admin_result = stack.poll(admin_receipt['operation_id'])
     assert admin_result['state'] == 'succeeded' and admin_result['output'] == 'fake-only'
     assert (stack.imago/'stub-count').read_text() == 'once'
-    admin_info = stack.call('execution_info', {'project':'Imago'})['execution_policy']
+    admin_info = stack.call('execution_info', {'project':stack.project['id']})['execution_policy']
     assert admin_info['local_block_codex'] and not admin_info['effective_block_codex']
 
     # Bearer credentials cannot be substituted for the native panel's login cookie.

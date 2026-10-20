@@ -8,6 +8,7 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -20,7 +21,8 @@ import hub.api.accounts as accounts_module
 import hub.auth as auth_module
 from hub.app import BodyLimit, create_app
 from hub.auth import Auth
-from hub.runtime import Principal, Runtime
+from hub import iam
+from hub.permissions import owner_policy
 from hub.store import Store
 from shared.crypto import digest, password_hash
 from shared.instance_lock import InstanceLock
@@ -33,21 +35,36 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PUBLIC_URL", "")
     app = create_app(str(tmp_path / "hub"))
     store = app.state.store
-    from tests.legacy_iam_fixture import seed_owner
-    seed_owner(store, 'owner', 'admin')
-    store.execute('UPDATE users SET password_hash=? WHERE id=?', (password_hash('original-password'), 'owner'))
-    store.execute("INSERT INTO sessions VALUES (?,?,?,?)", (digest("session"), "owner", "csrf", time.time() + 3600))
-    from tests.legacy_iam_fixture import attach_session_security
-    attach_session_security(store)
-    store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?)", ("device", "fixture", store.encrypt("x" * 43), time.time(), 'legacy', 'owner'))
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,description,mode,allow_tasks,created,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)", ("project", "fixture", "fixture", "device", "/tmp/fixture", "", "write", 0, time.time(), 'legacy', 'owner'))
-    principal = Principal("panel:admin", "owner", {"read", "write"}, ["*"], admin=True, space_id='legacy')
-    pat = app.state.auth.issue_grant(principal, "fixture", ["read"], ["project"])["token"]
+    root=tmp_path/'source'; root.mkdir()
+    now=time.time()
+    with store.transaction():
+        store.db.execute('INSERT INTO users VALUES(?,?,?,?)',('owner','admin',password_hash('original-password'),now))
+        iam.create_personal_space(store,'owner','Account workspace')
+        store.db.execute('INSERT INTO spaces(id,label,owner_user_id,created) VALUES(?,?,?,?)',
+            ('audit-space','Audit fixture','owner',now))
+        store.db.execute('INSERT INTO memberships(space_id,user_id,policy) VALUES(?,?,?)',
+            ('audit-space','owner',owner_policy().model_dump_json()))
+        store.db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(digest('session'),'owner','csrf',now+3600))
+        store.db.execute('INSERT INTO session_security(session_hash,epoch,authenticated_at) VALUES(?,?,?)',
+            (digest('session'),1,now))
+        store.db.execute('INSERT INTO devices(id,name,secret,created,owner_user_id) VALUES(?,?,?,?,?)',
+            ('device','fixture',store.encrypt('x'*43),now,'owner'))
+        store.db.execute("INSERT INTO space_devices(space_id,device_id) VALUES('audit-space','device')")
+        store.db.execute('''INSERT INTO space_folders(id,space_id,name,source_kind,device_id,device_path,mode)
+            VALUES('audit-folder','audit-space','Source','device','device',?,'write')''',(str(root),))
+        store.db.execute('''INSERT INTO projects(id,alias,alias_key,folder_id,subpath,description,created,space_id,owner_user_id)
+            VALUES('project','fixture','fixture','audit-folder','.','',?,'audit-space','owner')''',(now,))
     with TestClient(app) as client:
-        client.cookies.set("rd_session", "session")
-        client.headers["X-RD-CSRF"] = "csrf"
-        client.headers['X-CodePier-Space'] = 'legacy'
-        yield app, client, pat
+        client.cookies.set('rd_session','session')
+        client.headers['X-RD-CSRF']='csrf'
+        profile=client.post('/api/spaces/audit-space/profiles',json={'label':'Audit access',
+            'policy':{'project_rules':[{'projects':['project'],'actions':['read']}]},'idempotency_key':uuid.uuid4().hex})
+        assert profile.status_code==200,profile.text
+        created=client.post('/api/spaces/audit-space/connections',json={'name':'Audit connection',
+            'profile_id':profile.json()['id'],'profile_version':profile.json()['version'],
+            'consent_mode':'fixed','idempotency_key':uuid.uuid4().hex})
+        assert created.status_code==201,created.text
+        yield app,client,created.json()['token']
 
 
 def rpc(client, pat, payload):
@@ -63,7 +80,14 @@ def oauth_tokens(client):
     params = {"response_type": "code", "client_id": registration["client_id"], "redirect_uri": "http://localhost:12345/callback", "code_challenge_method": "S256", "code_challenge": challenge, "resource": "http://testserver/mcp"}
     response = client.get("/oauth/authorize", params=params, follow_redirects=False)
     request_id = parse_qs(urlsplit(response.headers["location"]).query)["authorize"][0]
-    decision = client.post(f"/api/oauth/requests/{request_id}/decide", json={"allow": True, "scopes": ["read"], "projects": ["project"]})
+    details=client.get('/api/oauth/requests/'+request_id).json()
+    selected=client.post('/api/oauth/requests/'+request_id+'/select-space',json={
+        'space_id':'audit-space','selection_version':details['selection_version']})
+    assert selected.status_code==200,selected.text
+    profile=next(p for p in selected.json()['profiles'] if p['label']=='Audit access')
+    decision = client.post(f"/api/oauth/requests/{request_id}/decide", json={
+        'allow':True,'space_id':'audit-space','profile_id':profile['id'],'profile_version':profile['version'],
+        'selection_version':selected.json()['selection_version']})
     assert decision.status_code == 200, decision.text
     code = parse_qs(urlsplit(decision.json()["redirect"]).query)["code"][0]
     tokens = client.post("/oauth/token", data={"grant_type": "authorization_code", "code": code, "client_id": registration["client_id"], "redirect_uri": params["redirect_uri"], "code_verifier": verifier})
@@ -182,6 +206,7 @@ def test_login_cannot_issue_session_after_password_reset(tmp_path, monkeypatch):
     try:
         auth = Auth(store)
         store.execute("INSERT INTO users VALUES (?,?,?,?)", ("owner", "admin", "old-hash", time.time()))
+        with store.transaction(): iam.create_personal_space(store,'owner','Password-race fixture')
         started, release = threading.Event(), threading.Event()
         def verify(password, encoded):
             started.set()
@@ -356,7 +381,7 @@ def test_sse_start_send_failure_releases_watcher(api):
         lambda: 'http://testserver', app_module.BASE)
     endpoint = next(route.endpoint for route in make_activity_router(context).routes if route.path == '/api/events')
     async def scenario():
-        scope = {"type": "http", "method": "GET", "scheme": "http", "server": ("testserver", 80), "path": "/api/events", "headers": [(b"cookie", b"rd_session=session")], "asgi": {"spec_version": "2.4"}}
+        scope = {"type": "http", "method": "GET", "scheme": "http", "server": ("testserver", 80), "path": "/api/events", "query_string": b'access_events=2', "headers": [(b"cookie", b"rd_session=session")], "asgi": {"spec_version": "2.4"}}
         response = await endpoint(Request(scope))
         assert len(app.state.runtime.watchers) == 1
         async def send(message):
@@ -381,7 +406,7 @@ def test_sse_session_revocation_while_waiting_drops_next_event(api):
         lambda: 'http://testserver', app_module.BASE)
     endpoint = next(route.endpoint for route in make_activity_router(context).routes if route.path == '/api/events')
     async def scenario():
-        scope = {"type": "http", "method": "GET", "scheme": "http", "server": ("testserver", 80), "path": "/api/events", "headers": [(b"cookie", b"rd_session=session")]}
+        scope = {"type": "http", "method": "GET", "scheme": "http", "server": ("testserver", 80), "path": "/api/events", "query_string": b'access_events=2', "headers": [(b"cookie", b"rd_session=session")]}
         async def receive():
             await asyncio.Event().wait()
         response = await endpoint(Request(scope, receive))
@@ -391,7 +416,7 @@ def test_sse_session_revocation_while_waiting_drops_next_event(api):
         await asyncio.sleep(.01)
         app.state.store.execute("DELETE FROM sessions")
         app.state.runtime.publish("sensitive", {"value": "must not send"})
-        assert await waiting == "event: access_revoked\ndata: {}\n\n"
+        assert await waiting == "event: session_revoked\ndata: {}\n\n"
         with pytest.raises(StopAsyncIteration):
             await anext(iterator)
         assert not app.state.runtime.watchers

@@ -1,6 +1,5 @@
 """Long command waits are bounded reads; receipts survive absent/cancelled readers."""
 import asyncio
-from dataclasses import replace
 import time
 
 import jsonschema
@@ -9,6 +8,7 @@ import pytest
 from shared.contracts import OUTPUT_SCHEMAS, TOOLS
 from shared.util import DevError
 from tests.test_reliability import runtime
+from tests.current_model import CurrentModel
 
 
 async def submit(r, p):
@@ -168,18 +168,20 @@ async def test_shutdown_wakes_readers_without_cancelling_command(runtime):
 @pytest.mark.asyncio
 async def test_wait_rechecks_receipt_authorization_before_exposing_result(runtime):
     r, admin = runtime
-    from tests.legacy_iam_fixture import seed_grant
-    seed_grant(r.store, 'reader-grant', admin.user_id, projects=('proj',))
-    p = replace(admin, admin=False, actor='mcp:reader-grant:fixture', grant_id='reader-grant')
+    model=CurrentModel(r.store)
+    profile=model.profile(space=admin.space_id,creator=admin.user_id,policy={
+        'project_rules':[{'projects':['proj'],'actions':['read','write','execute']}]})
+    _,p=model.connection(user=admin.user_id,space=admin.space_id,profile=profile)
+    _,other=model.connection(user=admin.user_id,space=admin.space_id,profile=profile)
     identifier = (await submit(r, p))['operation_id']
     reader = asyncio.create_task(r.invoke('operations_wait', {'operation_id': identifier}, p))
     try:
         await registered(r, identifier, 1)
-        r.store.execute("UPDATE operations SET grant_id='different-grant' WHERE id=?", (identifier,))
+        r.store.execute('UPDATE operations SET grant_id=? WHERE id=?',(other.grant_id,identifier))
         finish(r, identifier, output='private result')
         with pytest.raises(DevError) as denied:
             await asyncio.wait_for(reader, 1)
-        assert denied.value.code == 'OPERATION_NOT_FOUND'
+        assert denied.value.code == 'NOT_FOUND'
         assert not r.operation_waiters
         with pytest.raises(DevError):
             await r.invoke('operations_wait', {'operation_id': identifier}, p)

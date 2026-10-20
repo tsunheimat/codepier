@@ -1,220 +1,178 @@
-"""Real HTTP/database multi-user authorization. All records are disposable."""
+"""Direct-member workspace identity acceptance; no Role/default-space semantics."""
 from __future__ import annotations
+
 import json
+import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
 
 import pytest
-from fastapi.testclient import TestClient
-from fastapi import Request
-from hub.app import create_app
-from hub import iam
-from shared.crypto import password_hash
-from shared.util import DevError
-from tests.test_roles import role, profile, credential, must, update_role
-from tests.test_access_profiles import call, data
+
+from tests.identity_fixtures import (team, Browser, must, call, data, set_member,
+    make_profile, make_connection, update_profile, project_policy)  # noqa: F401
 
 
-@dataclass
-class Browser:
-    client: TestClient
-    cookie: str
-    csrf: str
-    space: str
-
-    def request(self, method, path, **kwargs):
-        headers={'Cookie':'rd_session='+self.cookie,'X-RD-CSRF':self.csrf,'X-CodePier-Space':self.space}
-        headers.update(kwargs.pop('headers',{}))
-        return self.client.request(method,path,headers=headers,**kwargs)
-
-    def get(self,path,**kwargs):return self.request('GET',path,**kwargs)
-    def post(self,path,**kwargs):return self.request('POST',path,**kwargs)
-    def put(self,path,**kwargs):return self.request('PUT',path,**kwargs)
-    def patch(self,path,**kwargs):return self.request('PATCH',path,**kwargs)
-    def delete(self,path,**kwargs):return self.request('DELETE',path,**kwargs)
+def test_account_session_has_no_ambient_workspace_or_instance_escalation(team):
+    app, b = team
+    me = must(b['alice'].get('/api/iam/me'))
+    assert not me['instance_admin']
+    assert 'team' in {s['id'] for s in me['spaces']} and 'other-team' not in {s['id'] for s in me['spaces']}
+    assert not {'space_id','current_space_id','active_space_id'} & me.keys()
+    assert b['alice'].get('/api/iam/users').status_code == 403
+    assert b['alice'].get('/api/spaces/other-team').status_code == 403
+    assert 'project-other-team' not in b['alice'].get('/api/projects').text
+    assert 'space_id' not in {r['name'] for r in app.state.store.all('PRAGMA table_info(sessions)')}
 
 
-@pytest.fixture
-def team(tmp_path,monkeypatch):
-    monkeypatch.setenv('HUB_PUBLIC_URL','http://testserver')
-    monkeypatch.setenv('MCP_PUBLIC_URL','')
-    app=create_app(str(tmp_path/'hub'))
-    store=app.state.store
-    hashed=password_hash('fixture-password-only')
-    sessions={}
-    with store.transaction():
-        for uid in ('owner','alice','bob'):
-            store.db.execute('INSERT INTO users VALUES(?,?,?,?)',(uid,uid,hashed,time.time()))
-            iam.create_personal_space(store,uid,uid+' personal')
-            sessions[uid]=app.state.auth.new_session(uid)
-        store.db.execute("INSERT INTO spaces(id,label,kind,created) VALUES('team','Development','team',?)",(time.time(),))
-        for uid in sessions:
-            store.db.execute('INSERT INTO memberships(space_id,user_id,level) VALUES(?,?,?)',('team',uid,'owner' if uid=='owner' else 'member'))
-        # This fixture intentionally exercises a populated historical Space.
-        store.db.execute("INSERT INTO spaces(id,label,kind,created) VALUES('legacy','Historical fixture','legacy',?)",(time.time(),))
-        store.db.execute("INSERT INTO memberships(space_id,user_id,level) VALUES('legacy','owner','owner')")
-        for sid,uid in [('team','owner'),('legacy','owner')]:
-            device='device-'+sid
-            store.db.execute('INSERT INTO devices(id,name,secret,space_id,owner_user_id,created) VALUES(?,?,?,?,?,?)',(device,device,store.encrypt('x'*43),sid,uid,time.time()))
-            store.db.execute('INSERT INTO projects(id,alias,alias_key,device_id,root,mode,allow_tasks,space_id,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?,?,?)',('project-'+sid,'same-alias','same-alias',device,str(tmp_path/sid),'write',1,sid,uid,time.time()))
-    with TestClient(app,raise_server_exceptions=True) as client:
-        browsers={uid:Browser(client,info['cookie'],info['csrf'],'team') for uid,info in sessions.items()}
-        browsers['legacy']=Browser(client,sessions['owner']['cookie'],sessions['owner']['csrf'],'legacy')
-        yield app,browsers
+@pytest.mark.parametrize('live', [False, True])
+def test_connection_identity_survives_profile_edits_without_widening_fixed_consent(team, live):
+    _, b = team
+    full = project_policy('read','write','execute')
+    set_member(b['owner'], 'alice', full)
+    p = make_profile(b['owner'], project_policy('read'))
+    c = make_connection(b['alice'], p, live=live)
+    before = data(call(b['alice'], c['token']))
+    assert before['connection']['id'] == c['connection_id'] and before['profile']['id'] == p['id']
+    update_profile(b['owner'], p, full)
+    after = data(call(b['alice'], c['token']))
+    assert after['connection'] == before['connection'] and after['profile']['id'] == p['id']
+    assert ('execute' in after['scopes']) is live
+    assert {v['id'] for v in after['projects']} == {'project-team'}
+    # Neither client hints nor an unrelated panel cookie can change the binding.
+    hinted = data(call(b['bob'], c['token'], endpoint='/mcp?space_id=other-team&profile_id=arbitrary'))
+    assert hinted == after and 'space_id' not in hinted
 
 
-def assign(owner,r,uid,delegate=True):
-    return must(owner.put('/api/iam/spaces/team/assignments/'+r['id']+'/'+uid,json={'active':True,'may_delegate':delegate,'expected_version':0}))
+def test_shared_profiles_do_not_share_connections_and_resource_rights_intersect(team):
+    app, b = team
+    set_member(b['owner'], 'alice', project_policy('read','write','execute'))
+    set_member(b['owner'], 'bob', project_policy('read'))
+    p = make_profile(b['owner'], project_policy('read','write','execute'))
+    a, other = make_connection(b['alice'], p), make_connection(b['bob'], p)
+    assert a['connection_id'] != other['connection_id'] != p['id']
+    assert 'execute' in data(call(b['alice'], a['token']))['scopes']
+    assert 'execute' not in data(call(b['bob'], other['token']))['scopes']
+    for user, own, hidden in [('alice',a,other),('bob',other,a)]:
+        listing = must(b[user].get('/api/spaces/team/connections'))['connections']
+        assert own['connection_id'] in {c['id'] for c in listing}
+        assert hidden['connection_id'] not in {c['id'] for c in listing}
+        denied = b[user].post('/api/spaces/team/connections/'+hidden['connection_id']+'/revoke')
+        assert denied.status_code == 403 and denied.json()['error']['code'] == 'WORKSPACE_ADMIN_REQUIRED'
+        assert app.state.store.one('SELECT revoked FROM grants WHERE id=?',(hidden['connection_id'],))['revoked'] == 0
+    assert data(call(b['bob'], a['token']))['connection']['id'] == a['connection_id']
 
 
-def shared_role(app,browsers,actions=None):
-    r=role(browsers['owner'],project_rules=[{'actions':actions or ['read'],'all_projects':True}],label='secretary')
-    for uid in ('alice','bob'):assign(browsers['owner'],r,uid)
-    return r
+def test_membership_changes_apply_to_existing_connections_and_never_restore_revoked_tokens(team):
+    app,b = team
+    full = project_policy('read','write','execute')
+    set_member(b['owner'],'alice',full)
+    p = make_profile(b['owner'],full)
+    c = make_connection(b['alice'],p,live=True)
+    set_member(b['owner'],'alice',project_policy('read'))
+    assert 'execute' not in data(call(b['alice'],c['token']))['scopes']
+    must(b['owner'].put('/api/spaces/team/members/alice/suspension',json={'blocked':True}))
+    assert call(b['alice'],c['token']).status_code == 403
+    must(b['owner'].put('/api/spaces/team/members/alice/suspension',json={'blocked':False}))
+    assert data(call(b['alice'],c['token']))['connection']['id'] == c['connection_id']
+    must(b['alice'].post('/api/spaces/team/connections/'+c['connection_id']+'/revoke'))
+    set_member(b['owner'],'alice',full)
+    assert call(b['alice'],c['token']).status_code == 401
+    assert app.state.store.one('SELECT revoked FROM grants WHERE id=?',(c['connection_id'],))['revoked'] == 1
 
 
-def test_new_user_is_not_instance_admin_or_legacy_space_member(team):
+def test_profile_is_shared_in_workspace_but_not_global_and_cannot_be_rebound(team):
+    app,b = team
+    p = make_profile(b['owner'],project_policy('read'))
+    assert p['id'] in {r['id'] for r in must(b['bob'].get('/api/spaces/team/profiles'))['profiles']}
+    assert b['owner'].get('/api/spaces/other-team/profiles/'+p['id']).status_code == 404
+    with pytest.raises(sqlite3.IntegrityError):
+        app.state.store.execute("UPDATE access_profiles SET space_id='other-team' WHERE id=?",(p['id'],))
+    c = make_connection(b['owner'],p)
+    with pytest.raises(sqlite3.IntegrityError):
+        app.state.store.execute("UPDATE grants SET space_id='other-team' WHERE id=?",(c['connection_id'],))
+    assert app.state.store.all('PRAGMA foreign_key_check') == []
+
+
+def test_source_and_alias_resolution_cannot_escape_connection_workspace(team):
+    _,b = team
+    set_member(b['owner'],'alice',project_policy('read','execute'))
+    p = make_profile(b['owner'],project_policy('read','execute'))
+    c = make_connection(b['alice'],p)
+    listing = data(call(b['alice'],c['token'],'project_query',{'operation':'list'}))
+    assert 'project-team' in json.dumps(listing) and 'project-other-team' not in json.dumps(listing)
+    reply = call(b['alice'],c['token'],'project_query',{'operation':'status','project':'project-other-team'})
+    assert reply.json()['result']['isError'] and 'project-other-team' not in json.dumps(reply.json()['result'].get('structuredContent',{}).get('project',{}))
+
+
+def test_profile_and_member_managers_cannot_delegate_beyond_direct_rights(team):
+    _,b=team
+    limited = project_policy('read',manage=('members','profiles'))
+    set_member(b['owner'],'alice',limited)
+    for policy in [project_policy('read','execute'), {'project_rules':[{'all_projects':True,'actions':['read']}]},
+                   project_policy('read',manage=('workspace',))]:
+        profile = b['alice'].post('/api/spaces/team/profiles',json={
+            'label':'Cannot escalate','policy':policy,'idempotency_key':uuid.uuid4().hex})
+        assert profile.status_code in {400,403}, profile.text
+        member = b['alice'].put('/api/spaces/team/members/bob',json={
+            'policy':policy,'expected_version':1,'idempotency_key':uuid.uuid4().hex})
+        assert member.status_code == 403, member.text
+    assert b['alice'].put('/api/spaces/team/members/owner/suspension',json={'blocked':True}).status_code == 403
+    p = make_profile(b['alice'],project_policy('read'))
+    assert p['policy']['project_rules'][0]['actions'] == ['read']
+
+
+def test_last_workspace_manager_and_last_instance_recovery_admin_are_protected(team):
     app,b=team
-    me=must(b['alice'].get('/api/iam/me'))
-    assert not me['instance_admin'] and {s['id'] for s in me['spaces']}=={'team',next(s['id'] for s in me['spaces'] if s['kind']=='personal')}
-    assert b['alice'].get('/api/iam/users').status_code==403
-    assert b['alice'].get('/api/projects',headers={'X-CodePier-Space':'legacy'}).status_code==403
-    assert 'project-legacy' not in b['alice'].get('/api/projects').text
+    response = b['owner'].put('/api/spaces/team/members/owner',json={
+        'policy':project_policy('read'),'expected_version':1,'idempotency_key':uuid.uuid4().hex})
+    assert response.status_code == 409 and response.json()['error']['code'] == 'LAST_WORKSPACE_ADMIN'
+    response = b['owner'].put('/api/spaces/team/members/owner/suspension',json={'blocked':True})
+    assert response.status_code == 409
+    row = app.state.store.one("SELECT version FROM iam_users WHERE user_id='owner'")
+    response = b['owner'].put('/api/iam/users/owner',json={'active':False,'instance_admin':False,'expected_version':row['version']})
+    assert response.status_code == 409 and response.json()['error']['code'] == 'LAST_ADMIN'
 
 
-def test_shared_role_expands_projects_and_capabilities_on_same_mcp_token(team):
-    app,b=team;r=shared_role(app,b)
-    p=profile(b['alice'],r,'Alice secretary');grant=must(credential(b['alice'],r,p));token=grant['token']
-    ctx=data(call(b['alice'],token,'get_access_context'))
-    assert {x['id'] for x in ctx['projects']}=={'project-team'}
-    store=app.state.store
-    store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,space_id,owner_user_id,created) VALUES('new-project','new','new','device-team','/tmp/new','team','owner',?)",(time.time(),))
-    r=must(update_role(b['owner'],r,project_rules=[{'actions':['read','write','execute'],'all_projects':True}]))
-    ctx=data(call(b['alice'],token,'get_access_context'))
-    assert {x['id'] for x in ctx['projects']}=={'project-team','new-project'}
-    assert all('execute' in x['actions'] for x in ctx['project_permissions'])
-    assert data(call(b['alice'],token,'get_profile'))['id']==p['id']
-    assert app.state.store.one('SELECT id FROM grants WHERE id=?',(grant['grant_id'],))
-    # Client hints cannot retarget the fixed Space binding.
-    out=call(b['alice'],token,'get_access_context',endpoint='/mcp?space_id=legacy')
-    assert {x['id'] for x in data(out)['projects']}=={'project-team','new-project'}
+def test_workspace_suspend_and_restore_is_explicit_and_does_not_change_login(team):
+    _,b=team
+    saved=must(b['owner'].put('/api/spaces/team',json={'label':'Paused','active':False,'expected_version':1,'idempotency_key':uuid.uuid4().hex}))
+    assert b['owner'].get('/api/spaces/team').status_code == 404
+    assert any(s['id']=='team' for s in must(b['owner'].get('/api/iam/me'))['disabled_spaces'])
+    body={'label':'Restored','active':True,'expected_version':saved['version'],'idempotency_key':uuid.uuid4().hex}
+    assert b['alice'].post('/api/spaces/team/restore',json=body).status_code == 404
+    must(b['owner'].post('/api/spaces/team/restore',json=body))
+    assert b['owner'].get('/api/spaces/team').status_code == 200
+    assert b['owner'].get('/api/spaces/other-team').status_code == 200
 
 
-def test_role_use_assignment_does_not_imply_permission_to_delegate(team):
+def test_invitation_is_bounded_single_use_and_rechecks_creator_rights(team):
+    _,b=team
+    invite=must(b['owner'].post('/api/spaces/team/invites',json={'policy':project_policy('read')}))
+    accepted=must(b['bob'].post('/api/iam/invites/accept',json={'invitation':invite['invitation']}))
+    assert accepted == {'space_id':'team'}
+    assert b['alice'].post('/api/iam/invites/accept',json={'invitation':invite['invitation']}).status_code == 400
+    set_member(b['owner'],'alice',project_policy('read',manage=('members',)))
+    pending=must(b['alice'].post('/api/spaces/team/invites',json={'policy':project_policy('read')}))
+    set_member(b['owner'],'alice',project_policy('read'))
+    assert b['bob'].post('/api/iam/invites/accept',json={'invitation':pending['invitation']}).status_code == 403
+
+
+def test_account_revocation_destroys_sessions_and_revokes_existing_connections(team):
     app,b=team
-    r=role(b['owner'],project_rules=[{'actions':['read'],'all_projects':True}])
-    assign(b['owner'],r,'alice',False)
-    assert len(must(b['alice'].get('/api/projects'))['projects'])==1
-    response=b['alice'].post('/api/access-profiles',json={'label':'escalation','role_id':r['id'],'idempotency_key':uuid.uuid4().hex})
-    assert response.status_code==403
-    assert b['alice'].post('/api/access-roles',json={'label':'admin','project_rules':[{'actions':['read','execute'],'all_projects':True}],'idempotency_key':uuid.uuid4().hex}).status_code==403
-
-
-def test_shared_role_keeps_other_users_profiles_and_grants_private(team):
-    app,b=team;r=shared_role(app,b)
-    pa=profile(b['alice'],r,'SECRET_ALICE_PROFILE');ga=must(credential(b['alice'],r,pa))
-    pb=profile(b['bob'],r,'Bob');gb=must(credential(b['bob'],r,pb))
-    assert 'SECRET_ALICE_PROFILE' not in b['bob'].get('/api/access-profiles').text
-    assert ga['grant_id'] not in b['bob'].get('/api/grants').text
-    assert b['bob'].get('/api/access-profiles/'+pa['id']).status_code==404
-    assert b['bob'].delete('/api/grants/'+ga['grant_id']).status_code==200
-    assert not app.state.store.one('SELECT revoked FROM grants WHERE id=?',(ga['grant_id'],))['revoked']
-    # A credential authenticates its owner, not the panel cookie supplied beside it.
-    assert data(call(b['bob'],ga['token'],'get_profile'))['id']==pa['id']
-    assert data(call(b['alice'],gb['token'],'get_profile'))['id']==pb['id']
-
-
-def test_no_cross_space_alias_or_action_product(team):
-    app,b=team;r=shared_role(app,b)
-    r=must(update_role(b['owner'],r,project_rules=[{'actions':['read'],'all_projects':True},{'actions':['read','execute'],'projects':['project-team']}]))
-    token=must(credential(b['alice'],r,profile(b['alice'],r)))['token']
-    resolved=data(call(b['alice'],token,'projects_resolve',{'project':'same-alias'}))
-    assert resolved['id']=='project-team'
-    denied=call(b['alice'],token,'projects_resolve',{'project':'project-legacy'})
-    assert denied.json()['result']['isError'] and 'project-legacy' not in json.dumps(denied.json().get('result',{}).get('structuredContent',{}).get('project',{}))
-
-
-def test_assignment_membership_and_user_revocation_stop_original_credentials(team):
-    app,b=team;r=shared_role(app,b)
-    p=profile(b['alice'],r);g=must(credential(b['alice'],r,p))
-    assignment=app.state.store.one("SELECT * FROM role_assignments WHERE user_id='alice' AND role_id=?",(r['id'],))
-    assert call(b['alice'],g['token']).status_code==200
-    must(b['owner'].put('/api/iam/spaces/team/assignments/'+r['id']+'/alice',json={'active':False,'may_delegate':True,'expected_version':assignment['version']}))
-    assert call(b['alice'],g['token']).status_code==403
-    must(b['owner'].put('/api/iam/spaces/team/assignments/'+r['id']+'/alice',json={'active':True,'may_delegate':True,'expected_version':assignment['version']+1}))
-    assert call(b['alice'],g['token']).status_code==200
-    must(b['owner'].put('/api/iam/spaces/team/members/alice/suspension',json={'blocked':True}))
-    assert call(b['alice'],g['token']).status_code==403
-    must(b['owner'].put('/api/iam/spaces/team/members/alice/suspension',json={'blocked':False}))
+    set_member(b['owner'],'alice',project_policy('read'))
+    p=make_profile(b['owner'],project_policy('read')); c=make_connection(b['alice'],p)
     row=app.state.store.one("SELECT version FROM iam_users WHERE user_id='alice'")
     must(b['owner'].put('/api/iam/users/alice',json={'active':False,'instance_admin':False,'expected_version':row['version']}))
-    assert call(b['alice'],g['token']).status_code==401
-    assert not app.state.store.one("SELECT 1 AS ok FROM sessions WHERE user_id='alice'")
-    assert app.state.store.one('SELECT revoked FROM grants WHERE id=?',(g['grant_id'],))['revoked']==1
+    assert b['alice'].get('/api/iam/me').status_code == 401
+    assert call(b['owner'],c['token']).status_code == 401
+    assert not app.state.store.all("SELECT id_hash FROM sessions WHERE user_id='alice'")
+    assert app.state.store.one('SELECT revoked FROM grants WHERE id=?',(c['connection_id'],))['revoked'] == 1
 
 
-def test_sql_rejects_cross_space_project_device_and_profile_role(team):
-    import sqlite3
-    app,b=team;store=app.state.store;r=shared_role(app,b)
-    with pytest.raises(sqlite3.IntegrityError):
-        store.execute("INSERT INTO projects(id,alias,alias_key,device_id,root,space_id,created) VALUES('bad','bad','bad','device-legacy','/tmp/bad','team',1)")
-    p=profile(b['alice'],r)
-    with pytest.raises(sqlite3.IntegrityError):store.execute("UPDATE access_profiles SET space_id='legacy' WHERE id=?",(p['id'],))
-    assert store.all('PRAGMA foreign_key_check')==[]
-
-
-def test_same_session_tabs_select_spaces_independently(team):
+def test_expired_and_blocked_memberships_never_appear_in_resource_lists(team):
     app,b=team
-    assert must(b['owner'].get('/api/projects'))['projects'][0]['id']=='project-team'
-    assert must(b['legacy'].get('/api/projects'))['projects'][0]['id']=='project-legacy'
-    assert must(b['owner'].get('/api/projects'))['projects'][0]['id']=='project-team'
-    assert b['owner'].cookie==b['legacy'].cookie
-
-
-def test_space_suspend_restore_and_last_owner_guard(team):
-    app,b=team;owner=b['owner']
-    denied=owner.put('/api/iam/spaces/team/members/owner',json={'level':'member','active':True,'expected_version':1})
-    assert denied.status_code==409 and denied.json()['error']['code']=='LAST_OWNER'
-    must(owner.put('/api/iam/spaces/team',json={'label':'Dev','active':False,'expected_version':1}))
-    assert owner.get('/api/projects').status_code==404
-    assert any(s['id']=='team' for s in must(owner.get('/api/iam/me'))['disabled_spaces'])
-    assert b['alice'].post('/api/iam/spaces/team/restore',json={'label':'Dev','active':True,'expected_version':2}).status_code==404
-    must(owner.post('/api/iam/spaces/team/restore',json={'label':'Dev','active':True,'expected_version':2}))
-    assert owner.get('/api/projects').status_code==200
-
-
-def test_overview_operations_audit_and_events_do_not_leak_other_humans(team):
-    app,b=team;r=shared_role(app,b)
-    p=profile(b['alice'],r);g=must(credential(b['alice'],r,p))
-    store=app.state.store;now=time.time()
-    store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,state,result,created,updated,space_id,owner_user_id) VALUES('private-op','device-team','project-team','mcp:alice',?,'fs_read','{}','','succeeded',?,?,?,'team','alice')",(g['grant_id'],json.dumps({'ok':True,'data':{'text':'PRIVATE_ALICE_TEXT'}}),now,now))
-    store.execute("INSERT INTO audit(at,actor,action,target,status,detail,space_id,owner_user_id) VALUES(?,'panel:alice','PRIVATE_ALICE_EVENT','project-team','ok','{}','team','alice')",(now,))
-    for path in ['/api/overview','/api/operations','/api/audit','/api/audit-export']:
-        response=b['bob'].get(path);assert response.status_code==200,response.text
-        assert 'PRIVATE_ALICE' not in response.text and 'private-op' not in response.text
-    assert b['bob'].get('/api/operations/private-op').status_code==404
-    req=Request({'type':'http','method':'GET','path':'/api/events','query_string':b'', 'headers':[(b'cookie',('rd_session='+b['bob'].cookie).encode()),(b'x-codepier-space',b'team')]})
-    principal=app.state.auth.panel(req)
-    assert not iam.event_visible(app.state.runtime,principal,{'type':'operation','data':{'id':'private-op'}})
-    assert b['alice'].get('/api/operations/private-op').status_code==200
-
-
-def test_invite_is_one_use_revocable_and_never_personal_space_sharing(team):
-    app,b=team;owner=b['owner']
-    invite=must(owner.post('/api/iam/spaces/team/invites',json={'level':'guest','days':1}),201)
-    assert b['alice'].post('/api/iam/invites/accept',json={'invitation':invite['invitation']}).status_code==200
-    assert b['bob'].post('/api/iam/invites/accept',json={'invitation':invite['invitation']}).status_code==400
-    entries=must(owner.get('/api/iam/spaces/team/invites'))['invitations']
-    assert 'invitation' not in entries[0]
-    assert owner.delete('/api/iam/spaces/team/invites/'+entries[0]['id']).status_code==200
-    personal=next(s['id'] for s in must(b['alice'].get('/api/iam/me'))['spaces'] if s['kind']=='personal')
-    assert b['alice'].post('/api/iam/spaces/'+personal+'/invites',headers={'X-CodePier-Space':personal},json={}).status_code==403
-
-
-def test_csrf_origin_and_no_unauthenticated_ordinary_user_access(team):
-    app,b=team
-    assert b['alice'].post('/api/iam/spaces',json={'label':'bad','idempotency_key':'test-key1'},headers={'X-RD-CSRF':'wrong'}).status_code==403
-    assert b['alice'].post('/api/iam/spaces',json={'label':'bad','idempotency_key':'test-key2'},headers={'Origin':'https://evil.example'}).status_code==403
-    for path in ['/api/iam/me','/api/iam/spaces','/api/iam/users','/api/projects','/api/audit']:
-        assert b['alice'].get(path,headers={'Cookie':''}).status_code==401
+    set_member(b['owner'],'bob',project_policy('read'))
+    assert 'project-team' in b['bob'].get('/api/projects').text
+    app.state.store.execute("UPDATE memberships SET expires=? WHERE user_id='bob' AND space_id='team'",(time.time()-1,))
+    assert 'project-team' not in b['bob'].get('/api/projects').text
+    assert 'team' not in {r['id'] for r in must(b['bob'].get('/api/spaces'))['spaces']}

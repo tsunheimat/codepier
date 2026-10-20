@@ -1,264 +1,160 @@
-"""Real Chromium/WebKit panel flows against an isolated Hub and fixture Agent."""
-from pathlib import Path
-import json
+"""Real VPS inventory/workspace forms on Chromium and WebKit, no SSH secrets.
+
+The three discovery modes are also exercised in test_workspace_browser. These
+cases retain responsive editing, escaping, stale-save and real-command checks.
+"""
 import re
+import shlex
 import uuid
 
 import pytest
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import expect
 
-from shared.util import atomic_json
-from tests.test_ssh import PASSWORD, fake_transport
+from tests.test_workspace_browser import workspace_browser, workspace_server, open_workspace  # noqa: F401
+from tests.test_vps import input_body
 
-
-@pytest.fixture(scope='module')
-def ui_stack(stack):
-    stack.stop_agent()
-    stack.config['shell'] = {'enabled':True,'projects':['Imago','Nexus','Lumen'],
-                             'command':['/bin/sh','-c'],'env':{'PATH':fake_transport(stack.directory/'vps-ui-bin')}}
-    atomic_json(stack.config_path, stack.config)
-    stack.start_agent()
-    return stack
+pytestmark = [pytest.mark.browser, pytest.mark.integration]
 
 
-@pytest.fixture(params=['chromium','webkit'])
-def browser(request):
-    with sync_playwright() as pw:
-        value=getattr(pw,request.param).launch()
-        yield value, request.param
-        value.close()
-
-
-def open_page(browser, stack, width=1440):
-    page=browser.new_page(viewport={'width':width,'height':960 if width>500 else 844})
-    page.goto(stack.url+'/#overview')
-    page.fill('#username', 'admin');page.fill('#password',stack.password)
-    page.click('#login-form button')
-    expect(page.locator('#page h1')).to_have_text('控制总览',timeout=15000)
-    if width <= 500:
-        page.locator('.mobile-menu').click()
-    entry=page.locator('.sidebar [data-nav="resources"]')
-    expect(entry).to_be_visible()
-    entry.click()
-    page.locator('[data-product-area="resources"][data-product-tab="vps"]').click()
-    expect(page.locator('#page h1')).to_have_text('资源')
-    expect(entry).to_have_attribute('aria-current','page')
-    if width <= 500:
-        expect(page.locator('.sidebar')).not_to_have_class(re.compile(r'\bopen\b'))
+def open_inventory(context, server, width=1440):
+    page = context.new_page()
+    page.set_viewport_size({'width': width, 'height': 1000})
+    page.goto(server.url+'/#resources/vps')
+    expect(page.locator('#workspace-inventory')).to_be_visible(timeout=15000)
     return page
 
 
-def create_vps(stack, **changes):
-    return stack.must(stack.client.post('/api/vps',json={
-        'name':'VPS-'+uuid.uuid4().hex[:8], 'host':'vps.example.invalid',
-        'port':10000+int(uuid.uuid4().hex[:4],16)%40000,'password':PASSWORD,
-        'project_ids':[stack.project['id']], 'execution_project_id': stack.project['id'], **changes}))
+@pytest.mark.parametrize('width', [390, 1440])
+def test_inventory_create_edit_escapes_text_and_fits_viewport(workspace_server, workspace_browser, width):
+    server, (context, errors) = workspace_server, workspace_browser
+    page = open_inventory(context, server, width)
+    page.locator('[data-ws-action="inventory-new"]').click()
+    form = page.locator('#workspace-form')
+    name = '<img src=x onerror=window.injected=true>'
+    form.locator('[name="name"]').fill(name)
+    form.locator('[name="host"]').fill('fixture.invalid')
+    form.locator('[name="notes"]').fill('Display metadata only')
+    expect(form.locator('[name="password"], [name="private_key"]')).to_have_count(0)
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+    page.get_by_role('button', name='保存', exact=True).click()
+    expect(form).to_have_count(0, timeout=15000)
+    expect(page.locator('#workspace-inventory h3').filter(has_text=name)).to_have_count(1)
+    assert page.evaluate('window.injected === undefined')
+    expect(page.locator('#workspace-inventory img')).to_have_count(0)
+    saved = next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['name']==name)
+    page.locator('[data-ws-action="inventory-edit"][data-id="'+saved['id']+'"]').click()
+    form.locator('[name="notes"]').fill('Edited metadata')
+    page.get_by_role('button', name='保存', exact=True).click()
+    expect(form).to_have_count(0, timeout=15000)
+    current = next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['id']==saved['id'])
+    assert current['version'] == saved['version']+1 and current['notes'] == 'Edited metadata'
+    assert errors == []
 
 
-def update_data(v, **changes):
-    keys=('name','host','port','username','host_key_policy','provider','region','system','notes','enabled','project_ids')
-    return {**{k:v[k] for k in keys},'expected_version':v['version'],**changes}
+def test_inventory_stale_save_keeps_draft_and_does_not_overwrite(workspace_server, workspace_browser):
+    server, (context, errors) = workspace_server, workspace_browser
+    page = open_inventory(context, server)
+    original = server.must(server.client.get('/api/vps'))['vps'][0]
+    page.locator('[data-ws-action="inventory-edit"][data-id="'+original['id']+'"]').click()
+    form = page.locator('#workspace-form')
+    form.locator('[name="notes"]').fill('Local unsaved draft')
+    server.must(server.client.put('/api/vps/'+original['id'], json=input_body(
+        name=original['name'], notes='Saved by another view', expected_version=original['version'])))
+    with page.expect_response(lambda response: response.request.method == 'PUT' and
+                              response.url.endswith('/api/vps/'+original['id'])) as save:
+        page.get_by_role('button', name='保存', exact=True).click()
+    assert save.value.status == 409
+    expect(form.locator('[data-ws-status]')).to_have_text(save.value.json()['error']['message'], timeout=15000)
+    expect(form).to_be_visible()
+    expect(form.locator('[name="notes"]')).to_have_value('Local unsaved draft')
+    current = next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['id']==original['id'])
+    assert current['notes'] == 'Saved by another view'
+    assert errors == []
 
 
-@pytest.mark.parametrize('width',[1440,390])
-def test_create_edit_search_and_responsive_layout(browser,ui_stack,width):
-    engine,kind=browser;s=ui_stack;page=open_page(engine,s,width)
-    errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-    try:
-        page.locator('[data-vps-action="add"]').first.click()
-        form=page.locator('#vps-form')
-        name='面板测试-'+uuid.uuid4().hex[:8]
-        form.locator('[name="name"]').fill(name)
-        form.locator('[name="host"]').fill('vps.example.invalid')
-        form.locator('[name="port"]').fill(str(10000+int(uuid.uuid4().hex[:4],16)%40000))
-        form.locator('[name="password"]').fill(PASSWORD)
-        for project in s.projects[:2]:form.locator(f'[name="project_ids"][value="{project["id"]}"]').check()
-        form.locator('[name="host_key_policy"]').select_option('accept-new')
-        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
-        page.click('#vps-save')
-        expect(form).to_have_count(0)
-        page.fill('#vps-query',name)
-        card=page.locator('[data-vps-card]:visible')
-        expect(card).to_have_count(1)
-        expect(card).to_contain_text('Imago')
-        expect(card).to_contain_text('Nexus')
-        identifier=card.get_attribute('data-vps-card')
-        saved=s.must(s.client.get('/api/vps/'+identifier))
-        assert len(saved['project_ids'])==2
-        # A normal held press must survive focus leaving the search field.
-        card.locator('[data-vps-action="edit"]').click(delay=200)
-        expect(page.locator('#vps-form [name="password"]')).to_have_value('')
-        page.locator('#vps-form .vps-extra summary').click()
-        page.locator('#vps-form [name="notes"]').fill('已保存配置，无需再次输入密码')
-        page.click('#vps-save')
-        expect(page.locator('#vps-form')).to_have_count(0)
-        expect(page.locator('[data-vps-card]:visible')).to_contain_text('已保存配置')
-        assert PASSWORD not in page.content()
-        assert PASSWORD not in page.evaluate('JSON.stringify({...localStorage,...sessionStorage})')
-        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
-        directory=Path('.work/vps-feature/screenshots');directory.mkdir(parents=True,exist_ok=True)
-        page.screenshot(path=str(directory/f'{kind}-{width}.png'),full_page=True)
-        page.fill('#vps-query','no-match-'+uuid.uuid4().hex)
-        expect(page.locator('#vps-empty')).to_be_visible()
-        assert not errors,errors
-    finally:page.close()
+def test_workspace_binding_identity_and_project_display_are_explicit(workspace_server, workspace_browser):
+    server, (context, errors) = workspace_server, workspace_browser
+    page = open_workspace(context, server, 'spaces/alice/vps')
+    page.locator('[data-ws-action="vps"][data-id="'+'a'*32+'"]').click()
+    form = page.locator('#workspace-form')
+    expect(form.locator('[name="resource_id"]')).to_be_disabled()
+    expect(form.locator('[data-vps-projects]')).to_be_hidden()
+    form.locator('[name="display_mode"]').select_option('both')
+    expect(form.locator('[data-vps-projects]')).to_be_visible()
+    form.locator('[name="projects"][value="project"]').check()
+    page.get_by_role('button', name='保存', exact=True).click()
+    expect(form).to_have_count(0, timeout=15000)
+    top = server.mcp('vps')['vps']
+    scoped = server.mcp('vps', {'project': 'codepier'})['vps']
+    assert top[0]['target'] == scoped[0]['target'] == 'vps:'+'a'*32
+    assert errors == []
 
 
-def test_project_and_vps_assignment_both_directions(browser,ui_stack):
-    engine,_=browser;s=ui_stack
-    v=create_vps(s,project_ids=[p['id'] for p in s.projects[:2]])
-    page=open_page(engine,s)
-    try:
-        page.fill('#vps-query',v['name'])
-        page.locator('[data-vps-card]:visible [data-vps-action="assign"]').click()
-        page.locator(f'.modal [name="project_ids"][value="{s.projects[1]["id"]}"]').uncheck()
-        page.locator(f'.modal [name="project_ids"][value="{s.projects[2]["id"]}"]').check()
-        page.click('#vps-assign-save')
-        expect(page.locator('#vps-assign-save')).to_have_count(0)
-        current=s.must(s.client.get('/api/vps/'+v['id']))
-        assert set(current['project_ids'])=={s.projects[0]['id'],s.projects[2]['id']}
-        page.locator('[data-product-area="resources"][data-product-tab="projects"]').click()
-        expect(page.locator('#page h1')).to_have_text('资源')
-        page.locator(f'#page [data-vps-action="project"][data-project="{s.projects[0]["id"]}"]').click()
-        page.locator(f'.modal [name="vps_ids"][value="{v["id"]}"]').uncheck()
-        page.click('#project-vps-save')
-        expect(page.locator('#project-vps-save')).to_have_count(0)
-        assert s.must(s.client.get('/api/vps/'+v['id']))['project_ids']==[s.projects[2]['id']]
-    finally:page.close()
+def test_ssh_command_form_runs_original_target_once_without_local_project(workspace_server, workspace_browser):
+    server, (context, errors) = workspace_server, workspace_browser
+    page = open_workspace(context, server, 'spaces/alice/vps')
+    marker = server.directory/('ui-once-'+uuid.uuid4().hex)
+    page.locator('[data-ws-action="vps-command"][data-id="'+'a'*32+'"]').click()
+    form = page.locator('#workspace-form')
+    expect(form.locator('[name="project"]')).to_have_count(0)
+    form.locator('[name="command"]').fill('printf once >> '+shlex.quote(str(marker))+'; printf ui-ssh-result')
+    page.get_by_role('button', name='保存', exact=True).click()
+    expect(page.locator('#modal-title')).to_have_text('SSH 结果', timeout=30000)
+    expect(page.locator('.modal-body')).to_contain_text('ui-ssh-result')
+    assert marker.read_text() == 'once'
+    assert re.search('password|private_key', page.locator('.modal-body').inner_text()) is None
+    assert errors == []
 
 
-def test_check_connection_real_operation_once_and_no_secret(browser,ui_stack):
-    engine,_=browser;s=ui_stack;v=create_vps(s)
-    page=open_page(engine,s)
-    submissions=[]
-    def capture(request):
-        if request.method=='POST' and request.url.endswith('/api/tools/call'):
-            data=request.post_data_json
-            if data.get('tool')=='exec':submissions.append(data)
-    page.on('request',capture)
-    try:
-        page.fill('#vps-query',v['name'])
-        page.locator('[data-vps-card]:visible [data-vps-action="check"]').click()
-        page.click('#vps-check-run')
-        expect(page.locator('#vps-check-state')).to_contain_text('连接检查成功',timeout=30000)
-        expect(page.locator('#vps-check-output')).to_contain_text('CODEPIER_VPS_OK')
-        # Completion unlocks an explicit new check; it must not automatically
-        # replay the previous command or reuse its idempotency key (audit F20).
-        button=page.locator('#vps-check-run')
-        expect(button).to_be_enabled()
-        expect(button).to_have_text('重新检查')
-        expect(page.locator('#vps-check-project')).to_be_enabled()
-        assert len(submissions)==1
-        first_operation=re.findall(r'[a-f0-9]{32}',page.locator('#vps-check-state').inner_text())[-1]
-        button.click()
-        expect(page.locator('#vps-check-state')).not_to_contain_text(first_operation,timeout=30000)
-        expect(page.locator('#vps-check-state')).to_contain_text('连接检查成功',timeout=30000)
-        expect(button).to_be_enabled()
-        expect(button).to_have_text('重新检查')
-        assert len(submissions)==2
-        assert submissions[0]['arguments']['idempotency_key']!=submissions[1]['arguments']['idempotency_key']
-        assert all('password' not in submission['arguments'] for submission in submissions)
-        assert PASSWORD not in json.dumps(submissions) and PASSWORD not in page.content()
-    finally:page.close()
+def test_background_refresh_does_not_steal_held_edit_click(workspace_server, workspace_browser):
+    server, (context, errors) = workspace_server, workspace_browser
+    page = open_inventory(context, server, 390)
+    page.evaluate('''() => {
+      document.addEventListener('pointerdown', event => {
+        const button = event.target.closest('[data-ws-action="inventory-edit"]');
+        if (!button) return;
+        window.heldVpsButton = button;
+        window.detachedWhileHeld = false;
+        window.vpsRefreshObserver = new MutationObserver(() => {
+          if (uiPagePointers.size && !button.isConnected) window.detachedWhileHeld = true;
+        });
+        vpsRefreshObserver.observe(document.querySelector('#page'), {childList:true, subtree:true});
+        void renderPage(false).then(() => { document.body.dataset.vpsRefreshFinished='true'; });
+      }, {once:true, capture:true});
+    }''')
+    button = page.locator('[data-ws-action="inventory-edit"]').first
+    identifier = button.get_attribute('data-id')
+    button.click(delay=250)
+    expect(page.locator('#workspace-form')).to_be_visible(timeout=15000)
+    expect(page.locator('body')).to_have_attribute('data-vps-refresh-finished', 'true')
+    assert page.evaluate('!window.detachedWhileHeld')
+    assert page.evaluate('window.heldVpsButton !== undefined')
+    value = next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['id']==identifier)
+    expect(page.locator('#workspace-form [name="name"]')).to_have_value(value['name'])
+    page.evaluate('vpsRefreshObserver.disconnect()')
+    assert errors == []
 
 
-def test_stale_edit_is_not_overwritten_and_text_is_escaped(browser,ui_stack):
-    engine,_=browser;s=ui_stack
-    v=create_vps(s,notes='<img src=x onerror=alert(1)>')
-    page=open_page(engine,s)
-    try:
-        page.fill('#vps-query',v['name'])
-        expect(page.locator('[data-vps-card]:visible .vps-notes')).to_have_text(v['notes'])
-        expect(page.locator('[data-vps-card] img')).to_have_count(0)
-        page.locator('[data-vps-card]:visible [data-vps-action="edit"]').click()
-        current=s.must(s.client.get('/api/vps/'+v['id']))
-        s.must(s.client.put('/api/vps/'+v['id'],json=update_data(current,notes='Concurrent update')))
-        page.locator('#vps-form [name="notes"]').fill('Stale form')
-        page.click('#vps-save')
-        expect(page.locator('#vps-form-error')).to_contain_text('其他窗口')
-        assert s.must(s.client.get('/api/vps/'+v['id']))['notes']=='Concurrent update'
-    finally:page.close()
-
-
-def test_background_refresh_preserves_held_click_target(browser,ui_stack):
-    engine,_=browser;s=ui_stack;v=create_vps(s)
-    page=open_page(engine,s,390)
-    try:
-        page.fill('#vps-query',v['name'])
-        button=page.locator('[data-vps-card]:visible [data-vps-action="edit"]')
-        page.evaluate('''() => {document.addEventListener('pointerdown',event=>{
-          const button=event.target.closest('[data-vps-action="edit"]');
-          if(!button)return;
-          window.heldVpsButton=button;
-          window.heldVpsDetachCount=0;
-          const card=button.closest('[data-vps-card]');
-          new MutationObserver(records=>{
-            if(records.some(record=>[...record.removedNodes].some(node=>node===card||node.contains?.(card))))
-              window.heldVpsDetachCount++;
-          }).observe(document.querySelector('#page'),{childList:true,subtree:true});
-          vpsInventory=async()=>S.vps;
-          loadBasics=async()=>{};
-          const original=uiWaitForPagePointer;
-          uiWaitForPagePointer=()=>{
-            document.body.dataset.refreshHeld=String(uiPagePointers.size);
-            return original();
-          };
-          void renderPage(false).then(()=>{document.body.dataset.refreshFinished='true';});
-        },{once:true,capture:true});}''')
-        button.click(delay=200)
-        expect(page.locator('body')).to_have_attribute('data-refresh-held','1')
-        expect(page.locator('#vps-form')).to_be_visible()
-        expect(page.locator('body')).to_have_attribute('data-refresh-finished','true')
-        assert page.evaluate('heldVpsButton.isConnected')
-        assert page.evaluate('heldVpsDetachCount')==0
-        expect(page.locator('#vps-form [name="name"]')).to_have_value(v['name'])
-    finally:page.close()
-
-
-def test_returning_mobile_dock_preserves_held_page_click(browser,ui_stack):
-    engine,_=browser;s=ui_stack;v=create_vps(s)
-    page=open_page(engine,s,390)
-    try:
-        page.fill('#vps-query',v['name'])
-        page.evaluate('''() => {
-          const dock=document.querySelector('.mobile-dock');
-          dock.style.cssText='visibility:hidden;opacity:0;pointer-events:none;transform:translateY(100px)';
-          const button=document.querySelector('[data-vps-card]:not([hidden]) [data-vps-action="edit"]');
-          window.scrollTo(0,scrollY+button.getBoundingClientRect().bottom-innerHeight+5);
-          button.addEventListener('pointerdown',()=>{
-            dock.removeAttribute('style');
-          },{once:true});
-        }''')
-        expect(page.locator('.mobile-dock')).to_have_css('opacity','0')
-        button=page.locator('[data-vps-card]:visible [data-vps-action="edit"]')
-        bounds=button.bounding_box()
-        assert bounds and bounds['y']+bounds['height']/2>800
-        page.mouse.move(bounds['x']+bounds['width']/2,bounds['y']+bounds['height']/2)
-        page.mouse.down()
-        expect(page.locator('.mobile-dock')).to_have_css('transform','none')
-        page.mouse.up()
-        expect(page.locator('#vps-form')).to_be_visible()
-        expect(page.locator('#vps-form [name="name"]')).to_have_value(v['name'])
-        expect(page.locator('body')).not_to_have_class(re.compile(r'\bui-page-press\b'))
-    finally:page.close()
-
-
-def test_background_refresh_does_not_discard_explicit_edit(browser,ui_stack):
-    engine,_=browser;s=ui_stack;v=create_vps(s)
-    page=open_page(engine,s);held=[]
-    try:
-        page.fill('#vps-query',v['name'])
-        page.route('**/api/vps/'+v['id'],lambda route:held.append(route))
-        page.locator('[data-vps-card]:visible [data-vps-action="edit"]').click()
-        expect(page.locator('[data-vps-card]:visible')).to_have_count(1)
-        page.wait_for_function('typeof vpsEdit === "function"')
-        # Reproduce the list-render generation change while the user's edit read
-        # is in flight; refreshing metadata must not cancel an explicit action.
-        page.evaluate('renderPage(false)')
-        assert held
-        held.pop().fulfill(json=s.must(s.client.get('/api/vps/'+v['id'])))
-        expect(page.locator('#vps-form')).to_be_visible()
-        expect(page.locator('#vps-form [name="password"]')).to_have_value('')
-    finally:
-        for route in held:route.abort()
-        page.unroute_all(behavior='wait');page.close()
+def test_explicit_workspace_navigation_does_not_reopen_an_inventory_draft(workspace_server, workspace_browser):
+    server, (context, errors) = workspace_server, workspace_browser
+    page = open_inventory(context, server)
+    page.locator('[data-ws-action="inventory-edit"]').first.click()
+    form = page.locator('#workspace-form')
+    form.locator('[name="notes"]').fill('In-memory unsaved draft')
+    prompts=[]
+    def keep_draft(dialog):
+        prompts.append(dialog.message)
+        dialog.dismiss()
+    page.once('dialog',keep_draft)
+    page.evaluate('navigate("spaces/alice/vps")')
+    assert len(prompts)==1 and '未保存' in prompts[0]
+    expect(form).to_be_visible()
+    expect(form.locator('[name="notes"]')).to_have_value('In-memory unsaved draft')
+    expect(page).to_have_url(re.compile(r'#resources/vps$'))
+    page.once('dialog',lambda dialog:dialog.accept())
+    page.evaluate('navigate("spaces/alice/vps")')
+    expect(page).to_have_url(re.compile(r'#spaces/alice/vps$'), timeout=15000)
+    expect(form).to_have_count(0)
+    expect(page.locator('#workspace-page h2')).to_have_text('VPS')
+    assert all(v['notes'] != 'In-memory unsaved draft' for v in server.must(server.client.get('/api/vps'))['vps'])
+    assert errors == []

@@ -4,7 +4,6 @@ The fixture renders synthetic pixels and records input calls. No real user app i
 controlled by these regression tests; native installation probing is separate.
 """
 import json
-import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -26,8 +25,11 @@ def desktop(tmp_path_factory):
         config['computer']={'enabled':True,'projects':[stack.project['id']],'allowed_apps':['Fixture'],'plugin_root':str(provider),'call_timeout_seconds':5}
         stack.config_path.write_text(json.dumps(config))
         stack.start_agent()
-        r=stack.must(stack.client.post('/api/grants',json={'label':'Desktop fixture','scopes':['read','computer'],'projects':[stack.project['id']],'days':1}))
-        stack.computer_pat=r['token'];stack.computer_grant=r['grant_id'];stack.provider=provider
+        profile=stack.create_profile({'project_rules':[{'projects':[stack.project['id']],
+            'actions':['read','computer']}]},label='Desktop fixture')
+        r=stack.create_connection(profile)
+        stack.computer_pat=r['token'];stack.computer_grant=r['connection_id']
+        stack.computer_profile=profile;stack.provider=provider
         yield stack
 
 
@@ -47,7 +49,8 @@ def rpc(stack,name,args=None,*,key=None,token=None,allow_error=False):
             Draft202012Validator(OUTPUT_SCHEMAS['operations_wait']).validate(out['structuredContent'])
             if not out['structuredContent'].get('pending'):break
         value=out['structuredContent']
-        if value.get('result',{}).get('ok'):
+        assert not value.get('pending'), ('Original desktop operation did not finish',value)
+        if (value.get('result') or {}).get('ok'):
             data={'operation_id':value['operation_id'],**value['result']['data']}
         else:data=value
     else:data=value
@@ -64,20 +67,20 @@ def release(stack,session):
 def test_scope_catalog_and_status_never_expand_existing_grants(desktop):
     s=desktop
     out=s.mcp('computer',{'project': 'Imago', 'operation': 'apps'})
-    assert out['isError'] and out['structuredContent']['error']['code']=='INSUFFICIENT_SCOPE'
+    assert out['isError'] and out['structuredContent']['error']['code']=='WORKSPACE_POLICY_DENIED'
     status,_=rpc(s,'computer_status',{'probe':True})
     assert status['capabilities_verified'] and len(status['native_tools'])==10
     assert status['screen_permissions_verified'] is False
     out=s.rpc('tools/list').json()['result']['tools']
-    assert_task_catalog(out, 14)
+    assert_task_catalog(out)
     assert not {'integration_control','validations_accept'} & {t['name'] for t in out}
     definition=next(t for t in out if t['name']=='computer')
-    assert set(definition['_meta']['securitySchemes'][0]['scopes'])=={'read'}
+    assert set(definition['_meta']['securitySchemes'][0]['scopes'])=={'codepier.workspace'}
     help=s.mcp('workspace',{'operation':'help','tool':'computer','action':'action'})['structuredContent']
     assert help['scope']=='computer'
     assert definition['securitySchemes']==definition['_meta']['securitySchemes']
     metadata=s.client.get('/.well-known/oauth-authorization-server').json()
-    assert 'computer' in metadata['scopes_supported']
+    assert metadata['scopes_supported']==['codepier.workspace']
 
 
 def test_real_mcp_images_actions_idempotency_and_polling(desktop):
@@ -111,19 +114,27 @@ def test_cross_grant_force_and_result_access_boundaries(desktop):
     s=desktop
     opened,_=rpc(s,'computer_session_open',{'app':'Fixture'});session=opened['session_id']
     try:
-        token=s.must(s.client.post('/api/grants',json={'label':'Other desktop fixture','scopes':['read','computer'],'projects':[s.project['id']],'days':1}))['token']
+        other=s.create_connection(s.computer_profile)
+        assert other['connection_id']!=s.computer_grant
+        token=other['token']
         _,denied=rpc(s,'computer_observe',{'session_id':session},token=token,allow_error=True)
         assert denied['isError']
         _,denied=rpc(s,'computer_session_close',{'force':True},allow_error=True)
         assert denied['isError'] and denied['structuredContent']['error']['code']=='COMPUTER_FORCE_DENIED'
         view,_=rpc(s,'computer_observe',{'session_id':session})
-        db=sqlite3.connect(s.hubdir/'hub.sqlite3')
+        path='/api/spaces/'+s.space_id+'/profiles/'+s.computer_profile['id']
+        def update(actions):
+            current=s.must(s.client.get(path))
+            s.computer_profile=s.must(s.client.put(path,json={'label':current['label'],
+                'policy':{'project_rules':[{'projects':[s.project['id']],'actions':actions}]},
+                'expected_version':current['version'],'idempotency_key':uuid.uuid4().hex}))
         try:
-            db.execute('UPDATE grants SET scopes=? WHERE id=?',(json.dumps(['read']),s.computer_grant));db.commit()
-            result=s.mcp('process',{'operation': 'get', 'operation_ids': [view['operation_id']]},s.computer_pat)
-            assert result['isError'] and result['structuredContent']['operations'][0]['error']['code']=='INSUFFICIENT_SCOPE'
-        finally:
-            db.execute('UPDATE grants SET scopes=? WHERE id=?',(json.dumps(['read','computer']),s.computer_grant));db.commit();db.close()
+            update(['read'])
+            result=s.mcp('process',{'operation':'get','operation_ids':[view['operation_id']]},s.computer_pat)
+            assert result['isError']
+            assert result['structuredContent']['operations'][0]['error']['code']=='WORKSPACE_POLICY_DENIED'
+            assert not any(block['type']=='image' for block in result['content'])
+        finally:update(['read','computer'])
     finally:release(s,session)
 
 
@@ -160,7 +171,7 @@ def test_panel_emergency_close_interrupts_an_inflight_action(desktop):
             future=pool.submit(rpc,s,'computer_action',{'session_id':session,'observation_id':view['observation_id'],'action':{'type':'type_text','text':'fixture only'}},allow_error=True)
             wait_for(lambda:any(json.loads(line)['name']=='type_text' and json.loads(line)['args'].get('text')=='fixture only' for line in (s.provider/'calls.jsonl').read_text().splitlines()))
             start=time.monotonic()
-            result=s.call('computer_session_close',{'project':'Imago','force':True,'idempotency_key':'force-'+uuid.uuid4().hex})
+            result=s.call('computer_session_close',{'project':s.project['id'],'force':True,'idempotency_key':'force-'+uuid.uuid4().hex})
             if result.get('pending'):result=s.poll(result['operation_id'])['result']['data']
             assert result['closed'] and time.monotonic()-start<4
             assert future.result(timeout=10)[1]['isError']

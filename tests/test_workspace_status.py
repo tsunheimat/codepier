@@ -12,7 +12,8 @@ from shared.integration_contracts import REMOTE_TOOLS
 from shared.core_contracts import CORE_TOOLS
 from shared.query_contracts import QUERY_TOOLS
 from shared.util import DevError
-from tests.operation_fixture import env, call, operation
+from tests.operation_fixture import env, call, operation, restrict, other_connection
+from tests.current_model import CurrentModel
 
 
 def dashboard(env, **args):
@@ -52,9 +53,9 @@ def test_receipts_never_expose_logs_commands_or_environment(env):
 def test_dashboard_preserves_original_authorization(env, change):
     principal = env[1]
     args = {}
-    if change == 'grant': principal = dataclasses.replace(principal, grant_id='other')
-    if change == 'project': principal = dataclasses.replace(principal, projects=[])
-    if change == 'read_scope': principal = dataclasses.replace(principal, scopes={'write'})
+    if change == 'grant': principal = other_connection(env)[1]
+    if change == 'project': principal = restrict(env,projects=[])[1]
+    if change == 'read_scope': principal = restrict(env,actions=['write'])[1]
     if change == 'wrong_selected_project': args['project'] = 'P2'
     operation(env)
     if change in {'project', 'read_scope'}:
@@ -73,8 +74,10 @@ def test_worktree_filter_is_exact_and_device_changes_fence_receipts(env):
     isolated = dashboard(env, workspace_id=wid)
     assert [e['operation_id'] for e in isolated['recent_operations']] == [worktree]
     assert isolated['root'] is None
-    env[0].store.execute("INSERT INTO devices(id,name,secret,created,space_id,owner_user_id) VALUES('d2','Second','fixture',1,'legacy','u')")
-    env[0].store.execute("UPDATE projects SET device_id='d2' WHERE id='p'")
+    model=CurrentModel(env[0].store)
+    model.device('d2',owner='u',name='Second')
+    model.bind_device(env[1].space_id,'d2')
+    env[0].store.execute("UPDATE space_folders SET device_id='d2',version=version+1 WHERE id='folder-p'")
     assert dashboard(env)['recent_operations'] == []
 
 
@@ -124,9 +127,9 @@ def test_artifact_metadata_rechecks_mapping_and_never_exposes_credentials(env):
     now = time.time()
     root = runtime.project('P', env[1])['root']
     runtime.store.execute('INSERT INTO artifacts(id,project_id,device_id,grant_id,actor,root,name,bytes,sha256,created,expires,source_operation_id,space_id,owner_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        (identifier, 'p', 'd', 'g', env[1].actor, root, 'source.zip', 42, 'a' * 64, now, now + 60, '', env[1].space_id, env[1].user_id))
+        (identifier, 'p', 'd', env[1].grant_id, env[1].actor, root, 'source.zip', 42, 'a' * 64, now, now + 60, '', env[1].space_id, env[1].user_id))
     artifact = dashboard(env)['recent_operations'][0]['artifact']
-    assert artifact['download_path'] == '/api/artifacts/' + identifier + '/download?space_id=legacy'
+    assert artifact['download_path'] == '/api/artifacts/' + identifier + '/download'
     assert artifact['immutable'] and not artifact['expired']
     runtime.store.execute('UPDATE artifacts SET expires=? WHERE id=?', (now - 1, identifier))
     assert dashboard(env)['recent_operations'][0]['artifact']['expired']
@@ -155,8 +158,9 @@ def test_dashboard_query_remains_available_without_widget(env):
         tools = {tool['name']: tool for tool in tool_definitions(profile)}
         assert 'workspace_status' not in tools
         assert tools['workspace']['_meta']['ui']['visibility'] == ['model', 'app']
-    assert set(t['name'] for t in tool_definitions('coding')) == CORE_TOOLS | QUERY_TOOLS | {'get_profile','get_access_context'}
+    assert set(t['name'] for t in tool_definitions('coding')) == CORE_TOOLS | QUERY_TOOLS | {
+        'get_profile','get_access_context','session','get_execution_options','folders_list','projects_create'}
     value = dashboard(env)
     bound = attach({'structuredContent': value}, 'workspace_status', {'project': 'P'}, value, lambda: 'https://panel.example')
     assert bound == {'structuredContent': value}
-    assert tools['workspace']['securitySchemes'][0]['scopes'] == ['read']
+    assert tools['workspace']['securitySchemes'][0]['scopes'] == ['codepier.workspace']

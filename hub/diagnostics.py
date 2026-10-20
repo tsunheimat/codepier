@@ -82,7 +82,15 @@ class Diagnostics:
     def get(self,args,principal):
         runtime=self.runtime
         projects=[runtime.project(args['project'],principal)] if args['project'] else runtime.list_projects(principal)
-        identifiers={p['device_id'] for p in projects};devices=[];warnings=[]
+        identifiers=set();devices=[];warnings=[]
+        from hub.resource_context import in_resource
+        for project in projects:
+            scoped=in_resource(runtime.store,principal,'projects',project['id'])
+            view=runtime.project(project['id'],scoped)
+            if view.get('device_id'):
+                identifiers.add(view['device_id'])
+            else:
+                warnings.append(f"{project['alias']} 的工作空间来源不可用；不会推断其他执行设备。")
         hub=self.build.describe()
         if hub['restart_required']: warnings.append('Hub 磁盘代码与运行中版本不同；按升级流程重启后才生效。')
         expected={name for name,tool in TOOLS.items() if not tool.local}

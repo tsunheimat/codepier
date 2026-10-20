@@ -27,6 +27,7 @@ def app_page(chat_browser_pool):
     page.add_script_tag(content=panel_without_boot())
     page.add_script_tag(path=str(ROOT / 'web' / 'identity.js'))
     page.add_script_tag(path=str(ROOT / 'web' / 'product.js'))
+    page.add_script_tag(path=str(ROOT / 'web' / 'spaces.js'))
     for name in ('chat-markdown.js','chat-panels.js','chat-chrome.js',
                  'chat-history.js','chat-catalog.js','chat.js'):
         page.add_script_tag(path=str(ROOT / 'web' / name))
@@ -35,7 +36,8 @@ def app_page(chat_browser_pool):
       window.nextLogin={...S.session};window.calls=[];window.fixtureAuthenticated=true;
       window.fixtureDevices=[{id:'node-one',name:'Fixture node',online:true}];
       window.fixtureProjects=[{id:'project-one',alias:'Fixture',device_id:'node-one',
-        root:'/fixture/one',mode:'write',allow_tasks:true,online:true}];
+        root:'/folders/folder-one/one',mode:'write',allow_tasks:true,online:true,version:1,
+        folder_id:'folder-one',subpath:'one',workspace:{id:'space-one',label:'Explicit workspace'}}];
       window.EventSource=class {addEventListener(){} close(){this.closed=true;}};
       window.fetch=async(path,options={})=>{
         const method=options.method||'GET',body=options.body?JSON.parse(options.body):{};
@@ -52,16 +54,23 @@ def app_page(chat_browser_pool):
         if(path==='/api/login'){fixtureAuthenticated=true;return response(nextLogin);}
         if(path==='/api/auth/providers')return response({providers:[]});
         if(path==='/api/iam/me')return response({id:S.session.user_id,username:S.session.username,
-          instance_admin:true,default_space_id:'personal-fixture',
-          spaces:[{id:'personal-fixture',kind:'personal',label:'Personal',level:'owner',active:true}],
+          instance_admin:true,
+          spaces:[{id:'space-one',kind:'workspace',label:'Explicit workspace',active:true}],
           disabled_spaces:[],identities:[],sessions:[]});
         if(path==='/api/logout')return response({ok:true});
         if(path==='/api/devices')return response({devices:fixtureDevices});
-        if(path.startsWith('/api/projects')&&method!=='GET'){
+        if((path.startsWith('/api/projects')||path==='/api/spaces/space-one/projects')&&method!=='GET'){
           if(window.saveHandler)return saveHandler({path,method,body},response);
           return response(fixtureProjects[0]);
         }
         if(path==='/api/projects')return response({projects:fixtureProjects});
+        if(path==='/api/spaces')return response({spaces:[{id:'space-one',label:'Explicit workspace'}]});
+        if(path==='/api/spaces/space-one')return response({id:'space-one',label:'Explicit workspace',management:['workspace']});
+        if(path==='/api/spaces/space-one/projects')return response({projects:fixtureProjects});
+        if(path==='/api/spaces/space-one/folders')return response({folders:[{
+          id:'folder-one',name:'Reviewed source',enabled:true,mode:'write',allow_tasks:true,
+          views:[{name:'Fixture node',logical_root:'/folders/folder-one'}]}]});
+        if(path==='/api/projects/project-one/vps')return response({vps:[]});
         if(path.startsWith('/api/native/access?'))return window.fixtureNativeDenied
           ? response({error:{code:'CLI_FORBIDDEN',message:'Native permission revoked'}},403)
           : response({allowed:true,project_id:new URL(path,location.origin).searchParams.get('project')});
@@ -140,7 +149,7 @@ def test_chat_draft_warns_before_unload_and_explicit_logout_discards(app_page):
     page.on('dialog',lambda dialog:dialog.accept())
     # The focused CLI layout hides the global sidebar; leave through navigation
     # first, retaining the draft, then use the visible account action.
-    page.evaluate("navigate('projects')")
+    page.evaluate("navigate('resources/projects')")
     page.locator('[data-action=logout]').click()
     expect(page.locator('#login-form')).to_be_visible()
     expect(page.locator('#username')).to_have_value('')
@@ -151,9 +160,8 @@ def test_chat_draft_warns_before_unload_and_explicit_logout_discards(app_page):
 
 
 def open_project(page):
-    page.evaluate("navigate('projects')")
-    page.locator('[data-action=edit-project]').first.click()
-    expect(page.locator('#project-form')).to_be_visible()
+    page.evaluate("async()=>{await navigate('resources/projects');await CodePierSpaces.projectEditor('project-one')}")
+    expect(page.locator('#workspace-form')).to_be_visible()
 
 
 def test_old_project_save_cannot_close_or_replace_new_dialog(app_page):
@@ -162,33 +170,33 @@ def test_old_project_save_cannot_close_or_replace_new_dialog(app_page):
       window.finishOldSave=()=>resolve(response({id:'project-one'}));
     });}''')
     open_project(page)
-    page.fill('#project-form [name=alias]','FirstSave')
-    page.click('#save-project')
+    page.fill('#workspace-form [name=alias]','FirstSave')
+    page.click('button[type=submit][form=workspace-form]')
     page.wait_for_function('!!window.finishOldSave')
     # Explicitly leave an in-flight editor; the late save still must not replace the next view.
     page.once('dialog', lambda dialog: dialog.accept())
     page.locator('.modal-header [data-action=close-modal]').click()
-    page.locator('[data-action=add-project]').first.click()
-    page.fill('#project-form [name=alias]','SecondUnsavedMapping')
-    page.fill('#project-form [name=root]','/fixture/second')
+    page.evaluate("CodePierSpaces.projectEditor(null,'space-one')")
+    page.fill('#workspace-form [name=alias]','SecondUnsavedMapping')
+    page.fill('#workspace-form [name=subpath]','second')
     page.evaluate('finishOldSave()')
-    expect(page.locator('#project-form [name=alias]')).to_have_value('SecondUnsavedMapping')
-    expect(page.locator('#project-form [name=root]')).to_have_value('/fixture/second')
+    expect(page.locator('#workspace-form [name=alias]')).to_have_value('SecondUnsavedMapping')
+    expect(page.locator('#workspace-form [name=subpath]')).to_have_value('second')
     assert page.evaluate("calls.filter(call=>call.method==='PUT').length") == 1
 
 
 def test_late_project_load_cannot_open_over_a_newer_dialog(app_page):
     page = app_page
     page.evaluate('''() => {
-      S.page='projects';let count=0;
+      S.page='resources';let count=0;
       loadBasics=async()=>{if(++count===1)await new Promise(resolve=>window.finishOldLoad=resolve);};
       void projectModal('project-one');
     }''')
     page.wait_for_function('!!window.finishOldLoad')
-    page.evaluate("projectModal(null)")
-    page.fill('#project-form [name=alias]','NewerDialog')
+    page.evaluate("CodePierSpaces.projectEditor(null,'space-one')")
+    page.fill('#workspace-form [name=alias]','NewerDialog')
     page.evaluate('finishOldLoad()')
-    expect(page.locator('#project-form [name=alias]')).to_have_value('NewerDialog')
+    expect(page.locator('#workspace-form [name=alias]')).to_have_value('NewerDialog')
 
 
 def test_pending_project_validation_reuses_same_save_receipt(app_page):
@@ -200,25 +208,25 @@ def test_pending_project_validation_reuses_same_save_receipt(app_page):
         :response({id:'project-one'});
     }''')
     open_project(page)
-    page.click('#save-project')
-    expect(page.locator('#project-form [role=status]')).to_contain_text('不会新建重复任务')
-    expect(page.locator('#save-project')).to_be_enabled()
-    page.click('#save-project')
-    expect(page.locator('#project-form')).to_have_count(0)
+    page.click('button[type=submit][form=workspace-form]')
+    expect(page.locator('#workspace-form [role=status]')).to_contain_text('同一个保存键')
+    expect(page.locator('button[type=submit][form=workspace-form]')).to_be_enabled()
+    page.click('button[type=submit][form=workspace-form]')
+    expect(page.locator('#workspace-form')).to_have_count(0)
     requests = page.evaluate("calls.filter(call=>call.method==='PUT').map(call=>call.body)")
     assert len(requests) == 2 and requests[0] == requests[1]
-    assert requests[0]['idempotency_key'].startswith('project-save-')
+    assert requests[0]['idempotency_key'].startswith('workspace-')
 
 
 def test_unknown_project_save_does_not_send_changed_configuration(app_page):
     page = app_page
     page.evaluate("() => {window.saveHandler=async()=>{throw new TypeError('fixture lost response')};}")
     open_project(page)
-    page.click('#save-project')
-    expect(page.locator('#save-project')).to_be_enabled()
-    page.fill('#project-form [name=alias]','DoNotReplayDifferentConfig')
-    page.click('#save-project')
-    expect(page.locator('#project-form [role=status]')).to_contain_text('原保存结果尚未核实')
+    page.click('button[type=submit][form=workspace-form]')
+    expect(page.locator('button[type=submit][form=workspace-form]')).to_be_disabled()
+    expect(page.locator('#workspace-form [role=status]')).to_contain_text('结果不确定')
+    page.fill('#workspace-form [name=alias]','DoNotReplayDifferentConfig')
+    page.evaluate("document.querySelector('#workspace-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
     assert page.evaluate("calls.filter(call=>call.method==='PUT').length") == 1
 
 
@@ -231,10 +239,10 @@ def test_definite_project_rejection_allows_a_fresh_explicit_validation(app_page)
         :response({id:'project-one'});
     }''')
     open_project(page)
-    page.click('#save-project')
-    expect(page.locator('#project-form [role=status]')).to_contain_text('permission rejected')
-    page.click('#save-project')
-    expect(page.locator('#project-form')).to_have_count(0)
+    page.click('button[type=submit][form=workspace-form]')
+    expect(page.locator('#workspace-form [role=status]')).to_contain_text('permission rejected')
+    page.click('button[type=submit][form=workspace-form]')
+    expect(page.locator('#workspace-form')).to_have_count(0)
     requests = page.evaluate("calls.filter(call=>call.method==='PUT').map(call=>call.body)")
     assert len(requests) == 2
     assert requests[0]['idempotency_key'] != requests[1]['idempotency_key']
@@ -331,3 +339,45 @@ def test_policy_recovery_rechecks_native_drafts_without_relogin(app_page, native
     expect(page.locator('#chat-compose')).to_have_value('Scoped native draft' if native_allowed else '')
     assert page.evaluate('S.session.user_id') == 'owner-one'
     assert not page.evaluate("calls.some(c=>c.path==='/api/login'||c.path==='/api/logout'||c.path.endsWith('/start')||c.path.endsWith('/chat_prompt'))")
+
+
+def test_pending_validation_rejects_changed_form_before_any_second_request(app_page):
+    page=app_page
+    page.evaluate('''()=>{window.saveHandler=async(request,response)=>response({error:{
+        code:'VALIDATION_PENDING',message:'fixture validation',operation_id:'d'.repeat(32)}},409)}''')
+    open_project(page)
+    page.click('button[type=submit][form=workspace-form]')
+    expect(page.locator('#workspace-form [role=status]')).to_contain_text('同一个保存键')
+    page.fill('#workspace-form [name=subpath]','changed-source')
+    page.click('button[type=submit][form=workspace-form]')
+    expect(page.locator('#workspace-form [role=status]')).to_contain_text('原保存结果尚未核实')
+    assert page.evaluate("calls.filter(call=>call.method==='PUT').length")==1
+
+
+def test_canonical_workspace_hash_navigation_replaces_inflight_root_read(app_page):
+    page=app_page
+    page.evaluate("""() => {
+      stopEvents();S.page='spaces';S.workspacePath='spaces';renderShell();
+      history.replaceState(null,'',location.pathname);
+      const originalFetch=window.fetch;
+      window.priorMutations=JSON.stringify(calls.filter(call=>call.method!=='GET'));
+      window.workspaceReadCount=0;
+      window.fetch=(path,options={})=>{
+        if(path==='/api/spaces' && ++workspaceReadCount===1)
+          return new Promise(resolve=>{window.releaseRootRead=()=>resolve(new Response(
+            JSON.stringify({spaces:[{id:'stale-space',label:'Stale root read'}]}),
+            {status:200,headers:{'Content-Type':'application/json'}}));});
+        return originalFetch(path,options);
+      };
+      window.rootRender=renderPage();
+    }""")
+    page.wait_for_function('typeof releaseRootRead==="function"')
+    # Hash-only navigation is how the OIDC callback's root page can become the
+    # workspace page without creating another document or changing root S.page.
+    page.evaluate("location.hash='spaces'")
+    page.evaluate('releaseRootRead()')
+    expect(page.locator('#workspace-page')).to_be_visible(timeout=10000)
+    expect(page.locator('#workspace-page')).to_contain_text('Explicit workspace')
+    expect(page.locator('#workspace-page')).not_to_contain_text('Stale root read')
+    assert page.evaluate('workspaceReadCount')==2
+    assert page.evaluate("JSON.stringify(calls.filter(call=>call.method!=='GET'))===priorMutations")

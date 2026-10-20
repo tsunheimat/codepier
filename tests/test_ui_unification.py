@@ -35,14 +35,17 @@ VIEWPORTS = (
 SCHEMES = ("light", "dark")
 MANAGEMENT_ROUTES = (
     "overview",
-    "devices",
-    "projects",
+    "resources/devices",
+    "resources/projects",
     "workbench",
-    "conversations",
-    "audit",
-    "connect",
+    "audit/sessions",
+    "audit/operations",
+    "spaces",
     "diagnostics",
-    "artifacts",
+    "resources/storage",
+    "resources/mcp",
+    "resources/vps",
+    "identity",
     "settings",
 )
 TOKEN_VALUES = {'light': {'--ui-bg': '#f4f4f4', '--ui-panel': '#ffffff', '--ui-text': '#272727', '--ui-accent': '#746018'}, 'dark': {'--ui-bg': '#191919', '--ui-panel': '#222222', '--ui-text': '#e5e5e5', '--ui-accent': '#d1bd75'}}
@@ -128,8 +131,8 @@ def _set_scheme(page: Page, scheme: str) -> None:
 
 
 def _navigate(page: Page, route: str) -> None:
-    expected=page.evaluate('route=>canonicalPage(route)',route)
-    if expected in ('integrations','artifacts'): expected='resources'
+    # Inspect navigation without mutating product state before its real handler.
+    expected=route.split('/',1)[0]
     page.evaluate("route => navigate(route)", route)
     expect(page.locator(".skeleton")).to_have_count(0, timeout=15_000)
     if route == "native":
@@ -283,7 +286,7 @@ def exercise_matrix(stack, output: Path, *, screenshots: bool = True, schemes=SC
                         management_layouts[route] = _layout(
                             page, f"{scheme}-{width}-{route}"
                         )
-                        name = f"{scheme}-{width}-{route}.png"
+                        name = f"{scheme}-{width}-{route.replace(chr(47), chr(45))}.png"
                         if screenshots:
                             page.screenshot(
                                 path=str(output / name),
@@ -430,7 +433,7 @@ def test_native_and_management_share_theme_without_transcript_scans(stack):
         try:
             page.goto(stack.url, wait_until="domcontentloaded")
             expect(page.locator('#login-form')).to_be_visible()
-            page.evaluate("localStorage.setItem('codepier-chat-appearance','dark');localStorage.removeItem('codepier-appearance')")
+            page.evaluate("localStorage.setItem('codepier-appearance','dark')")
             page.reload(wait_until="domcontentloaded")
             expect(page.locator('[data-ui-appearance]')).to_have_value('dark')
             assert page.evaluate("localStorage.getItem('codepier-appearance')") == 'dark'

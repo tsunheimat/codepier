@@ -62,6 +62,8 @@ class Agent:
             self.computer = Computer(lambda: self.config, self.state_dir, self.journal, approvals=self.computer_approvals)
             from agent.integrations import Integrations
             self.integrations = Integrations(self)
+            from agent.execution_sessions import SessionManager
+            self.execution_sessions = SessionManager(self)
         except BaseException:
             if hasattr(self, "journal"):
                 self.journal.db.close()
@@ -96,6 +98,8 @@ class Agent:
     def check_maintenance_idle(self, operation_id):
         if getattr(self.computer, 'session', None):
             raise DevError('COMPUTER_BUSY', '请先结束桌面控制会话，再维护 Agent', 409)
+        if self.execution_sessions.active():
+            raise DevError('SESSIONS_BUSY', 'Close active execution Sessions before Runner maintenance', 409)
         busy = [key for key, task in self.jobs.items() if key != operation_id and not task.done()]
         if (busy or self.processes or any(not task.done() for task in self.transfer_tasks)
                 or any(not task.done() for task in self.kill_tasks)):
@@ -229,6 +233,10 @@ class Agent:
         await socket.send(channel.pack({"type": "hello", "name": config.get("name", platform.node()),
                       "version": VERSION, "build": self.build.describe(), "platform": platform.system(), "hostname": platform.node(),
                       "python": platform.python_version(), "roots": config["allowed_roots"], "capabilities": list(TOOLS),
+                      "shell_enabled": bool(config.get("shell", {}).get("enabled")), "workspace_protocol": 1,
+                      "ssh_enabled": bool(config.get("ssh", {}).get("enabled")),
+                      "execution_sessions": {"enabled": bool(config.get("sessions", {}).get("enabled")),
+                          "persistent_shell": True, "pty": os.name == "posix"},
                       "management": self.lifecycle.describe(), "device_actions": self.lifecycle.actions(),
                       "journal_id": self.journal.journal_id, "project_routing_protocol": 1, "delivery_protocol": 2, "cancel_pending_protocol": 1, "native_security_protocol": 1, "native_protocol": 1, "native_chat_protocol": 3, **advertisement(self.build.catalog_sha256)}))
         reply = channel.unpack(await asyncio.wait_for(socket.recv(), 10))
@@ -341,6 +349,10 @@ class Agent:
     def cancel_call(self, id):
         self.journal.cancel(id)
         self.cancelled.add(id)
+        session_task=self.execution_sessions.cancel_operation(id)
+        if session_task is not None:
+            self.kill_tasks.add(session_task)
+            session_task.add_done_callback(self.kill_done)
         process = self.processes.get(id)
         if process:
             task = asyncio.create_task(self.kill_process(process, include_finished=True))
@@ -401,7 +413,7 @@ class Agent:
     @contextlib.asynccontextmanager
     async def project_slot(self, root, write=True, operation_id=None):
         path = canonical_path(root)
-        async with self._legacy_project_slot(root, write=write, operation_id=operation_id):
+        async with self._path_project_slot(root, write=write, operation_id=operation_id):
             async with self.resources.slot(operation_id or 'local', [Claim('agent', 'path', path, write)],
                     lambda blockers: self.phase(operation_id, 'waiting_resource', blocked_by=blockers) if operation_id else None):
                 yield
@@ -435,7 +447,7 @@ class Agent:
             yield
 
     @contextlib.asynccontextmanager
-    async def _legacy_project_slot(self, root, write=True, operation_id=None):
+    async def _path_project_slot(self, root, write=True, operation_id=None):
         """Coordinate overlapping project paths with shared reads and exclusive writes.
 
         Named tasks remain exclusive by default. A task explicitly marked
@@ -485,7 +497,6 @@ class Agent:
         # fingerprint: tightening policy must not break receipt recovery.
         execution_policy = request.get("execution_policy")
         integration_context = request.get('integration_context')
-        core_ssh = request.get('core_ssh')
         request = {k: request.get(k) for k in ("tool", "project", "args")}
         try:
             previous = self.journal.start(id, request)
@@ -509,7 +520,7 @@ class Agent:
             validate_call_epoch(tool, tool_contract_version)
             # Never accept a project/argument-supplied exemption. Legacy frames
             # without metadata still obey the independently configured local floor.
-            project = {**project, "_execution_policy": execution_policy, "_core_ssh": core_ssh, '_integration_admin': False, '_integration_owner': None}
+            project = {**project, "_execution_policy": execution_policy, '_integration_admin': False, '_integration_owner': None}
             if isinstance(integration_context, dict):
                 owner = integration_context.get('owner')
                 if not isinstance(owner, str) or not 1 <= len(owner) <= 600 or integration_context.get('device_id') != self.config['device_id']:
@@ -537,6 +548,8 @@ class Agent:
             elif tool in DEVICE_ACTIONS:
                 if getattr(self.computer, 'session', None):
                     raise DevError("COMPUTER_BUSY", "请先结束桌面控制会话，再更新、重启或卸载 Agent", 409)
+                if self.execution_sessions.active():
+                    raise DevError("SESSIONS_BUSY", "Close execution Sessions before Runner maintenance", 409)
                 live_cli = self.native.live()
                 if live_cli:
                     raise DevError("CLI_BUSY", "先显式停止原生会话，再更新、重启或卸载 Agent", 409, sessions=[{"id":r["id"],"project_id":r["project_id"]} for r in live_cli])
@@ -555,6 +568,12 @@ class Agent:
                 self.journal.mark_running(id)
                 result = ({"build": self.build.describe(), "running_jobs": len(self.jobs), "telemetry_errors": self.telemetry.errors}
                           if tool == "agent_diagnostics" else execution_info(self.config, project, spec, root))
+            elif tool == 'session' or tool == 'exec' and project.get('_vps_context'):
+                args = TOOLS[tool].model.model_validate(args).model_dump()
+                self.journal.mark_running(id)
+                await self.send({'type': 'started', 'id': id})
+                self.phase(id, 'executing')
+                result = await self.execute(id, tool, project, args)
             elif tool in COMPUTER_TOOLS:
                 args = TOOLS[tool].model.model_validate(args).model_dump()
                 self.engine.root(project, tool in MUTATING and tool != "computer_session_close")
@@ -683,6 +702,8 @@ class Agent:
         if tool in {'routed_exec', 'routed_job_control'}:
             from agent.routed_execution import execute, control
             return await (execute if tool == 'routed_exec' else control)(self, id, project, args)
+        if tool == 'session':
+            return await self.execution_sessions.execute(id, project, args)
         if tool == 'exec':
             if args['task']:
                 from shared.contracts import Task
@@ -693,11 +714,8 @@ class Agent:
                 forwarded = ShellExec.model_validate({k: v for k, v in args.items() if k in ShellExec.model_fields}).model_dump()
                 result = await self.execute(id, 'shell_exec', project, forwarded)
             else:
-                from shared.contracts import SSHExec
-                if not isinstance(project.get('_core_ssh'), dict):
-                    raise DevError('VPS_TRANSPORT_MISSING', '缺少 Hub 验证的 VPS 连接，未执行命令', 409)
-                forwarded = SSHExec.model_validate(project['_core_ssh']).model_dump()
-                result = await self.execute(id, 'ssh_exec', project, forwarded)
+                from agent.execution import ProcessSupervisor
+                result = await ProcessSupervisor(self).run(id, project, args)
             output = result.get('output', '')
             tail = '\n'.join(output.split('\n')[-2000:]).encode('utf-8')[-50 * 1024:].decode('utf-8', errors='ignore')
             return {**result, 'output': tail, 'output_truncated': bool(result.get('output_truncated') or tail != output),
@@ -720,15 +738,6 @@ class Agent:
             work=asyncio.create_task(asyncio.to_thread(self.artifacts.register,id,project,args))
             try:return await asyncio.shield(work)
             except asyncio.CancelledError:return await work
-        if tool == "ssh_exec":
-            from agent.ssh import prepare_ssh, ssh_error
-            root, spec = self.engine.root(project, True)
-            command, env = prepare_ssh(self.config, project, spec, args)
-            result = await self.run_process(id, command, root, args['timeout_seconds'], stream=True,
-                                            task_env=env, full_access=True,
-                                            inherit_env=self.config['shell']['inherit_env'], execution_project=project)
-            return {**result, 'host': args['host'], 'port': args['port'], 'username': args['username'],
-                    'ssh_error': ssh_error(result)}
         if tool == "shell_exec":
             root, spec = self.engine.root(project, True)
             command, cwd, env = prepare_shell(self.config, project, spec, root, args)
@@ -953,8 +962,6 @@ class Agent:
             self.computer.start_guard()
             if local_transport is None:
                 background.append(asyncio.create_task(self.watch_config()))
-                from agent.brand_upgrade import watch as watch_brand_upgrade
-                background.append(asyncio.create_task(watch_brand_upgrade(self)))
             background.append(asyncio.create_task(self.output_sender()))
             stopping = asyncio.create_task(self.stop_event.wait())
             background.append(stopping)
@@ -985,6 +992,7 @@ class Agent:
             self.stop_event.set()
             if local_transport is not None:
                 await local_transport.close()
+            await self.execution_sessions.close()
             await self.computer.close()
             await self.integrations.close()
             if connection is not None:

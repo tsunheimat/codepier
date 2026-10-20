@@ -4,6 +4,7 @@ import copy
 from pathlib import Path
 import pytest
 from scripts.regression_plan import available_workers, classify_events, fingerprint, merge_summaries, plan_jobs, pytest_command
+from scripts.regression_platform import WINDOWS_NODES, WINDOWS_SKIP
 
 NODES = ['tests/test_a.py::test_one', 'tests/test_a.py::test_matrix[light]',
          'tests/test_a.py::test_matrix[dark]', 'tests/test_b.py::test_two']
@@ -14,7 +15,7 @@ def summaries(count=3):
     result = []
     for index in range(count):
         jobs = plan_jobs(NODES, MARKERS, shard_index=index, shard_count=count)
-        result.append({'shard': {'index': index, 'count': count}, 'full_collection': NODES,
+        result.append({'platform': 'linux', 'shard': {'index': index, 'count': count}, 'full_collection': NODES,
                        'collection_sha256': fingerprint(NODES), 'source_inventory_sha256': 'source-fixture',
                        'verified': True, 'outcomes': {n: 'passed' for job in jobs for n in job['nodeids']}})
     return result
@@ -98,6 +99,84 @@ def test_no_teardown_skip_or_missing_phase_can_make_a_green_receipt(mode, expect
     assert outcome[NODES[0]] == expected and not duplicates
     _, duplicates = classify_events([NODES[0]], {NODES[0]: events + [events[0]]})
     assert duplicates == [NODES[0]]
+
+
+@pytest.mark.parametrize('platform', ['linux', 'darwin', 'win32', None, 'unknown'])
+def test_native_setup_guard_is_not_a_pass_on_a_different_platform(platform):
+    node = sorted(WINDOWS_NODES)[0]
+    events = [{'when':'setup','outcome':'skipped','skip_reason':WINDOWS_SKIP},
+              {'when':'teardown','outcome':'passed'}]
+    outcomes, duplicates = classify_events([node], {node:events}, platform=platform)
+    assert outcomes[node] == ('not_applicable' if platform in {'linux','darwin'} else 'skipped')
+    assert not duplicates and 'passed' not in outcomes.values()
+
+
+@pytest.mark.parametrize('fault', ['other_node','other_reason','no_reason','xfail','teardown_failed','missing_teardown','duplicate_setup','skipped_call'])
+def test_native_platform_exception_cannot_hide_any_other_skip_or_failure(fault):
+    node = sorted(WINDOWS_NODES)[0]
+    events = [{'when':'setup','outcome':'skipped','skip_reason':WINDOWS_SKIP},
+              {'when':'teardown','outcome':'passed'}]
+    if fault=='other_node':node='tests/test_other.py::unrelated'
+    elif fault=='other_reason':events[0]['skip_reason']='Skipped: missing runtime library'
+    elif fault=='no_reason':events[0].pop('skip_reason')
+    elif fault=='xfail':events[0]['xfail']=True
+    elif fault=='teardown_failed':events[1]['outcome']='failed'
+    elif fault=='missing_teardown':events.pop()
+    elif fault=='duplicate_setup':events.append(events[0])
+    else:events.insert(1,{'when':'call','outcome':'skipped'})
+    outcomes, duplicates = classify_events([node],{node:events},platform='linux')
+    assert outcomes[node] not in {'passed','not_applicable'}
+    assert bool(duplicates) == (fault=='duplicate_setup')
+
+
+def reports_with_native():
+    nodes=NODES+sorted(WINDOWS_NODES)
+    report={'platform':'linux','shard':{'index':0,'count':1},'full_collection':nodes,
+        'collection_sha256':fingerprint(nodes),'source_inventory_sha256':'same-source',
+        'verified':True,'outcomes':{**{n:'passed' for n in NODES},**{n:'not_applicable' for n in WINDOWS_NODES}}}
+    native={'verified':True,'platform':'win32','collected':len(WINDOWS_NODES),
+        'source_inventory_sha256':'same-source','source_changed_during_run':[],
+        'outcomes':{n:'passed' for n in WINDOWS_NODES}}
+    return report,native
+
+
+def test_complete_proof_needs_real_native_companion_and_counts_it_separately():
+    report,native=reports_with_native()
+    with pytest.raises(ValueError,match='Windows-native evidence'):merge_summaries([report])
+    merged=merge_summaries([report],native_windows=native)
+    assert merged['verified'] and merged['native_windows_verified']
+    assert merged['counts']=={'passed':len(NODES),'not_applicable':10,'failed':0,'skipped':0,'missing':0}
+    assert merged['collected']==len(NODES)+10 and merged['native_windows_tests']==10
+
+
+@pytest.mark.parametrize('fault', ['wrong_platform','wrong_source','unverified','source_changed','missing','extra','skipped','duplicate_count'])
+def test_native_companion_cannot_be_mocked_omitted_or_from_another_build(fault):
+    report,native=reports_with_native()
+    if fault=='wrong_platform':native['platform']='linux'
+    elif fault=='wrong_source':native['source_inventory_sha256']='another-build'
+    elif fault=='unverified':native['verified']=False
+    elif fault=='source_changed':native['source_changed_during_run']=['agent/execution.py']
+    elif fault=='missing':native['outcomes'].pop(next(iter(WINDOWS_NODES)))
+    elif fault=='extra':native['outcomes']['tests/test_extra.py::case']='passed'
+    elif fault=='skipped':native['outcomes'][next(iter(WINDOWS_NODES))]='skipped'
+    else:native['collected']=11
+    with pytest.raises(ValueError,match='Windows-native evidence'):
+        merge_summaries([report],native_windows=native)
+
+
+@pytest.mark.parametrize('fault',['other_exception','native_on_windows','mixed_platform','missing_platform','partial_native','native_pass_on_posix'])
+def test_aggregation_revalidates_platform_exception_instead_of_trusting_verified_flag(fault):
+    report,native=reports_with_native()
+    if fault=='other_exception':report['outcomes'][NODES[0]]='not_applicable'
+    elif fault=='native_on_windows':report['platform']='win32'
+    elif fault=='missing_platform':report.pop('platform')
+    elif fault=='partial_native':report['outcomes'][next(iter(WINDOWS_NODES))]='passed'
+    elif fault=='native_pass_on_posix':report['outcomes'].update({node:'passed' for node in WINDOWS_NODES})
+    else:
+        reports=summaries();reports[-1]['platform']='darwin'
+        with pytest.raises(ValueError):merge_summaries(reports)
+        return
+    with pytest.raises(ValueError):merge_summaries([report],native_windows=native)
 
 
 def test_large_collection_has_linear_node_parsing_budget():

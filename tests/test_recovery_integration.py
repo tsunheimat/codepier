@@ -41,6 +41,24 @@ def agent_record(s,id):
         return dict(row) if row else None
 
 
+def private_fixture_receipt(s,identifier,timeout=25,*,terminal=True):
+    """Inspect only this disposable Hub's DB after its connection is revoked.
+
+    HTTP disclosure must remain denied. This is evidence about a test process,
+    not a fallback observation API or a replacement credential.
+    """
+    def inspect():
+        with closing(sqlite3.connect(s.hubdir/'hub.sqlite3')) as db:
+            db.row_factory=sqlite3.Row
+            row=db.execute('SELECT * FROM operations WHERE id=?',(identifier,)).fetchone()
+        if row is None:return None
+        value=dict(row)
+        if terminal and value['state'] in {'queued','running','reconnecting','cancelling'}:return None
+        if value['result'] is not None:value['result']=json.loads(value['result'])
+        return value
+    return wait_for(inspect,timeout=timeout)
+
+
 def install_task(s,name,command,timeout=25):
     s.config['tasks'][name]={'command':command,'timeout':timeout,'projects':['Imago']}
     atomic_json(s.config_path,s.config)
@@ -85,7 +103,7 @@ def test_completion_while_hub_down_is_replayed_not_reexecuted(stack):
     s=stack;counter='outbox-counter-'+key()+'.txt';name='outbox-'+key()[:8]
     code=f'import pathlib,time; pathlib.Path({counter!r}).open("a").write("x"); print("STARTED",flush=True); time.sleep(1.5); print("测试日志完整 / DONE")'
     install_task(s,name,[sys.executable,'-u','-c',code])
-    args={'project':'Imago','task':name,'idempotency_key':key()};receipt=s.call('tasks_run',args)
+    args={'project':s.project['id'],'task':name,'idempotency_key':key()};receipt=s.call('tasks_run',args)
     wait_for(lambda:(s.imago/counter).exists())
     abrupt_hub_stop(s)
     try:
@@ -112,7 +130,7 @@ def test_concurrent_lost_response_retries_write_one_backup(stack):
 def test_offline_cancel_persists_across_hub_restart(stack):
     s=stack;s.stop_agent();wait_for(lambda:not online(s))
     try:
-        r=s.call('tasks_run',{'project':'Imago','task':'smoke','idempotency_key':key()})
+        r=s.call('tasks_run',{'project':s.project['id'],'task':'smoke','idempotency_key':key()})
         cancelled=s.call('operations_cancel',{'operation_id':r['operation_id']})
         assert cancelled['state']=='cancelled'
         abrupt_hub_stop(s);s.start_hub()
@@ -123,15 +141,18 @@ def test_offline_cancel_persists_across_hub_restart(stack):
 
 def test_pending_grant_revocation_prevents_delayed_write(stack):
     s=stack
-    grant=s.must(s.client.post('/api/grants',json={'label':'temporary-queued','scopes':['read','write'],'projects':[s.project['id']],'days':1}))
+    grant=s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read','write']}]}))
     name='revoked-'+key()+'.txt'
     s.stop_agent();wait_for(lambda:not online(s))
     try:
         receipt=s.mcp('write',{'project':'Imago','path':name,'content':'must not write','expected_sha256':'new','idempotency_key':key()},grant['token'])['structuredContent']
-        s.must(s.client.delete('/api/grants/'+grant['grant_id']))
+        s.must(s.client.post(f'/api/spaces/{s.space_id}/connections/' + grant['connection_id'] + '/revoke'))
     finally:s.start_agent()
-    op=s.poll(receipt['operation_id'],15)
-    assert op['state']=='failed' and op['result']['error']['code']=='AUTHORIZATION_CHANGED'
+    denied=s.client.get('/api/operations/'+receipt['operation_id'])
+    assert denied.status_code==403 and denied.json()['error']['code']=='ACCESS_DENIED'
+    op=private_fixture_receipt(s,receipt['operation_id'],timeout=15)
+    assert op['state']=='failed' and op['attempts']==0
+    assert op['result']['error']['code']=='AUTHORIZATION_CHANGED'
     assert not (s.imago/name).exists()
 
 
@@ -139,7 +160,7 @@ def test_running_task_can_be_cancelled_while_device_offline(stack):
     s=stack;counter='cancel-counter-'+key()+'.txt';name='cancel-'+key()[:8]
     code=f'import pathlib,time; pathlib.Path({counter!r}).write_text("started"); print("STARTED",flush=True); time.sleep(18); pathlib.Path({(counter+".finished")!r}).write_text("done")'
     install_task(s,name,[sys.executable,'-u','-c',code],timeout=25)
-    receipt=s.call('tasks_run',{'project':'Imago','task':name,'idempotency_key':key()})
+    receipt=s.call('tasks_run',{'project':s.project['id'],'task':name,'idempotency_key':key()})
     wait_for(lambda:(s.imago/counter).exists())
     s.must(s.client.patch('/api/devices/'+s.device,json={'enabled':False}));wait_for(lambda:not online(s))
     try:
@@ -156,11 +177,11 @@ def test_actual_pytest_failure_is_not_retried_as_network_failure(stack):
     testfile.write_text('def test_expected_failure():\n    assert False, "intentional regression fixture"\n')
     install_task(s,name,[sys.executable,'-m','pytest','-q','tests/test_expected_failure.py'])
     try:
-        k=key();args={'project':'Imago','task':name,'idempotency_key':k};receipt=s.call('tasks_run',args)
+        k=key();args={'project':s.project['id'],'task':name,'idempotency_key':k};receipt=s.call('tasks_run',args)
         op=s.poll(receipt['operation_id'],15)
         assert op['state']=='failed' and op['result']['data']['exit_code']==1 and '1 failed' in op['output']
         assert s.call('tasks_run',args)['operation_id']==receipt['operation_id']
-        assert len(s.call('operations_list',{'idempotency_key':k})['operations'])==1
+        assert len(s.call('operations_list',{'project':s.project['id'],'idempotency_key':k})['operations'])==1
     finally:testfile.unlink()
 
 
@@ -176,7 +197,7 @@ def test_malformed_hot_config_preserves_connection_and_recovers(stack):
 
 
 def test_multiple_hub_restarts_keep_completed_write_receipt(stack):
-    s=stack;name='restart-write-'+key()+'.txt';args={'project':'Imago','path':name,'content':'persistent write','expected_sha256':'new','idempotency_key':key()}
+    s=stack;name='restart-write-'+key()+'.txt';args={'project':s.project['id'],'path':name,'content':'persistent write','expected_sha256':'new','idempotency_key':key()}
     first=s.fs('fs_write',**{k:v for k,v in args.items() if k!='project'})
     for _ in range(3):
         abrupt_hub_stop(s);restart_hub(s)
@@ -187,7 +208,7 @@ def test_multiple_hub_restarts_keep_completed_write_receipt(stack):
 
 def test_operations_list_cannot_cross_token_scope(stack):
     s=stack;receipt=s.mcp('read',{'project':'Imago','path':'README.md','idempotency_key':key()})['structuredContent']
-    grant=s.must(s.client.post('/api/grants',json={'label':'different-grant','scopes':['read'],'projects':[s.project['id']],'days':1}))
+    grant=s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read']}]}))
     result=s.mcp('process',{'project': 'Imago', 'operation': 'list'},grant['token'])['structuredContent']
     assert receipt['operation_id'] not in [x['id'] for x in result['operations']]
     assert s.mcp('process',{'wait_seconds': 0, 'operation': 'wait', 'operation_ids': [receipt['operation_id']]},grant['token'])['isError']

@@ -181,7 +181,7 @@ async def test_hung_parse_preserves_agent_heartbeat_and_receipt(local_agent, mon
         return True
     agent.send = send
     project = {'root': str(root), 'alias': 'fixture', 'mode': 'write'}
-    request = {'id': 'parse', 'tool': 'code_symbols', 'project': project,
+    request = {'id': 'parse', "tool_contract_version": 1, 'tool': 'code_symbols', 'project': project,
                'args': {'project': 'fixture', 'path': 'fixture.ts'}}
     with monkeypatch.context() as patch:
         worker_script(patch, 'import time; time.sleep(60)')
@@ -190,7 +190,7 @@ async def test_hung_parse_preserves_agent_heartbeat_and_receipt(local_agent, mon
         await asyncio.sleep(.05)
         heartbeat = asyncio.create_task(agent.heartbeat())
         try:
-            await asyncio.wait_for(agent.handle({'id': 'status', 'tool': 'agent_diagnostics',
+            await asyncio.wait_for(agent.handle({'id': 'status', "tool_contract_version": 1, 'tool': 'agent_diagnostics',
                 'project': project, 'args': {'project': 'fixture'}}), 1)
             assert not job.done()
             await asyncio.wait_for(job, 3)

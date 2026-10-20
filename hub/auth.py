@@ -8,8 +8,7 @@ from hub.store import Store
 from hub.access_profiles import effective_grant, validate_profile_consent
 from shared.crypto import digest, token, password_verify
 from shared.util import DevError
-from shared.role_contracts import ROLE_SCOPE
-from hub.roles import validate_role_consent
+from shared.workspace_contracts import WORKSPACE_SCOPE
 from hub import iam
 
 from hub.auth_policy import AuthPolicy
@@ -105,18 +104,44 @@ class Auth:
             raise DevError("CSRF_REJECTED", "页面会话已变化，请刷新后重试", 403)
         return session
 
-    def panel(self, request: Request, write=False):
+    def panel(self, request: Request, write=False, *, space_id=None):
         session = self.session_write(request) if write else self.session(request)
-        # A per-request selector never changes another tab's session. Membership
-        # is checked below; a supplied Space ID is not authority.
-        space_id = request.headers.get('x-codepier-space') or (request.query_params.get('space_id') if 'query_string' in request.scope else None)
-        if not space_id:
-            space_id = iam.default_space(self.store, session['user_id'])
-            if not space_id:
-                raise DevError('SPACE_FORBIDDEN', '账号没有已启用的空间', 403)
-        principal = Principal('panel:' + session['username'], session['user_id'], {'read'}, [],
-                              space_id=space_id, identity_id=session['identity_id'], user_epoch=session['user_epoch'], session_hash=session['id_hash'])
+        if request.headers.get('x-codepier-space'):
+            raise DevError('WORKSPACE_PATH_REQUIRED', 'Use explicit workspace resource URLs, not an ambient workspace header', 400)
+        route_space = request.path_params.get('space_id')
+        if route_space and space_id and route_space != space_id:
+            raise DevError('WORKSPACE_MISMATCH', 'The resource URL and requested workspace differ', 403)
+        space_id = route_space or space_id
+        if space_id is None:
+            # A concrete resource ID carries its own workspace. No default, cookie,
+            # account preference or current-space query can choose one.
+            for key, table in (('project_id','projects'),('operation_id','operations'),
+                               ('profile_id','access_profiles'),('grant_id','grants')):
+                identifier = request.path_params.get(key)
+                if identifier:
+                    row = self.store.one('SELECT space_id FROM '+table+' WHERE id=?', (identifier,))
+                    if not row:
+                        raise DevError('RESOURCE_NOT_FOUND', 'Resource not found', 404)
+                    space_id = row['space_id']
+                    break
+        principal = Principal('panel:'+session['username'], session['user_id'], {'read'}, [],
+                              space_id=space_id, identity_id=session['identity_id'],
+                              user_epoch=session['user_epoch'], session_hash=session['id_hash'])
         principal = iam.live_principal(self.store, principal)
+        from hub.resource_context import in_resource, project_context
+        path = request.url.path
+        if principal.space_id is None:
+            resource = None
+            if path.startswith('/api/operations/'):
+                resource = ('operations', request.path_params.get('id') or request.path_params.get('operation_id'))
+            elif path.startswith('/api/artifacts/'):
+                resource = ('artifacts', request.path_params.get('identifier'))
+            elif path.startswith('/api/native/sessions/'):
+                resource = ('native_ownership', request.path_params.get('sid'))
+            if resource and resource[1]:
+                principal = in_resource(self.store, principal, *resource)
+            elif request.query_params.get('project'):
+                principal = project_context(self.store, principal, request.query_params['project'])
         iam.audit_context.set((self.store, principal.actor, principal.space_id, principal.user_id))
         return principal
 
@@ -141,22 +166,20 @@ class Auth:
         return {'cookie': secret, 'csrf': csrf, 'username': user['username'], 'user_id': user_id}
 
     def bearer(self, request: Request):
-        header = request.headers.get("authorization", "")
-        scheme, separator, value = header.partition(" ")
-        if not separator or scheme.lower() != "bearer":
-            raise DevError("TOKEN_REQUIRED", "需要 MCP Bearer Token 或 OAuth 授权", 401)
+        scheme, separator, value = request.headers.get('authorization','').partition(' ')
+        if not separator or scheme.lower() != 'bearer':
+            raise DevError('TOKEN_REQUIRED', 'An MCP Bearer credential is required', 401)
         value = value.strip()
         if not value or len(value) > 500:
-            raise DevError("INVALID_TOKEN", "无效的凭据", 401)
-        row = self.store.one("SELECT t.*,g.user_id,g.label,g.scopes,g.projects,g.revoked,g.resource,g.profile_id,g.authorization_mode,g.role_id,g.resource_policy,g.space_id,g.identity_id,g.user_epoch FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.hash=? AND t.kind IN ('access','pat') AND t.expires>? AND g.revoked=0", (digest(value), time.time()))
-        if not row or (row["kind"] == "access" and self.resource and row["resource"] != self.resource()):
-            raise DevError("INVALID_TOKEN", "凭据已过期或撤销", 401)
-        scopes, projects, _ = effective_grant(self.store, row)
-        iam.audit_context.set((self.store, "mcp:" + row["grant_id"] + ":" + row["label"], row["space_id"], row["user_id"]))
-        return Principal("mcp:" + row["grant_id"] + ":" + row["label"], row["user_id"], scopes, projects,
-                         grant_id=row["grant_id"], profile_id=row["profile_id"],
-                         authorization_mode=row['authorization_mode'], role_id=row['role_id'],
-                         space_id=row['space_id'], identity_id=row['identity_id'], user_epoch=row['user_epoch'], token_hash=digest(value))
+            raise DevError('INVALID_TOKEN', 'Invalid credential', 401)
+        row = self.store.one("SELECT g.*,t.kind AS token_kind FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.hash=? AND t.kind IN ('access','pat') AND t.expires>? AND g.revoked=0", (digest(value),time.time()))
+        if not row or (row['token_kind']=='access' and self.resource and row['resource']!=self.resource()):
+            raise DevError('INVALID_TOKEN', 'Credential expired or revoked', 401)
+        scopes, projects, _ = effective_grant(self.store,row)
+        actor = 'mcp:'+row['id']+':'+row['label']
+        iam.audit_context.set((self.store,actor,row['space_id'],row['user_id']))
+        return Principal(actor,row['user_id'],scopes,projects,grant_id=row['id'],profile_id=row['profile_id'],
+                         space_id=row['space_id'],identity_id=row['identity_id'],user_epoch=row['user_epoch'],token_hash=digest(value))
 
     def _login_attempt(self, request, username):
         ip = request.client.host if request.client else "unknown"
@@ -213,62 +236,45 @@ class Auth:
                 self.login_inflight -= 1
 
 
-    def issue_grant(self, principal: Principal, label: str, scopes: list[str], projects: list[str], days: int = 30, client_id=None, *, profile_id=None, profile_version=None, authorization_mode='fixed', role_version=None, confirm_dynamic_role=False, confirm_external_mcp=False, resource_policy=None):
-        principal = iam.live_principal(self.store, principal)
-        if authorization_mode == 'role':
-            if scopes != [ROLE_SCOPE] or projects:
-                raise DevError('INVALID_SCOPE', '动态角色仅接受 codepier.role_access，资源清单由角色实时决定')
-        elif authorization_mode != 'fixed':
-            raise DevError('INVALID_SCOPE', '未知授权模式')
-        elif "read" not in scopes or not set(scopes).issubset({"read", "write", "execute", "computer"}):
-            raise DevError("INVALID_SCOPE", "权限必须包含 read，且只支持 read/write/execute/computer")
-        if not projects and authorization_mode != 'role' and resource_policy is None:
-            raise DevError("NO_PROJECTS", "至少选择一个项目")
-        if "*" not in projects:
-            found = {x["id"] for x in self.store.all("SELECT id FROM projects WHERE space_id=?", (principal.space_id,))}
-            if not set(projects).issubset(found):
-                raise DevError("INVALID_PROJECT", "授权的项目已不存在")
+    def issue_connection(self, principal: Principal, label: str, profile_id: str, profile_version: int,
+                         days: int = 30, client_id=None, *, consent_mode='fixed',
+                         confirm_live_profile=False, confirm_external_mcp=False, issue_token=True):
+        if consent_mode not in {'fixed','live'} or type(days) is not int or not 1<=days<=365:
+            raise DevError('INVALID_CONSENT', 'Invalid connection consent or lifetime')
+        if consent_mode=='live' and confirm_live_profile is not True:
+            raise DevError('LIVE_CONSENT_REQUIRED', 'Explicitly consent to future Profile resource/action changes')
         if type(confirm_external_mcp) is not bool:
-            raise DevError('INVALID_CONSENT', '外部 MCP 同意必须为布尔值')
-        gid, tid, secret = token(16), token(16), "rd_" + token()
-        now = time.time()
+            raise DevError('INVALID_CONSENT', 'External MCP consent must be boolean')
+        from hub.permissions import _policy, member_policy, intersect_policies
+        from hub.workspace_mutations import label_key
+        label,_ = label_key(label)
+        gid,tid,secret = token(16),token(16),'rd_'+token()
+        now=time.time()
         with self.store.transaction():
-            principal = iam.live_principal(self.store, principal)
-            role_id = None
-            if authorization_mode == 'role':
-                role = validate_role_consent(self.store, principal.user_id, profile_id, profile_version, role_version, confirm_dynamic_role, space_id=principal.space_id)
-                role_id = role['id']
-            else:
-                profile = validate_profile_consent(self.store, principal.user_id, profile_id, scopes, projects, profile_version, space_id=principal.space_id)
-                if resource_policy is not None:
-                    from hub.roles import _policy, RolePolicy
-                    # Only the consolidated creation service passes a snapshot;
-                    # it is never accepted as an unvalidated HTTP policy.
-                    RolePolicy.model_validate(resource_policy)
-                    role = iam.role_eligible(self.store, principal.user_id, profile['role_id'], principal.space_id)
-                    if not role['enabled'] or role['version'] != role_version:
-                        raise DevError('ROLE_CHANGED', '角色已变化，请重新核对同意范围', 409)
-                    _policy(role)
-                    role_id = role['id']
-            if authorization_mode == 'fixed' and not principal.admin:
-                if '*' in projects:
-                    raise DevError('DYNAMIC_ROLE_REQUIRED', '未来项目委派请使用已分配的动态角色', 403)
-                permissions = iam.project_permissions(self.store, principal)
-                for project_id in projects:
-                    from hub.roles import RolePolicy, project_actions
-                    actions = project_actions(RolePolicy.model_validate(resource_policy), project_id) if resource_policy is not None else set(scopes)
-                    if not actions <= permissions.get(project_id, set()):
-                        raise DevError('INSUFFICIENT_SCOPE', '不能委派自己没有的项目权限', 403)
-            self.store.db.execute("INSERT INTO grants(id,user_id,label,client_id,scopes,projects,revoked,created,profile_id,authorization_mode,role_id,space_id,owner_user_id,identity_id,user_epoch) VALUES (?,?,?,?,?,?,0,?,?,?,?,?,?,?,?)", (gid, principal.user_id, label, client_id, json.dumps(sorted(set(scopes))), json.dumps(projects), now, profile_id, authorization_mode, role_id, principal.space_id, principal.user_id, principal.identity_id, principal.user_epoch))
-            if resource_policy is not None:
-                self.store.db.execute('UPDATE grants SET resource_policy=? WHERE id=?', (json.dumps(resource_policy, sort_keys=True), gid))
-            self.store.db.execute("INSERT INTO tokens VALUES (?,?,?,'pat',?,?)", (tid, digest(secret), gid, now + days * 86400, now))
+            principal=iam.live_principal(self.store,principal)
+            profile=validate_profile_consent(self.store,principal,profile_id,profile_version)
+            policy=intersect_policies(self.store,principal.space_id,member_policy(self.store,principal.user_id,principal.space_id),_policy(profile))
+            from hub.workspace_sources import consent_targets
+            snapshots=consent_targets(self.store,principal.space_id,policy)
+            self.store.db.execute('INSERT INTO grants(id,user_id,owner_user_id,space_id,profile_id,label,client_id,consent_mode,resource_policy,target_snapshots,profile_version,created,identity_id,user_epoch) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (gid,principal.user_id,principal.user_id,principal.space_id,profile_id,label,client_id,consent_mode,
+                 policy.model_dump_json(),json.dumps(snapshots,sort_keys=True),profile['version'],now,principal.identity_id,principal.user_epoch))
+            if client_id is not None:
+                self.store.db.execute('UPDATE grants SET resource=? WHERE id=?', (self.resource(), gid))
+            from hub.gateway.catalog import fingerprint as tool_fingerprint
+            ceiling = {}
+            for rule in policy.connector_rules:
+                binding = self.store.one('SELECT tools FROM gateway_bindings WHERE id=? AND space_id=?', (rule.binding_id, principal.space_id))
+                ceiling[rule.binding_id] = {t['name']: tool_fingerprint(t) for t in json.loads(binding['tools']) if t['name'] in rule.tools}
+            self.store.db.execute('UPDATE grants SET connector_ceiling=? WHERE id=?', (json.dumps(ceiling, sort_keys=True), gid))
+            if issue_token:
+                self.store.db.execute("INSERT INTO tokens VALUES(?,?,?,'pat',?,?)",(tid,digest(secret),gid,now+days*86400,now))
             if confirm_external_mcp:
                 from hub.gateway.policy import consent_grant
-                consent_grant(self.store, principal, gid, role_version)
-            if role_id:
-                iam.audit(self.store, principal, 'role.consent', gid, detail={
-                        'source': 'pat', 'profile_id': profile_id, 'role_id': role_id,
-                        'role_version': role['version'], 'policy': json.loads(role['policy']),
-                        'dynamic_resources_and_actions': authorization_mode == 'role'})
-        return {"grant_id": gid, "token": secret, "expires": now + days * 86400}
+                consent_grant(self.store,principal,gid,profile['version'])
+            iam.audit(self.store,principal,'connection.consent',gid,detail={'profile_id':profile_id,'profile_version':profile['version'],
+                'consent_mode':consent_mode,'policy':policy.model_dump(),'external_mcp':confirm_external_mcp})
+        result = {'grant_id':gid,'connection_id':gid}
+        if issue_token:
+            result.update(token=secret, expires=now+days*86400)
+        return result

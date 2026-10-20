@@ -90,13 +90,14 @@ def test_commit_callback_runs_once_after_outer_commit(store):
 
 
 def test_transaction_helpers_fail_without_context(store):
-    from hub.access import bump_grant_revision
+    # The removed grant revision helper is not a compatibility target.
     with pytest.raises(RuntimeError):
-        bump_grant_revision(store, "does-not-exist")
+        store.require_transaction()
     with store.lock:
         with pytest.raises(RuntimeError, match="enclosing"):
-            bump_grant_revision(store, "does-not-exist")
+            store.require_transaction()
         with store.db:
+            store.require_transaction()
             with pytest.raises(RuntimeError, match="implicitly commit"):
                 store.db.executescript("SELECT 1;")
 
@@ -292,8 +293,8 @@ def test_mutating_catalog_is_computed_after_all_registrations():
 
 def test_process_catalog_contains_only_registered_process_tools():
     from shared.contracts import PROCESS_TOOLS, TOOLS
-    assert PROCESS_TOOLS == {'tasks_run', 'shell_exec', 'ssh_exec', 'exec',
-                             'routed_exec', 'routed_job_control',
+    assert PROCESS_TOOLS == {'tasks_run', 'shell_exec', 'exec',
+                             'routed_exec', 'routed_job_control', 'session',
                              'validation_run', 'lsp_query', 'worktrees_create', 'worktrees_remove'}
     assert TOOLS['routed_exec'].scope == TOOLS['routed_job_control'].scope == 'execute'
     assert PROCESS_TOOLS <= TOOLS.keys()

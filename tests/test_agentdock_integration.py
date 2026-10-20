@@ -5,7 +5,6 @@ from jsonschema import Draft202012Validator
 
 from hub.store import Store
 from shared.contracts import OUTPUT_SCHEMAS
-from tests.historical_workflows import seed_workflow
 from tests.support import wait_for
 
 
@@ -19,14 +18,6 @@ def mcp(stack,name,args):
     Draft202012Validator(OUTPUT_SCHEMAS[name]).validate(data)
     return data
 
-
-def archive(stack,title='Historical fixture'):
-    store=Store(stack.hubdir)
-    try:
-        grant=store.one('SELECT * FROM grants WHERE id=?',(stack.grant,))
-        return seed_workflow(store,project_id=stack.project['id'],user_id=grant['user_id'],grant_id=stack.grant,
-                             title=title,key=uuid.uuid4().hex)
-    finally:store.close()
 
 
 def test_mcp_context_and_retired_workflow_write_are_independent(stack):
@@ -49,7 +40,6 @@ def test_real_command_failure_retains_true_exit_and_compact_receipt(stack):
 
 
 def test_retired_calls_are_unavailable_after_actual_hub_restart_and_receipts_survive(stack):
-    archive(stack, 'Inert restart history')
     submitted = mcp(stack, 'tasks_run', {'project': 'Imago', 'task': 'smoke', 'idempotency_key': uuid.uuid4().hex})
     completed = stack.poll(submitted['operation_id'])
     assert completed['state'] == 'succeeded'
@@ -58,7 +48,8 @@ def test_retired_calls_are_unavailable_after_actual_hub_restart_and_receipts_sur
     before = mcp(stack, 'operations_get', {'operation_id': completed['id']})
     store = Store(stack.hubdir)
     try:
-        history = {t: store.all('SELECT * FROM ' + t) for t in ('workflows', 'workflow_events', 'workflow_replays')}
+        assert not store.all("SELECT name FROM sqlite_master WHERE name LIKE 'workflow%'")
+        assert store.one("SELECT value FROM meta WHERE key='schema'")['value']=='workspace-1'
         durable_result = store.one('SELECT result FROM operations WHERE id=?', (completed['id'],))
     finally: store.close()
     stack.hub.terminate(); stack.hub.wait(timeout=12); stack.start_hub()
@@ -76,11 +67,11 @@ def test_retired_calls_are_unavailable_after_actual_hub_restart_and_receipts_sur
             'Authorization': 'Bearer ' + stack.pat, 'Accept': 'application/json, text/event-stream', **request_headers(body)})
         assert response.status_code == 400 and response.json()['error']['code'] == -32602
     for tool in ('workspace', 'project_query'):
-        result = stack.mcp(tool, {'operation': 'handoff', 'options': {'workflow_id': history['workflows'][0]['id']}})
+        result = stack.mcp(tool, {'operation': 'handoff', 'options': {'workflow_id': 'a'*32}})
         assert result['isError'] and result['structuredContent']['error']['code'] == 'INVALID_ARGUMENTS'
     store = Store(stack.hubdir)
     try:
-        assert {t: store.all('SELECT * FROM ' + t) for t in history} == history
+        assert not store.all("SELECT name FROM sqlite_master WHERE name LIKE 'workflow%'")
         assert store.one('SELECT result FROM operations WHERE id=?', (completed['id'],)) == durable_result
     finally: store.close()
     wait_for(lambda: any(d['id'] == stack.device and d['online'] for d in stack.client.get('/api/devices').json()['devices']), timeout=20)

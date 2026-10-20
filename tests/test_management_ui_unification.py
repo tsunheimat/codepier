@@ -14,9 +14,9 @@ from playwright.sync_api import expect
 from tests.test_ui_unification import _login, _navigate, _prepare_native_fixture
 
 ROUTES = (
-    'overview','devices','projects','vps','workbench','conversations','audit','connect',
-    'profiles','roles','mcp-gateway','diagnostics','integrations','artifacts',
-    'identity','identity/users','identity/sso','members','settings','native',
+    'overview','resources/devices','resources/projects','resources/vps','resources/storage',
+    'resources/mcp','workbench','audit/sessions','audit/operations','audit/events',
+    'spaces','diagnostics','identity','identity/users','identity/sso','settings','native',
 )
 
 
@@ -31,17 +31,21 @@ def test_all_management_routes_reflow_in_each_theme(stack, chat_browser_pool, tm
     try:
         _login(page,stack)
         page.evaluate('scheme=>CodePierAppearance.setPreference(scheme)',scheme)
-        for route in ROUTES:
+        for route in (*ROUTES,*('spaces/'+stack.space_id+'/'+tab for tab in ('projects','folders','profiles','connections','members','shell'))):
             _navigate(page,route)
             if route == 'native':
                 expect(page.locator('#chat-root')).to_be_visible()
                 expect(page.locator('#chat-compose')).to_be_visible()
             else:
-                title=page.evaluate('route=>nav.find(item=>item[0]===canonicalPage(route))[2]',route)
+                group=route.split('/',1)[0]
+                if group=='resources':title='资源库'
+                elif group=='spaces':
+                    title='工作空间' if route=='spaces' else stack.must(stack.client.get('/api/spaces/'+stack.space_id))['label']
+                else:title=page.evaluate('group=>nav.find(item=>item[0]===group)[2]',group)
                 expect(page.locator('#page h1')).to_have_text(title)
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),route
             assert page.evaluate('document.documentElement.dataset.appearance')==scheme
-            page.screenshot(path=str(tmp_path/f'{route}-{width}-{scheme}.png'),full_page=True)
+            page.screenshot(path=str(tmp_path/f'{route.replace(chr(47),chr(45))}-{width}-{scheme}.png'),full_page=True)
         _navigate(page,'identity')
         panels=page.locator('.management-grid > .panel')
         assert panels.count()==3
@@ -60,43 +64,40 @@ def test_all_management_routes_reflow_in_each_theme(stack, chat_browser_pool, tm
 def test_editor_back_after_resize_keeps_dirty_input_until_confirmed(stack,chat_browser_pool,engine):
     page=chat_browser_pool(engine).new_page(viewport={'width':1440,'height':1000})
     try:
-        _login(page,stack,'roles')
-        page.click('#role-create')
-        page.fill('#role-form [name=label]','Unsaved isolated role')
+        _login(page,stack,'spaces/'+stack.space_id+'/profiles')
+        page.locator('[data-ws-action="new-profiles"]').click()
+        page.fill('#workspace-form [name=label]','Unsaved isolated Profile')
         page.set_viewport_size({'width':390,'height':844})
         expect(page.get_by_role('button',name='返回上一页')).to_be_visible()
         assert page.locator('.editor-back-label').evaluate('el=>el.getBoundingClientRect().height') < 30
         page.once('dialog',lambda dialog:dialog.dismiss())
         page.go_back()
-        expect(page.locator('#role-form [name=label]')).to_have_value('Unsaved isolated role')
+        expect(page.locator('#workspace-form [name=label]')).to_have_value('Unsaved isolated Profile')
         assert page.evaluate("history.state?.codepierEditor != null")
         page.once('dialog',lambda dialog:dialog.accept())
         page.go_back()
-        expect(page.locator('#role-form')).to_have_count(0)
+        expect(page.locator('#workspace-form')).to_have_count(0)
         assert not page.evaluate("document.querySelector('#app').inert")
-        expect(page.locator('#page h1')).to_have_text('访问')
+        expect(page.locator('#workspace-page')).to_be_visible()
     finally:
         page.close()
 
 
 @pytest.mark.parametrize('engine',['chromium','webkit'])
-def test_policy_rule_switch_is_one_click_after_textarea_blur(stack,chat_browser_pool,engine):
+def test_profile_resource_choice_is_one_click_after_label_blur(stack,chat_browser_pool,engine):
     page=chat_browser_pool(engine).new_page(viewport={'width':1440,'height':1000})
     try:
-        _login(page,stack,'roles');page.click('#role-create')
-        page.click('#role-add-project-rule');page.click('#role-add-device-rule')
-        page.fill('[data-device-rule] [name=root_prefixes]','/fixture/allowed')
-        first=page.locator('.policy-rule-list button').first
-        first.click()
-        expect(page.locator('[data-project-rule]')).to_be_visible()
-        expect(page.locator('[data-device-rule]')).to_be_hidden()
-        page.locator('.policy-rule-list button').nth(1).click()
-        expect(page.locator('[data-device-rule] [name=root_prefixes]')).to_have_value('/fixture/allowed')
-        assert page.locator('#role-form [name=root_prefixes]').count()==1
-        assert page.evaluate("document.querySelector('[name=root_prefixes]').form.id")=='role-form'
-        expect(page.locator('[data-project-rule] [name=action][value=read]')).to_be_checked()
-    finally:
-        page.close()
+        _login(page,stack,'spaces/'+stack.space_id+'/profiles')
+        page.locator('[data-ws-action="new-profiles"]').click()
+        form=page.locator('#workspace-form')
+        form.locator('[name=label]').fill('Explicit resource choices')
+        first=form.locator('[data-policy-kind="projects"][data-resource="'+stack.project['id']+'"][value="read"]')
+        second=form.locator('[data-policy-kind="projects"][data-resource="'+stack.projects[1]['id']+'"][value="read"]')
+        first.click();expect(first).to_be_checked()
+        second.click();expect(second).to_be_checked();expect(first).to_be_checked()
+        expect(form.locator('[name=label]')).to_have_value('Explicit resource choices')
+        expect(form.locator('[name=root_prefixes],[name=role_id]')).to_have_count(0)
+    finally:page.close()
 
 
 def gateway_adapter(page, stack, *, uncertain=False):
@@ -114,7 +115,9 @@ def gateway_adapter(page, stack, *, uncertain=False):
         if path.endswith('/discover'):
             r.fulfill(json={'catalog_hash':'a'*64,'tools':[{'name':f'tool_{i}','description':f'Synthetic tool {i}','inputSchema':{'type':'object','properties':{'query':{'type':'string'}}}} for i in range(24)]});return
         r.fulfill(json=state)
-    page.route('**/api/mcp-gateway**',route)
+    page.route('**/api/spaces/'+stack.space_id+'/mcp-gateway**',route)
+    page.route('**/api/mcp-gateway/connectors**',route)
+    page.route('**/api/spaces/'+stack.space_id+'/external-integrations',lambda r:r.fulfill(json={'integrations':[]}))
     return requests
 
 
@@ -122,7 +125,7 @@ def gateway_adapter(page, stack, *, uncertain=False):
 def test_gateway_search_never_changes_selected_tools(stack,chat_browser_pool,width):
     page=chat_browser_pool('chromium').new_page(viewport={'width':width,'height':900})
     try:
-        gateway_adapter(page,stack);_login(page,stack,'mcp-gateway')
+        gateway_adapter(page,stack);_login(page,stack,'spaces/'+stack.space_id+'/mcp')
         page.click('[data-gw-discover]')
         expect(page.locator('#gw-form [name=tool]:checked')).to_have_count(0)
         page.check('#gw-form [name=tool][value=tool_5]')
@@ -150,7 +153,7 @@ def test_gateway_search_never_changes_selected_tools(stack,chat_browser_pool,wid
 def test_unknown_gateway_credential_save_cannot_resubmit_an_empty_token(stack,chat_browser_pool):
     page=chat_browser_pool('chromium').new_page()
     try:
-        requests=gateway_adapter(page,stack,uncertain=True);_login(page,stack,'mcp-gateway')
+        requests=gateway_adapter(page,stack,uncertain=True);_login(page,stack,'spaces/'+stack.space_id+'/mcp')
         page.click('[data-gw-account]');page.fill('#gw-form [name=token]','SYNTHETIC_UI_ONLY')
         page.click('button[form=gw-form]')
         expect(page.locator('#gw-form')).to_have_attribute('data-submission','uncertain')
@@ -163,19 +166,19 @@ def test_unknown_gateway_credential_save_cannot_resubmit_an_empty_token(stack,ch
         page.close()
 
 
-def test_management_filter_and_focus_survive_refresh(stack,chat_browser_pool):
-    marker='UI Filter '+uuid.uuid4().hex[:7]
-    for i in range(5):
-        stack.must(stack.client.post('/api/access-roles',json={'label':marker+str(i),'enabled':True,'project_rules':[],'device_rules':[],'connector_rules':[],'idempotency_key':uuid.uuid4().hex}))
+def test_profile_draft_and_explicit_choices_survive_passive_refresh(stack,chat_browser_pool):
+    # The Role-list filter is retired; retain the meaningful current-editor
+    # focus/draft guarantee, without reconstructing that obsolete list.
     page=chat_browser_pool('chromium').new_page()
     try:
-        _login(page,stack,'roles')
-        search=page.locator('.entity-filter input');search.fill(marker+'2')
-        expect(page.locator('#roles-page .grant-row:visible')).to_have_count(1)
+        _login(page,stack,'spaces/'+stack.space_id+'/profiles')
+        page.locator('[data-ws-action="new-profiles"]').click()
+        form=page.locator('#workspace-form');label=form.locator('[name=label]')
+        chosen=form.locator('[data-policy-kind="projects"][data-resource="'+stack.project['id']+'"][value="read"]')
+        chosen.check();label.fill('In-memory Profile draft')
         page.evaluate('renderPage(false)')
-        expect(page.locator('.entity-filter input')).to_have_value(marker+'2')
-        expect(page.locator('.entity-filter input')).to_be_focused()
-        expect(page.locator('#roles-page .grant-row:visible')).to_have_count(1)
+        expect(label).to_have_value('In-memory Profile draft');expect(label).to_be_focused()
+        expect(chosen).to_be_checked()
     finally:page.close()
 
 
@@ -226,27 +229,22 @@ def test_large_reader_is_full_page_and_keyboard_back_is_safe(stack,chat_browser_
 
 
 @pytest.mark.parametrize('engine',['chromium','webkit'])
-def test_remove_only_rule_and_node_name_both_guard_unsaved_leave(stack,chat_browser_pool,engine):
-    role=stack.must(stack.client.post('/api/access-roles',json={
-        'label':'Discard guard '+uuid.uuid4().hex[:8],'enabled':True,
-        'project_rules':[{'actions':['read'],'projects':[stack.project['id']],'all_projects':False,'created_projects':False,'excluded_projects':[]}],
-        'device_rules':[],'connector_rules':[],'idempotency_key':str(uuid.uuid4())}))
+def test_removing_last_profile_action_and_node_name_guard_unsaved_leave(stack,chat_browser_pool,engine):
+    saved=stack.create_profile({'project_rules':[{'projects':[stack.project['id']],'actions':['read']}]},label='Discard guard '+uuid.uuid4().hex[:8])
     page=chat_browser_pool(engine).new_page(viewport={'width':390,'height':844})
     try:
-        _login(page,stack,'roles')
-        page.locator('[data-role-edit="'+role['id']+'"]').click()
-        expect(page.locator('[data-project-rule]')).to_have_count(1)
-        page.locator('[data-remove-rule]').click()
-        expect(page.locator('[data-project-rule]')).to_have_count(0)
-        expect(page.locator('#role-add-project-rule')).to_be_focused()
+        _login(page,stack,'spaces/'+stack.space_id+'/profiles')
+        page.locator('[data-ws-action="profile"][data-id="'+saved['id']+'"]').click()
+        form=page.locator('#workspace-form')
+        selected=form.locator('[data-policy-kind="projects"][data-resource="'+stack.project['id']+'"][value="read"]')
+        expect(selected).to_be_checked();selected.uncheck()
         page.once('dialog',lambda dialog:dialog.dismiss());page.go_back()
-        expect(page.locator('#role-form')).to_be_visible()
-        expect(page.locator('[data-project-rule]')).to_have_count(0)
+        expect(form).to_be_visible();expect(selected).not_to_be_checked()
         page.once('dialog',lambda dialog:dialog.accept());page.go_back()
-        expect(page.locator('#role-form')).to_have_count(0)
-        saved=stack.must(stack.client.get('/api/access-roles/'+role['id']))
-        assert len(saved['project_rules'])==1
-        _navigate(page,'devices')
+        expect(form).to_have_count(0)
+        original=stack.must(stack.client.get('/api/spaces/'+stack.space_id+'/profiles/'+saved['id']))
+        assert original['policy']==saved['policy'] and original['version']==saved['version']
+        _navigate(page,'resources/devices')
         page.evaluate('deviceDetail(S.devices[0].id)')
         expect(page.locator('.modal')).to_have_attribute('data-presentation','editor')
         page.fill('#device-rename','Unsaved synthetic node')

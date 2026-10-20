@@ -20,8 +20,9 @@ def approval_stack(tmp_path_factory):
         binary.chmod(0o700)
         config=json.loads(s.config_path.read_text());config['computer']={'enabled':True,'projects':['Imago'],'allowed_apps':['Fixture'],'plugin_root':str(provider),'transport':'codex-app-server','app_server':str(binary),'call_timeout_seconds':15}
         s.config_path.write_text(json.dumps(config));s.start_agent()
-        r=s.must(s.client.post('/api/grants',json={'label':'approval-test','scopes':['read','computer'],'projects':[s.project['id']],'days':1}))
-        s.approval_pat=r['token']
+        profile=s.create_profile({'project_rules':[{'projects':[s.project['id']],
+            'actions':['read','computer']}]},label='Approval fixture')
+        s.approval_pat=s.create_connection(profile)['token']
         yield s
 
 def tool(s,operation,args):

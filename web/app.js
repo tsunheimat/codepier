@@ -10,21 +10,20 @@ const nav = [
   ['overview', 'dashboard', '控制总览', '01'],
   ['devices', 'device', '设备节点', '02'],
   ['resources', 'folder', '资源', '03'],
-  ['access', 'shield', '访问', '07'],
+  ['spaces', 'folder', '工作空间', '07'],
   ['workbench', 'code', '远程工作台', '04'],
   ['audit', 'audit', '操作审计', '06'],
   ['diagnostics', 'activity', '运行诊断', '08'],
   ['integrations', 'network', '开发工具', '12'],
   ['artifacts', 'download', '产物交付', '09'],
   ['identity', 'key', '账号与身份', '16'],
-  ['members', 'shield', '空间成员', '17'],
   ['settings', 'settings', '系统设置', '10'],
 ];
 const S = {
-  space_id: null,
   identity: null,
   session: null,
-  page: 'resources',
+  page: 'spaces',
+  workspacePath: 'spaces',
   overview: null,
   projects: [],
   devices: [],
@@ -95,7 +94,7 @@ function networkState(text, online = false) {
 }
 function sessionChanged() {
   return Object.assign(
-    new Error('登录、空间或权限上下文已变化；旧请求结果未应用，已提交操作请先核对状态。'),
+    new Error('登录、页面或权限上下文已变化；旧请求结果未应用，已提交操作请先核对状态。'),
     {
       code: 'SESSION_CHANGED',
     },
@@ -109,7 +108,7 @@ function stopEvents() {
 }
 function sessionOwner(session) {
   return session?.user_id
-    ? 'id:' + session.user_id + ':space:' + (S.space_id || 'unselected')
+    ? 'id:' + session.user_id
     : session?.username
       ? 'name:' + session.username
       : null;
@@ -138,7 +137,7 @@ function discardLocalWork() {
   sessionValue('codepier-operation', null);
   sessionValue('codepier-task-submission', null);
 }
-function clearSpaceSnapshots() {
+function clearResourceSnapshots() {
   window.CodePierAuditSessions?.clear();
   S.auditSession = '';
   S.auditCorrelation = '';
@@ -172,17 +171,25 @@ function clearSpaceSnapshots() {
     basicsRequest: null,
   });
 }
+function projectSourceSnapshot(project) {
+  return {
+    root: project.root,
+    device_id: project.device_id,
+    folder_id: project.folder_id,
+    subpath: project.subpath,
+    space_id: project.space_id ?? project.workspace?.id,
+  };
+}
 function suspendPanelContext(discard = false, keepLogin = false) {
   clearPanelAccessRetry();
   const session = S.session,
-    space = S.space_id;
+    space = location.hash;
   closeModal();
   window.CodePierCallLog?.clear();
   window.CodePierAuditSessions?.clear();
   S.auditSession = '';
   S.auditCorrelation = '';
   S.auditOperation = '';
-  window.CodePierAccess?.detach();
   window.CodePierPanelUpdate?.detach();
   // Expiry suspends in-memory drafts, never persists message text or files.
   // Only the same authenticated account can recover them after signing in.
@@ -196,12 +203,7 @@ function suspendPanelContext(discard = false, keepLogin = false) {
   S.suspendedMappings = discard
     ? null
     : priorMappings ||
-      new Map(
-        (S.projects || []).map((project) => [
-          project.id,
-          { root: project.root, device_id: project.device_id },
-        ]),
-      );
+      new Map((S.projects || []).map((project) => [project.id, projectSourceSnapshot(project)]));
   window.CodePierIntegrations?.detach();
   S.integrations = null;
   sessionValue('codepier-integration-receipts', null);
@@ -215,7 +217,7 @@ function suspendPanelContext(discard = false, keepLogin = false) {
   // identity updates must not replace this object (see identity.bootstrap).
   S.session = keepLogin && session ? { ...session } : null;
   S.renderSeq++;
-  clearSpaceSnapshots();
+  clearResourceSnapshots();
   if (typeof stopComputerApprovals === 'function') stopComputerApprovals();
   S.readGeneration = (S.readGeneration || 0) + 1;
   S.treeGeneration = (S.treeGeneration || 0) + 1;
@@ -223,7 +225,6 @@ function suspendPanelContext(discard = false, keepLogin = false) {
   window.CodePierGateway?.reset();
   window.CodePierIdentity?.reset();
   S.identity = null;
-  S.space_id = keepLogin ? space : null;
 }
 function endSession(discard = false) {
   suspendPanelContext(discard);
@@ -239,7 +240,7 @@ function schedulePanelAccessRetry(error) {
   clearPanelAccessRetry();
   if (error.code !== 'ENTITLEMENTS_UNAVAILABLE' || !S.session) return;
   const session = S.session,
-    space = S.space_id,
+    space = location.hash,
     page = S.page,
     generation = S.renderSeq,
     host = $('#page');
@@ -247,7 +248,7 @@ function schedulePanelAccessRetry(error) {
     panelAccessRetry = null;
     if (
       S.session === session &&
-      S.space_id === space &&
+      location.hash === space &&
       S.page === page &&
       S.renderSeq === generation &&
       $('#page') === host &&
@@ -281,18 +282,18 @@ function recoverPanelAccess() {
   return recovery.promise;
 }
 let sessionVerification = null;
-function verifyPanelSession(session, space, discard = false) {
-  if (session !== S.session || space !== S.space_id) return Promise.reject(sessionChanged());
-  if (sessionVerification?.session === session && sessionVerification.space === space) {
+function verifyPanelSession(session, discard = false) {
+  if (session !== S.session) return Promise.reject(sessionChanged());
+  if (sessionVerification?.session === session) {
     sessionVerification.discard ||= discard;
     return sessionVerification.promise;
   }
-  const check = { session, space, discard, promise: null };
+  const check = { session, discard, promise: null };
   // Probe the panel cookie, not the failing resource credential. /api/session
   // does not recurse into this path, and a lost/invalid probe is not logout.
   check.promise = api('/api/session', { retryDelays: [], requestTimeout: 5000 })
     .then((value) => {
-      if (session !== S.session || space !== S.space_id) throw sessionChanged();
+      if (session !== S.session) throw sessionChanged();
       if (value.authenticated === false) {
         endSession(check.discard);
       } else if (
@@ -325,18 +326,25 @@ async function api(path, options = {}) {
     ...request
   } = options;
   const session = S.session,
-    space = S.space_id,
+    space = location.hash,
     method = (request.method || 'GET').toUpperCase();
   const safe = method === 'GET' || retrySafe;
+  // These exact GET endpoints return account-wide snapshots, never a
+  // selected workspace. A route change must not strand login/revalidation.
+  // Resource-specific paths, query variants and every mutation stay bound
+  // to the originating view; session replacement always rejects old replies.
+  const accountRead =
+    method === 'GET' &&
+    ['/api/session', '/api/iam/me', '/api/devices', '/api/projects'].includes(path);
+  const currentRequest = () => session === S.session && (accountRead || space === location.hash);
   const headers = {
-    ...(space ? { 'X-CodePier-Space': space } : {}),
     ...(request.body ? { 'Content-Type': 'application/json' } : {}),
     ...(session?.csrf ? { 'X-RD-CSRF': session.csrf } : {}),
     ...request.headers,
   };
   const delays = retryDelays;
   for (let attempt = 0; ; attempt++) {
-    if (session !== S.session || space !== S.space_id) throw sessionChanged();
+    if (!currentRequest()) throw sessionChanged();
     let res, body;
     if (externalSignal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
     const controller = new AbortController();
@@ -362,10 +370,10 @@ async function api(path, options = {}) {
       externalSignal?.removeEventListener('abort', abort);
     }
     if (externalSignal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
-    if (session !== S.session || space !== S.space_id) throw sessionChanged();
+    if (!currentRequest()) throw sessionChanged();
     if (res) {
       if (res.status === 401 && session && !['/api/login', '/api/session'].includes(path))
-        await verifyPanelSession(session, space, discardOnAuthFailure);
+        await verifyPanelSession(session, discardOnAuthFailure);
       if (res.ok && body !== null && body !== undefined) {
         if (method !== 'GET' && method !== 'HEAD') invalidateBasics();
         return body;
@@ -424,9 +432,9 @@ const workTarget = (project = S.work.project) => ({
 const wtool = (name, args = {}) => tool(name, { ...workTarget(), ...args });
 async function settled(promise) {
   const session = S.session,
-    space = S.space_id;
+    space = location.hash;
   const out = await promise;
-  if (S.session !== session || S.space_id !== space) throw sessionChanged();
+  if (S.session !== session || location.hash !== space) throw sessionChanged();
   if (!out?.pending) return out;
   const id = out.operation_id;
   toast('操作已保存，正在等待本机或恢复连接；无需重新提交。');
@@ -434,13 +442,21 @@ async function settled(promise) {
   // retried safely. No editor state is destroyed when connectivity changes.
   const deadline = Date.now() + 31 * 60 * 1000;
   while (Date.now() < deadline && S.session) {
-    if (S.session !== session || S.space_id !== space) throw sessionChanged();
+    if (S.session !== session || location.hash !== space) throw sessionChanged();
     let op;
     try {
       op = await tool('operations_wait', { operation_id: id, wait_seconds: 8 });
     } catch (error) {
-      if (!S.session || ['OPERATION_NOT_FOUND', 'SESSION_CHANGED'].includes(error.code))
+      const rejected =
+        error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status);
+      if (!S.session || rejected || error.code === 'SESSION_CHANGED') {
+        // Lost access or a missing private receipt is not a transport retry.
+        // The original command may still exist/run; preserve its identity and
+        // uncertainty instead of inviting a new submission or waiting forever.
+        error.operation_id = id;
+        error.operation_uncertain = true;
         throw error;
+      }
       networkState('操作 ' + id.slice(0, 8) + ' · 网络恢复后继续');
       await pause(3000);
       continue;
@@ -459,7 +475,11 @@ async function settled(promise) {
     networkState((stateNames[op.state] || op.state) + ' · ' + id.slice(0, 8));
     await pause(400);
   }
-  throw new Error('操作仍保存在审计中，编号 ' + id + '；未重复提交。');
+  throw Object.assign(new Error('操作仍保存在审计中，编号 ' + id + '；未重复提交。'), {
+    code: 'OPERATION_OBSERVATION_INCOMPLETE',
+    operation_id: id,
+    operation_uncertain: true,
+  });
 }
 function download(...args) {
   return CP.ui.download(...args);
@@ -547,15 +567,9 @@ function navigationTabs(page) {
     return [
       ['projects', 'Projects · 项目'],
       ['devices', 'Devices / Agents · 执行节点'],
+      ['storage', 'Shared Storage · 共享存储'],
       ['mcp', 'MCP Services · 服务'],
       ['vps', 'VPS · SSH 连接'],
-    ];
-  if (page === 'access')
-    return [
-      ['roles', 'Roles · 角色'],
-      ['connections', 'Client Connections · 客户端连接'],
-      ...(CodePierIdentity.admin() ? [['members', 'Space Members · 成员与分配']] : []),
-      ['advanced', '高级身份与兼容接入'],
     ];
   if (page === 'identity')
     return [
@@ -578,7 +592,7 @@ function navigationTabs(page) {
 function renderShell() {
   const chosen = nav.find((x) => x[0] === S.page);
   const groups = [
-    ['CodePier', ['resources', 'access']],
+    ['CodePier', ['spaces', 'resources']],
     ['工具与记录', ['native', 'workbench', 'audit']],
     ['管理', ['overview', 'identity', 'diagnostics', 'settings']],
   ];
@@ -594,7 +608,7 @@ function renderShell() {
     )
     .join('');
   const dock = [
-    ['access', 'shield', '访问'],
+    ['spaces', 'folder', '工作空间'],
     ['resources', 'folder', '资源'],
     ['native', 'terminal', 'CLI'],
     ['audit', 'audit', '审计'],
@@ -605,7 +619,7 @@ function renderShell() {
     )
     .join('');
   $('#app').innerHTML =
-    `<a class="skip-link" href="#page">跳到主要内容</a><div class="shell"><aside class="sidebar" id="sidebar" aria-label="主导航"><button class="icon-btn mobile-close" data-action="toggle-menu" aria-label="收起菜单">${icon('close')}</button>${brand}<nav class="nav" aria-label="主导航">${navigation}</nav><div class="side-bottom">${CodePierIdentity.selector()}${appearanceControl()}<div class="transport"><div class="transport-top"><i class="dot offline" id="event-dot"></i><span id="event-state">正在连接实时通道…</span></div></div><div class="user-box"><span class="avatar">${esc(S.session.username?.[0]?.toUpperCase() || 'A')}</span><div>${esc(S.session.username)}<br><small class="tiny">${esc(CodePierIdentity.levelLabel(CodePierIdentity.current()?.level))}</small></div><button class="icon-btn" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><button class="sidebar-scrim" data-ui="close-menu" aria-label="关闭导航" tabindex="-1" hidden></button><main class="main"><header class="topbar"><div class="breadcrumb"><button class="icon-btn mobile-menu" data-action="toggle-menu" aria-controls="sidebar" aria-expanded="false" aria-label="展开菜单">${icon('menu')}</button><span class="breadcrumb-prefix">CodePier</span><span>/</span><span id="breadcrumb-page" aria-live="polite">${chosen[2]}</span></div><div class="top-right"><span class="clock" id="clock"></span><button class="quick-jump" data-ui="command" aria-label="快速前往页面或项目">${icon('search')}<span>快速前往</span><kbd>${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></button><button class="icon-btn" data-computer-use aria-label="桌面控制">${icon('device')}</button><button class="icon-btn" data-action="refresh" aria-label="刷新">${icon('refresh')}</button></div></header><div id="page" class="page" tabindex="-1"></div><nav class="mobile-dock" aria-label="移动快捷导航">${dock}<button type="button" data-action="toggle-menu" aria-controls="sidebar" aria-expanded="false" aria-label="更多页面">${icon('menu')}<span>更多</span></button></nav></main></div>`;
+    `<a class="skip-link" href="#page">跳到主要内容</a><div class="shell"><aside class="sidebar" id="sidebar" aria-label="主导航"><button class="icon-btn mobile-close" data-action="toggle-menu" aria-label="收起菜单">${icon('close')}</button>${brand}<nav class="nav" aria-label="主导航">${navigation}</nav><div class="side-bottom">${appearanceControl()}<div class="transport"><div class="transport-top"><i class="dot offline" id="event-dot"></i><span id="event-state">正在连接实时通道…</span></div></div><div class="user-box"><span class="avatar">${esc(S.session.username?.[0]?.toUpperCase() || 'A')}</span><div>${esc(S.session.username)}<br><small class="tiny">${S.session.instance_admin ? '实例管理员' : '用户'}</small></div><button class="icon-btn" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><button class="sidebar-scrim" data-ui="close-menu" aria-label="关闭导航" tabindex="-1" hidden></button><main class="main"><header class="topbar"><div class="breadcrumb"><button class="icon-btn mobile-menu" data-action="toggle-menu" aria-controls="sidebar" aria-expanded="false" aria-label="展开菜单">${icon('menu')}</button><span class="breadcrumb-prefix">CodePier</span><span>/</span><span id="breadcrumb-page" aria-live="polite">${chosen[2]}</span></div><div class="top-right"><span class="clock" id="clock"></span><button class="quick-jump" data-ui="command" aria-label="快速前往页面或项目">${icon('search')}<span>快速前往</span><kbd>${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></button><button class="icon-btn" data-computer-use aria-label="桌面控制">${icon('device')}</button><button class="icon-btn" data-action="refresh" aria-label="刷新">${icon('refresh')}</button></div></header><div id="page" class="page" tabindex="-1"></div><nav class="mobile-dock" aria-label="移动快捷导航">${dock}<button type="button" data-action="toggle-menu" aria-controls="sidebar" aria-expanded="false" aria-label="更多页面">${icon('menu')}<span>更多</span></button></nav></main></div>`;
   updateClock();
   uiSetMenu(false, false);
   uiSyncNavigation();
@@ -620,15 +634,13 @@ function invalidateBasics() {
 }
 async function loadBasics() {
   const session = S.session,
-    space = S.space_id,
     revision = S.basicsRevision || 0;
   const pending = S.basicsRequest;
-  if (pending?.session === session && pending.space === space && pending.revision === revision)
-    return pending.promise;
-  const request = { session, space, revision, promise: null };
+  if (pending?.session === session && pending.revision === revision) return pending.promise;
+  const request = { session, revision, promise: null };
   request.promise = Promise.all([api('/api/devices'), api('/api/projects')])
     .then(([d, p]) => {
-      if (S.session !== session || S.space_id !== space) throw sessionChanged();
+      if (S.session !== session) throw sessionChanged();
       // A completed mutation or mapping event invalidates in-flight snapshots.
       // Join a fresh read rather than publishing data from before that change.
       if ((S.basicsRevision || 0) !== revision) return loadBasics();
@@ -657,16 +669,27 @@ function restoreTaskSubmission() {
   }
 }
 async function revalidateSuspendedWork() {
+  const chat = typeof ChatUI === 'undefined' ? null : ChatUI;
+  const retainedChat =
+    chat && (chat.project || chat.views.size || chat.rows.length || chat.recentProjects?.length);
+  if (!S.work.project && !retainedChat) {
+    // No resource work can be restored. The selected workspace page performs
+    // its own fresh, authorized reads after identity validation. Do not block
+    // it on unrelated global devices/projects merely to restore an empty UI.
+    chat?.catalogCache.clear();
+    return;
+  }
   await loadBasics();
   if (!Array.isArray(S.projects)) throw new Error('没有收到有效的项目权限清单，请重新校验。');
   const projects = new Map(S.projects.map((project) => [project.id, project]));
   const sameMapping = (id) => {
     const current = projects.get(id),
       prior = S.suspendedMappings?.get(id);
-    return (
-      !!current &&
-      (!prior || (prior.root === current.root && prior.device_id === current.device_id))
-    );
+    // The same physical path can be rebound through another workspace Folder.
+    // Without the original source identity there is nothing safe to restore.
+    if (!current || !prior) return false;
+    const source = projectSourceSnapshot(current);
+    return Object.keys(source).every((key) => source[key] === prior[key]);
   };
   if (S.work.project && !sameMapping(S.work.project)) {
     resetWork('');
@@ -737,7 +760,6 @@ async function bootAuthenticated() {
     if (typeof stopComputerApprovals === 'function') stopComputerApprovals();
     CodePierIdentity.reset();
     S.identity = null;
-    S.space_id = null;
     $('#app').innerHTML =
       `<main class="boot"><div id="page" role="alert">${brand}${notice(esc(error.message))}<button class="btn primary" data-action="retry-identity">重试身份与空间校验</button><a class="btn ghost" href="/#identity" target="_blank" rel="noopener">检查身份与重新认证</a><button class="btn ghost" data-action="logout">退出登录</button></div></main>`;
     schedulePanelAccessRetry(error);
@@ -760,6 +782,10 @@ async function bootAuthenticated() {
   S.suspendedMappings = null;
   S.work.operation = S.work.operation || sessionValue('codepier-operation');
   restoreTaskSubmission();
+  // Account reads can finish after an explicit navigation during cold boot.
+  // Render that latest URL, never the initially captured workspace or tab.
+  const requestedPage = canonicalPage(location.hash.slice(1));
+  if (nav.some((item) => item[0] === requestedPage)) S.page = requestedPage;
   renderShell();
   if (typeof startComputerApprovals === 'function') startComputerApprovals();
   connectEvents();
@@ -774,11 +800,9 @@ async function bootAuthenticated() {
 function connectEvents() {
   stopEvents();
   const session = S.session,
-    space = S.space_id,
-    events = (S.events = new EventSource(
-      '/api/events?' + new URLSearchParams({ space_id: space || '', access_events: '2' }),
-    ));
-  const current = () => S.events === events && S.session === session && S.space_id === space;
+    space = location.hash,
+    events = (S.events = new EventSource('/api/events?access_events=2'));
+  const current = () => S.events === events && S.session === session;
   let opened = false,
     checkingAccess = false,
     refreshing = false,
@@ -845,7 +869,6 @@ function connectEvents() {
   events.addEventListener('access_changed', accessChanged);
   // Older Hubs do not distinguish policy loss from login revocation. A fresh
   // identity read decides which it is instead of unconditionally logging out.
-  events.addEventListener('access_revoked', accessChanged);
   events.onerror = () => {
     if (current()) {
       networkState('正在重新连接…');
@@ -957,19 +980,21 @@ function productHash(page) {
             : S.auditMode === 'events'
               ? 'audit/events'
               : 'audit';
+  if (page === 'spaces') return S.workspacePath || 'spaces';
   return page === 'resources'
     ? 'resources/' + (S.resourceTab || 'projects')
-    : page === 'access'
-      ? 'access/' + (S.accessTab || 'roles')
-      : page === 'identity' && ['users', 'sso'].includes(S.identityTab)
-        ? 'identity/' + S.identityTab
-        : page;
+    : page === 'identity' && ['users', 'sso'].includes(S.identityTab)
+      ? 'identity/' + S.identityTab
+      : page;
 }
 function canonicalPage(page) {
   const [path, query = ''] = page.split('?');
   const parts = path.split('/');
-  if (page === 'conversations' || page.startsWith('conversations/'))
-    return canonicalPage('audit/sessions');
+  if (parts[0] === 'spaces') {
+    if (parts.length > 3 || (parts[1] && !/^[A-Za-z0-9_-]{1,100}$/.test(parts[1]))) return 'spaces';
+    S.workspacePath = page;
+    return 'spaces';
+  }
   if (parts[0] === 'audit') {
     const session =
       parts[1] === 'session' && /^[A-Za-z0-9_-]{1,100}$/.test(parts[2] || '') ? parts[2] : '';
@@ -1012,36 +1037,17 @@ function canonicalPage(page) {
     };
     return 'integrations';
   }
-  if (page === 'identity-admin') page = 'identity/sso';
   if (page === 'identity') S.identityTab = 'account';
   const [area, tab] = page.split('/');
   const allowed = {
-    resources: ['projects', 'devices', 'vps', 'mcp'],
-    access: ['roles', 'connections', 'members', 'advanced'],
+    resources: ['projects', 'devices', 'storage', 'vps', 'mcp'],
     identity: ['account', 'users', 'sso'],
   };
   if (tab && allowed[area]?.includes(tab)) {
     S[area === 'resources' ? 'resourceTab' : area === 'access' ? 'accessTab' : 'identityTab'] = tab;
     return area;
   }
-  const aliases = {
-    projects: ['resources', 'projects'],
-    devices: ['resources', 'devices'],
-    members: ['access', 'members'],
-    vps: ['resources', 'vps'],
-    'mcp-gateway': ['resources', 'mcp'],
-    roles: ['access', 'roles'],
-    connect: ['access', 'connections'],
-    profiles: ['access', 'advanced'],
-    terminal: ['native', ''],
-  };
-  const route = aliases[page];
-  if (!route) return page;
-  if (route[1])
-    S[
-      route[0] === 'resources' ? 'resourceTab' : route[0] === 'access' ? 'accessTab' : 'identityTab'
-    ] = route[1];
-  return route[0];
+  return page;
 }
 async function navigate(page) {
   S.vpsIntent = (S.vpsIntent || 0) + 1;
@@ -1068,8 +1074,19 @@ async function navigate(page) {
   if (page === 'integrations' && S.page !== page) window.CodePierIntegrations?.inherit(S.page);
   const changed = page !== S.page;
   S.page = page;
-  location.hash = productHash(page);
-  $('#breadcrumb-page').textContent = nav.find((x) => x[0] === page)[2];
+  // Commit the explicit resource URL before rendering reads it. Assigning hash
+  // schedules another navigation in WebKit: the render/normalization handler can
+  // observe the previous workspace path and undo an otherwise successful save.
+  // User links and browser back/forward still use the hashchange handler below.
+  const destination = productHash(page);
+  if (location.hash.slice(1) !== destination)
+    history.pushState(null, '', location.pathname + location.search + '#' + destination);
+  const breadcrumb = $('#breadcrumb-page');
+  // During live reauthorization only the gated boot/retry surface exists.
+  // Keep this explicit URL for bootAuthenticated, but do not start reads or
+  // restore old content before identity and resource checks finish.
+  if (!breadcrumb) return;
+  breadcrumb.textContent = nav.find((x) => x[0] === page)[2];
   uiSetMenu(false, false);
   uiSyncNavigation();
   await renderPage();
@@ -1081,10 +1098,13 @@ async function navigate(page) {
 async function renderPage(showLoading = true) {
   window.CodePierCallLog?.detach();
   window.CodePierAuditSessions?.detach();
-  window.CodePierAccess?.detach();
   window.CodePierPanelUpdate?.detach();
   window.CodePierIntegrations?.detach();
   if (!S.session || !$('#page')) return;
+  // Root URL -> #spaces is still a new view lease even though the canonical
+  // page name stays 'spaces'. Remember the concrete URL actually being read,
+  // not productHash(S.page), which can already describe the destination.
+  S.renderHash = location.hash;
   if (S.page === 'native') {
     const seq = ++S.renderSeq;
     try {
@@ -1105,12 +1125,12 @@ async function renderPage(showLoading = true) {
     $('#page').innerHTML = '<div class="skeleton" role="status" aria-label="正在加载页面"></div>';
   try {
     let html = '';
-    if (['identity', 'members'].includes(page)) {
+    if (page === 'identity') {
       html = await CodePierIdentity.html(page);
     } else if (page === 'resources') {
       html = await CodePierProduct.resources(seq);
-    } else if (page === 'access') {
-      html = await CodePierProduct.access();
+    } else if (page === 'spaces') {
+      html = await CodePierSpaces.html();
     } else if (page === 'overview') {
       S.overview = await api('/api/overview');
       S.projects = S.overview.projects;
@@ -1132,17 +1152,6 @@ async function renderPage(showLoading = true) {
       html = await auditHTML(seq);
     } else if (page === 'mcp-gateway') {
       html = await CodePierGateway.html();
-    } else if (page === 'roles') {
-      await loadBasics();
-      html = await CodePierRoles.html();
-    } else if (page === 'profiles') {
-      await loadBasics();
-      html = await CodePierProfiles.html();
-    } else if (page === 'connect') {
-      S.settings = await api('/api/settings');
-      await loadBasics();
-      S.grants = (await api('/api/grants')).grants;
-      html = connectHTML();
     } else if (page === 'integrations') {
       await loadBasics();
       html = CodePierIntegrations.html();
@@ -1168,12 +1177,10 @@ async function renderPage(showLoading = true) {
       CP.dom.replacePage($('#page'), html);
     else $('#page').innerHTML = html;
     uiPageReady(showLoading, presentation);
-    if (['identity', 'members'].includes(page)) CodePierIdentity.bind();
+    if (page === 'identity') CodePierIdentity.bind();
     if (page === 'mcp-gateway') CodePierGateway.bind();
-    if (page === 'roles') CodePierRoles.bind();
-    if (page === 'profiles') CodePierProfiles.bind();
-    if (['resources', 'access'].includes(page)) CodePierProduct.bind();
-    if (page === 'vps') bindVps();
+    if (page === 'resources') CodePierProduct.bind();
+    if (page === 'spaces') CodePierSpaces.bind();
     if (page === 'workbench') bindWorkbench();
     if (page === 'audit') bindAudit();
     if (page === 'integrations') CodePierIntegrations.bind();
@@ -1284,30 +1291,6 @@ function devicesHTML() {
     )
   );
 }
-function projectsHTML() {
-  const rows = S.projects
-    .map(
-      (p, index) =>
-        `<article class="panel workspace-project-row" data-cp-key="project:${esc(p.id)}" data-project-row data-project-search="${esc((p.alias + ' ' + p.root + ' ' + p.device_name + ' ' + (p.description || '')).toLocaleLowerCase())}"><header class="workspace-project-head"><span class="project-index" aria-hidden="true">${icon('folder')}</span><div><span class="project-cover-label">PROJECT</span><h2>${esc(p.alias)}</h2>${p.description ? `<p>${esc(p.description)}</p>` : ''}</div>${onlineBadge(p.online)}</header><div class="workspace-project-path"><span>本机路径</span><code title="${esc(p.root)}">${esc(p.root)}</code></div><dl class="workspace-project-facts"><div><dt>设备</dt><dd>${esc(p.device_name)}</dd></div><div><dt>文件权限</dt><dd><span class="badge ${p.mode === 'write' ? 'purple' : 'neutral'}">${p.mode === 'write' ? '可编辑' : '只读'}</span></dd></div><div><dt>任务执行</dt><dd><span class="badge neutral">${p.allow_tasks ? '已授权' : '未授权'}</span></dd></div></dl><footer class="workspace-project-actions"><div class="actions">${typeof chatProjectButtons === 'function' ? chatProjectButtons(p.id) : ''}<button class="btn small" data-resource-detail="${esc(p.id)}" data-resource-type="project">资源详情</button><button class="btn primary small" data-action="open-project" data-id="${esc(p.id)}">工作台 ${icon('arrow')}</button></div><button class="btn ghost small" data-vps-action="project" data-project="${esc(p.id)}">${icon('cloud')}VPS 关联</button><button class="icon-btn" data-action="edit-project" data-id="${esc(p.id)}" aria-label="编辑 ${esc(p.alias)} 项目映射">${icon('edit')}</button></footer></article>`,
-    )
-    .join('');
-  return (
-    heading(
-      '项目映射',
-      '工作空间',
-      '',
-      `<button class="btn primary" data-action="add-project">${icon('plus')}添加映射</button>`,
-    ) +
-    (S.projects.length
-      ? `<div class="project-search workspace-project-search"><label for="project-query">${icon('search')}<input id="project-query" type="search" aria-label="筛选项目" placeholder="搜索项目、设备或路径"></label><small id="project-count" role="status"></small></div>`
-      : '') +
-    `${S.projects.length ? `<section class="workspace-project-collection">${rows}<div class="empty panel" id="project-no-match" hidden><p>没有匹配的项目</p><button type="button" class="btn ghost small" data-ui="clear-project-query">清除筛选</button></div></section>` : empty('接入设备后，映射本机项目目录。', 'add-project', '添加映射')}` +
-    uiHelp(
-      '别名与授权',
-      '通过别名访问项目，例如 Imago；不区分大小写。选择“全部现有及未来新增项目”的连接会自动包含新增映射；限定项目的连接可在“MCP 接入”调整范围，无需更换凭据。',
-    )
-  );
-}
 async function addDevice() {
   return agentInstallSetup();
 }
@@ -1322,17 +1305,17 @@ function pairingModal(pairing, rePair = false) {
 }
 function builtinRootsHTML(device) {
   if (!device.builtin || device.can_configure_roots !== true) return '';
-  return `<section class="node-manage-section" id="builtin-roots"><div class="node-section-head"><h3>内置节点授权目录</h3><p>先挂载 → 再授权 → 映射项目。填写 Hub 运行环境内已存在的绝对路径；容器部署使用容器内路径，例如 <code>/workspace</code>，不是宿主机路径。</p></div><p class="form-note">保存不会创建目录或挂载。仅授权文件访问，不开启 Shell 或任务；不可开放 Hub 数据库、密钥、配置与状态目录或其上级目录。移除授权保留项目映射和文件，但后续访问会被拒绝；已开始的修改不会撤销。</p><form id="builtin-roots-form" novalidate><fieldset id="builtin-roots-fields" disabled><div id="builtin-root-rows"></div><button type="button" class="btn ghost small" id="add-builtin-root">${icon(
+  return `<section class="node-manage-section" id="builtin-roots"><div class="node-section-head"><h3>内置节点授权目录</h3><p>先挂载 → 再授权 → 在工作空间绑定 Folder → 建立 Project。填写 Hub 运行环境内已存在的绝对路径；容器部署使用容器内路径，例如 <code>/workspace</code>，不是宿主机路径。</p></div><p class="form-note">保存不会创建目录或挂载。仅授权文件访问，不开启 Shell 或任务；不可开放 Hub 数据库、密钥、配置与状态目录或其上级目录。移除授权保留项目映射和文件，但后续访问会被拒绝；已开始的修改不会撤销。</p><form id="builtin-roots-form" novalidate><fieldset id="builtin-roots-fields" disabled><div id="builtin-root-rows"></div><button type="button" class="btn ghost small" id="add-builtin-root">${icon(
     'plus',
   )}添加授权目录</button></fieldset><p id="builtin-roots-status" class="form-note" role="status" aria-live="polite">正在读取已保存的授权…</p><p id="builtin-roots-error" class="field-error" role="alert" hidden></p><div class="actions"><button type="submit" class="btn primary small" id="save-builtin-roots" disabled>保存目录授权</button><button type="button" class="btn ghost small" id="refresh-builtin-roots">重新读取</button><button type="button" class="btn ghost small" id="map-builtin-project" data-action="add-project" data-device="${esc(
     device.id,
-  )}" disabled>映射项目</button></div></form><p class="form-note">需要实例管理员身份及当前 Space 的节点管理权限。目录授权保存在 Hub 数据库中，请勿编辑自动生成的 Agent 配置。保存与生效是两个状态，生效后仍需单独映射项目。</p></section>`;
+  )}" disabled>映射项目</button></div></form><p class="form-note">需要实例管理员身份及此设备的资源管理权限。目录授权保存在 Hub 数据库中，请勿编辑自动生成的 Agent 配置。保存与生效是两个状态；生效后仍需明确选择工作空间，并使用该工作空间已绑定的 Folder 建立 Project。</p></section>`;
 }
 async function setupBuiltinRoots(dialog, device) {
   const form = $('#builtin-roots-form', dialog);
   if (!form) return;
   const session = S.session,
-    space = S.space_id,
+    space = location.hash,
     page = S.page,
     rows = $('#builtin-root-rows', form),
     fields = $('#builtin-roots-fields', form),
@@ -1355,7 +1338,7 @@ async function setupBuiltinRoots(dialog, device) {
   const current = () =>
     !controller.signal.aborted &&
     S.session === session &&
-    S.space_id === space &&
+    location.hash === space &&
     S.page === page &&
     dialog.isConnected &&
     $('.modal') === dialog;
@@ -1606,118 +1589,8 @@ async function deviceDetail(id) {
   };
   await setupBuiltinRoots(dialog, d);
 }
-async function projectModal(id = null, device = '') {
-  const session = S.session,
-    page = S.page,
-    modalIntent = S.modalIntent || 0,
-    ticket = (S.projectModalIntent = (S.projectModalIntent || 0) + 1);
-  await loadBasics();
-  if (
-    S.session !== session ||
-    S.page !== page ||
-    S.projectModalIntent !== ticket ||
-    (S.modalIntent || 0) !== modalIntent
-  )
-    return;
-  if (!S.devices.length) {
-    toast('请先接入一台设备');
-    return addDevice();
-  }
-  const p = S.projects.find((p) => p.id === id) || {};
-  const dialog = modal(
-    id ? '编辑项目映射' : '添加项目映射',
-    `<form id="project-form"><div class="form-row"><div class="field"><label>项目别名</label><input name="alias" required value="${esc(p.alias || '')}" placeholder="Imago" maxlength="64"></div><div class="field"><label>所属设备</label><select name="device_id">${S.devices.map((d) => `<option value="${d.id}" ${(p.device_id || device) === d.id ? 'selected' : ''}>${esc(d.name)} · ${d.online ? '在线' : '离线'}</option>`).join('')}</select></div></div><div class="field"><label>本机项目路径</label><input name="root" required value="${esc(p.root || '')}" placeholder="D:/Projects/Imago 或 /home/me/Projects/Imago"><small>必须在本机 allowed_roots 授权范围内，保存时将验证目录是否存在。</small></div><div class="field"><label>项目说明</label><input name="description" value="${esc(p.description || '')}" placeholder="可选，简要说明" maxlength="1000"></div><div class="field"><label>文件访问权限</label><select name="mode"><option value="write" ${p.mode === 'read' ? '' : 'selected'}>可读取和编辑</option><option value="read" ${p.mode === 'read' ? 'selected' : ''}>只读</option></select></div><label class="check"><input name="allow_tasks" type="checkbox" ${p.allow_tasks ? 'checked' : ''}>允许本机任务及已授权的 Shell 执行</label><p class="form-note">执行还需要本机允许。若本机开启完整 Shell 权限，MCP 可执行任意命令，使用 Agent 系统用户的权限。</p></form>`,
-    `${id ? '<button class="btn danger" id="unmap-project">删除映射</button>' : ''}${buttons('save-project', '验证并保存')}`,
-  );
-  const form = $('#project-form', dialog),
-    button = $('#save-project', dialog),
-    status = document.createElement('p');
-  status.className = 'form-note';
-  status.setAttribute('role', 'status');
-  form.append(status);
-  const builtinNote = document.createElement('p');
-  builtinNote.className = 'form-note';
-  builtinNote.textContent =
-    '内置节点仅开放文件访问，不支持 Shell 或任务。请填写 Hub 内已授权的路径；新映射默认只读。';
-  form.append(builtinNote);
-  const selectedBuiltin = () =>
-    S.devices.find((d) => d.id === form.elements.device_id.value)?.builtin === true;
-  let previousBuiltin = false,
-    remoteMode = form.elements.mode.value;
-  const syncDevicePermissions = () => {
-    const builtin = selectedBuiltin();
-    form.elements.allow_tasks.disabled = builtin;
-    if (builtin) form.elements.allow_tasks.checked = false;
-    builtinNote.hidden = !builtin;
-    if (!id && builtin && !previousBuiltin) {
-      remoteMode = form.elements.mode.value;
-      form.elements.mode.value = 'read';
-    } else if (!id && !builtin && previousBuiltin) form.elements.mode.value = remoteMode;
-    previousBuiltin = builtin;
-  };
-  form.elements.device_id.addEventListener('change', syncDevicePermissions);
-  syncDevicePermissions();
-  const current = () =>
-    S.session === session && S.page === page && dialog.isConnected && $('.modal') === dialog;
-  let submission = null;
-  const submit = () =>
-    busy(button, async () => {
-      if (!current() || !form.reportValidity()) return;
-      const data = Object.fromEntries(new FormData(form));
-      data.allow_tasks = !selectedBuiltin() && form.elements.allow_tasks.checked;
-      const signature = JSON.stringify(data);
-      if (submission && submission.signature !== signature && submission.uncertain) {
-        status.textContent = '原保存结果尚未核实，请保留原参数继续核实，或关闭后先刷新项目列表。';
-        return;
-      }
-      if (!submission || submission.signature !== signature)
-        submission = { signature, args: { ...data, idempotency_key: 'project-save-' + uid() } };
-      status.textContent = '正在验证目录并保存…';
-      try {
-        await api('/api/projects' + (id ? '/' + id : ''), {
-          method: id ? 'PUT' : 'POST',
-          body: JSON.stringify(submission.args),
-        });
-        if (!current()) return;
-        closeModal(dialog);
-        toast('映射已保存');
-        await renderPage(false);
-      } catch (error) {
-        submission.uncertain = error.code === 'NETWORK_UNCERTAIN' || error.status >= 500;
-        // A definitive rejection did not save a mapping. A new explicit click
-        // may validate changed local permissions instead of replaying a failed read.
-        if (error.code !== 'VALIDATION_PENDING' && !submission.uncertain) submission = null;
-        if (current())
-          status.textContent =
-            error.code === 'VALIDATION_PENDING'
-              ? '目录验证仍在进行，尚未保存。再次点击将核实原验证，不会新建重复任务。' +
-                (error.operation_id ? ' · ' + error.operation_id : '')
-              : error.message;
-      }
-    });
-  button.onclick = submit;
-  form.onsubmit = (e) => {
-    e.preventDefault();
-    submit();
-  };
-  if (id) {
-    const remove = $('#unmap-project', dialog);
-    remove.onclick = () =>
-      busy(remove, async () => {
-        if (
-          !current() ||
-          !confirm('只删除映射，不会删除家里文件。已开始的操作不会自动撤销。继续？')
-        )
-          return;
-        await api('/api/projects/' + id, { method: 'DELETE' });
-        if (S.session !== session) return;
-        if (S.work.project === id) resetWork('');
-        if (current()) {
-          closeModal(dialog);
-          await renderPage(false);
-        }
-      });
-  }
+async function projectModal(id = null) {
+  return CodePierSpaces.projectEditor(id);
 }
 function resetWork(project, workspace_id = '') {
   S.workGeneration = (S.workGeneration || 0) + 1;
@@ -2451,7 +2324,13 @@ function bindAudit() {
   );
 }
 async function operationDetail(id) {
+  const login = S.session,
+    page = location.hash,
+    intent = S.modalIntent || 0;
   const r = await api('/api/operations/' + id);
+  // Observation never acquires permission to reopen a dismissed reader or
+  // replace a newer editor while the original receipt request was in flight.
+  if (login !== S.session || page !== location.hash || intent !== (S.modalIntent || 0)) return;
   modal(
     '操作详情 · ' + r.tool,
     `<dl class="kv"><dt>操作编号</dt><dd><code>${esc(r.id)}</code></dd><dt>状态</dt><dd>${badge(r.state)}</dd><dt>调用者</dt><dd>${esc(r.actor)}</dd><dt>投递次数</dt><dd>${r.attempts || 0}（重投不会创建新操作）</dd><dt>首次执行期限</dt><dd>${esc(timeText(r.deadline))}</dd><dt>恢复状态</dt><dd>${esc(r.transport_error || '无网络异常')}${r.cancel_requested ? ' · 已保存取消请求' : ''}</dd><dt>开始 / 更新</dt><dd>${esc(timeText(r.created))}<br>${esc(timeText(r.updated))}</dd></dl>${r.error ? notice(esc(r.error)) : ''}<div class="audit-detail-title">参数摘要</div><div class="code-box"><pre>${esc(json(r.args_summary))}</pre></div>${r.result?.data?.diff !== undefined ? `<div class="audit-detail-title">文件差异</div>${diffHTML(r.result.data)}` : ''}${r.output ? `<div class="audit-detail-title">任务输出（保留尾部）</div><div class="code-box"><pre>${esc(r.output)}</pre></div>` : ''}<div class="audit-detail-title">实际返回结果</div><div class="code-box"><pre>${esc(json(r.result))}</pre></div>`,
@@ -2460,216 +2339,8 @@ async function operationDetail(id) {
   );
   $('#refresh-operation').onclick = () => busy($('#refresh-operation'), () => operationDetail(id));
 }
-function codingEndpoint() {
-  const url = new URL(S.settings.mcp_url, location.href);
-  url.searchParams.set('profile', 'core');
-  return url.href;
-}
-function grantListHTML() {
-  const now = Date.now() / 1000;
-  const historical = (g) =>
-    Boolean(
-      g.revoked ||
-      g.status === 'expired' ||
-      (g.expires && g.expires <= now && g.status !== 'pending'),
-    );
-  const current = S.grants.filter((g) => !historical(g));
-  const history = S.grants.filter(historical);
-  const row = (g) => {
-    const expired =
-      g.status === 'expired' || Boolean(g.expires && g.expires <= now && g.status !== 'pending');
-    const status = g.revoked
-      ? '已撤销'
-      : expired
-        ? '已过期'
-        : g.status === 'pending' || !g.expires
-          ? '待连接'
-          : '';
-    const projects = g.projects.map((id) => S.projects.find((p) => p.id === id)?.alias || id);
-    const scopeNames = { read: '读取', write: '写入', execute: '执行', computer: '桌面' };
-    const range =
-      g.authorization_mode === 'role'
-        ? '<span>范围及能力以当前动态角色为准</span>'
-        : g.projects.includes('*')
-          ? '<span>全部项目（含未来新增）</span>'
-          : `<details class="grant-projects"><summary>${projects.length} 个项目</summary><div>${projects.map((name) => `<span>${esc(name)}</span>`).join('')}</div></details>`;
-    return `<article class="grant-row ${historical(g) ? 'grant-inactive' : ''}" data-grant-id="${esc(g.id)}"><div class="grant-info"><h3><span>${esc(g.label)}</span><span class="badge purple">${g.client_id ? 'OAuth' : 'PAT'}</span>${status ? `<span class="badge neutral">${status}</span>` : ''}</h3><div class="grant-meta">${g.profile_id ? `<span>Profile：${esc(g.profile_id)}</span>` : ''}<span>${esc(g.scopes.map((scope) => scopeNames[scope] || scope).join(' · '))}</span>${range}</div><p>${g.status === 'pending' ? '等待客户端完成连接' : g.expires ? `${expired ? '已于' : '到期'} ${esc(timeText(g.expires))}${expired ? ' 过期' : ''}` : expired ? '已无有效凭据' : '尚未连接'}</p></div>${!g.revoked ? `<div class="actions">${!expired && !g.profile_id ? `<button class="btn small" data-action="edit-grant-projects" data-id="${esc(g.id)}">调整项目范围</button>` : ''}<button class="btn danger small" data-action="revoke-grant" data-id="${esc(g.id)}">撤销</button></div>` : ''}</article>`;
-  };
-  const list = (items, group) => {
-    const size = 5;
-    const pages = Math.max(1, Math.ceil(items.length / size));
-    const page = Math.max(0, Math.min(S.grantPages[group], pages - 1));
-    S.grantPages[group] = page;
-    return `<div class="grant-list" data-grant-group="${group}">${items
-      .slice(page * size, (page + 1) * size)
-      .map(row)
-      .join(
-        '',
-      )}</div>${pages > 1 ? `<nav class="pagination grant-pagination" aria-label="${group === 'current' ? '当前' : '历史'}授权分页"><span role="status">${page * size + 1}–${Math.min((page + 1) * size, items.length)} / ${items.length}</span><div class="actions"><button class="btn ghost small" data-action="grant-page" data-group="${group}" data-delta="-1" ${page === 0 ? 'disabled' : ''}>上一页</button><button class="btn ghost small" data-action="grant-page" data-group="${group}" data-delta="1" ${page === pages - 1 ? 'disabled' : ''}>下一页</button></div></nav>` : ''}`;
-  };
-  return `<div class="panel-head"><h2>${icon('key')}访问授权</h2><span class="badge neutral">${current.length} 当前授权</span></div><div class="panel-body">${current.length ? list(current, 'current') : empty(S.grants.length ? '暂无当前授权，历史记录保留在下方。' : '还没有访问授权。', 'new-grant', '创建凭据')}${history.length ? `<div class="grant-history"><button class="btn ghost grant-history-toggle" data-action="grant-history" aria-expanded="${S.grantHistoryOpen}" aria-controls="grant-history-list">${S.grantHistoryOpen ? '收起' : '查看'}历史授权 <span class="badge neutral">${history.length}</span><span class="muted">已撤销 / 已过期</span></button><div id="grant-history-list" ${S.grantHistoryOpen ? '' : 'hidden'}>${S.grantHistoryOpen ? list(history, 'history') : ''}</div></div>` : ''}</div>`;
-}
-function refreshGrantList(button) {
-  const focusAction = button.dataset.action;
-  const group = button.dataset.group;
-  const delta = button.dataset.delta;
-  const panel = $('#grant-panel');
-  if (!panel) return;
-  panel.innerHTML = grantListHTML();
-  const selector = `[data-action="${focusAction}"]${group ? `[data-group="${group}"][data-delta="${delta}"]` : ''}`;
-  const next = panel.querySelector(selector);
-  if (next && !next.disabled) next.focus({ preventScroll: true });
-  else
-    panel
-      .querySelector(`[data-action="grant-page"][data-group="${group}"]:not(:disabled)`)
-      ?.focus({ preventScroll: true });
-}
-function connectHTML() {
-  const s = S.settings;
-  const guide = `<div class="step"><span class="step-number">01</span><div><h3>设备上线，映射项目</h3><p>先在工作台读取文件，确认链路正常。</p></div></div><div class="step"><span class="step-number">02</span><div><h3>添加 MCP 连接</h3><p>公开 HTTPS 使用 OAuth；无域名时可选择官方 Secure MCP Tunnel，需账号具备相应权限。</p></div></div><div class="step"><span class="step-number">03</span><div><h3>选择项目与权限</h3><p>在客户端完成授权后，通过项目别名调用。详细步骤见项目内 <code>docs/CHATGPT.md</code>。</p></div></div>`;
-  return (
-    heading(
-      'MCP 接入',
-      'CONNECTION / ACCESS',
-      '',
-      `<button class="btn primary" data-action="new-grant">${icon('key')}创建凭据</button><button class="btn ghost" data-nav="profiles">管理访问 Profiles</button>`,
-    ) +
-    `<div class="connect-grid"><section class="panel"><div class="panel-head"><h2>${icon('plug')}连接地址</h2><span class="badge neutral">MCP</span></div><div class="panel-body"><div class="eyebrow">STREAMABLE HTTP</div><div class="endpoint"><code>${esc(s.mcp_url)}</code><button class="icon-btn" data-action="copy-endpoint" aria-label="复制 MCP 地址">${icon('copy')}</button></div><div class="mcp-coding-entry"><div><strong>核心开发工具</strong><small>统一九工具入口；实际权限由当前角色决定。</small></div><button class="btn ghost small" data-action="copy-coding-endpoint">复制核心地址</button></div><div class="mcp-coding-entry"><div><strong>动态角色连接</strong><small>明确委派已分配角色的当前与后续能力。</small></div><button class="btn ghost small" data-action="copy-role-endpoint">复制角色地址</button></div><div class="connection-route"><span>客户端</span>${icon('arrow')}<span>CodePier</span>${icon('arrow')}<span>本机项目</span></div>${notice('面板与 Agent 支持 HTTP。ChatGPT 直连需公开 HTTPS，或使用已获授权的 Secure MCP Tunnel。')}${uiHelp('接入步骤', guide)}</div></section>
-    <section class="panel" id="grant-panel">${grantListHTML()}</section></div>` +
-    uiHelp(
-      `工具目录 · ${s.tools.length} 项`,
-      `<div class="project-search"><input id="tool-query" type="search" aria-label="搜索工具" placeholder="搜索工具名称或权限"><small id="tool-count" role="status"></small></div><div class="tool-grid">${s.tools
-        .map((t) => {
-          const scope =
-            t.scope ||
-            t._meta?.securitySchemes?.[0]?.scopes?.[0] ||
-            (t.annotations?.readOnlyHint ? 'read' : 'write');
-          return `<div class="tool-chip" data-tool-name="${esc((t.name + ' ' + scope).toLowerCase())}" title="${esc(t.description)}"><span>${esc(t.name)}</span><span class="tool-scope ${esc(scope)}">${esc(scope)}</span></div>`;
-        })
-        .join(
-          '',
-        )}</div><p class="form-note">读取、写入、执行分别授权；项目范围同时由 Hub 和本机限制。</p>`,
-    )
-  );
-}
-function permissionsHTML(
-  projects,
-  scopes = ['read', 'write', 'execute', 'computer'],
-  defaults = S.settings?.access_defaults || {},
-) {
-  return (
-    `<div class="field"><label>工具权限</label><div class="check-list">${scopes.map((scope) => `<label class="check"><input type="checkbox" name="scope" value="${esc(scope)}" ${scope === 'read' ? 'checked disabled' : defaults.developer_scopes && ['write', 'execute'].includes(scope) ? 'checked' : ''}>${{ read: '读取项目与文件（必须）', write: '编辑文件、恢复备份和建立检查点', execute: '运行 / 停止本机任务及已授权的 Shell', computer: '读取屏幕与操作桌面应用（独立高权限）' }[scope]}</label>`).join('')}</div></div>` +
-    CodePierAccess.projectFields(projects, defaults.all_projects === true)
-  );
-}
-function checked(name) {
-  return $$(`.modal input[name="${name}"]:checked`).map((x) => x.value);
-}
-async function newGrant() {
-  return CodePierProduct.newConnection();
-}
-async function newLegacyGrant() {
-  await loadBasics();
-  const profiles = (await api('/api/access-profiles')).profiles;
-  modal(
-    '创建限定范围访问凭据',
-    `<form id="grant-form"><div class="form-row"><div class="field"><label>凭据名称</label><input name="label" required maxlength="80" placeholder="例如 ChatGPT Tunnel"></div><div class="field"><label>有效天数</label><input name="days" type="number" min="1" max="365" value="30" required></div></div>${CodePierProfiles.selectorHTML(profiles)}<div data-profile-permissions></div>${notice('凭据只显示一次，不会写入浏览器持久存储。适用于 stdio bridge、MCP Inspector 或支持 Bearer 的客户端；ChatGPT 直连使用 OAuth。')}</form>`,
-    buttons('create-grant', '创建凭据'),
-  );
-  const profileBinding = CodePierProfiles.bindSelector(
-    $('.modal'),
-    profiles,
-    ['read', 'write', 'execute', 'computer', 'codepier.role_access'],
-    S.settings?.access_defaults || {},
-  );
-  $('#create-grant').onclick = () =>
-    busy($('#create-grant'), async () => {
-      const f = $('#grant-form');
-      if (!f.reportValidity()) return;
-      const r = await post('/api/grants', {
-        label: f.elements.label.value,
-        days: Number(f.elements.days.value),
-        scopes: checked('scope'),
-        ...CodePierAccess.selection(),
-        ...profileBinding(),
-      });
-      modal(
-        '保存你的访问凭据',
-        `${notice('复制后存入云端受权限保护的 token 文件。任何持有此凭据的人，都能执行已授权操作。')}<div class="spacer"></div><div class="code-box secret">${esc(r.token)}</div><p class="form-note">到期：${esc(timeText(r.expires))}。需要时可随时撤销。</p>`,
-        `<button class="btn ghost" data-action="close-modal">完成</button><button class="btn" id="copy-token">复制</button><button class="btn primary" id="download-token">下载 token.txt</button>`,
-      );
-      $('#copy-token').onclick = () => copy(r.token);
-      $('#download-token').onclick = () => download('token.txt', r.token + '\n', 'text/plain');
-    });
-}
 async function consentModal(id) {
-  try {
-    const r = await api('/api/oauth/requests/' + encodeURIComponent(id));
-    const profiles = (await api('/api/access-profiles')).profiles;
-    if (r.scopes.includes('codepier.role_access')) {
-      const roles = (await api('/api/access-roles')).roles.filter((role) => role.enabled);
-      profiles.unshift(
-        ...roles.map((role) => ({
-          id: 'new:' + role.id,
-          label: role.label,
-          enabled: true,
-          role_id: role.id,
-          role,
-          version: 0,
-          new_identity: true,
-          scopes: ['read'],
-          projects: [],
-          all_projects: false,
-        })),
-      );
-    }
-    modal(
-      '确认 MCP 应用授权',
-      `<p class="form-note"><strong>${esc(r.client_name)}</strong> 正在申请访问你的本机项目。</p><dl class="kv"><dt>客户端</dt><dd><code>${esc(r.client_id)}</code></dd><dt>回调地址</dt><dd>${esc(r.redirect_uri)}</dd><dt>资源</dt><dd>${esc(r.resource)}</dd></dl>${CodePierProfiles.selectorHTML(profiles)}<div data-profile-permissions></div>${notice('固定授权按本次同意限制；动态角色授权会跟随之后的角色能力和项目变更。请核对身份、角色、应用及回调地址。')}`,
-      `<button class="btn ghost" id="deny-consent">拒绝</button><button class="btn primary" id="allow-consent">允许所选范围</button>`,
-      false,
-      false,
-    );
-    const profileBinding = CodePierProfiles.bindSelector(
-      $('.modal'),
-      profiles,
-      r.scopes,
-      r.access_defaults || {},
-    );
-    const decide = (allow) =>
-      busy(allow ? $('#allow-consent') : $('#deny-consent'), async () => {
-        if (allow) {
-          const selector = $('#access-profile-selector');
-          const selected = profiles.find((p) => p.id === selector.value);
-          // Consent is checked before creating a stable identity. A version
-          // change still fails inside the original OAuth issuance transaction.
-          profileBinding();
-          if (selected?.new_identity) {
-            const created = await post('/api/access-profiles', {
-              label: (r.client_name + ' · ' + selected.label + ' · ' + r.id.slice(-8)).slice(0, 80),
-              role_id: selected.role_id,
-              idempotency_key: 'oauth-identity-' + r.id,
-            });
-            const option = selector.selectedOptions[0];
-            Object.assign(selected, created, { new_identity: false });
-            option.value = created.id;
-            selector.value = created.id;
-          }
-        }
-        const out = await post(`/api/oauth/requests/${encodeURIComponent(id)}/decide`, {
-          allow,
-          scopes: checked('scope'),
-          ...CodePierAccess.selection(),
-          ...(allow ? profileBinding() : {}),
-        });
-        location.assign(out.redirect);
-      });
-    $('#deny-consent').onclick = () => decide(false);
-    $('#allow-consent').onclick = () => decide(true);
-  } catch (e) {
-    toast(e.message, true);
-    history.replaceState(null, '', location.pathname + location.hash);
-  }
+  return CodePierSpaces.consent(id);
 }
 function settingsHTML() {
   const s = S.settings;
@@ -2685,7 +2356,6 @@ function settingsHTML() {
   return (
     heading('系统设置', 'SYSTEM / SETTINGS') +
     `<div class="settings-grid"><section class="panel"><div class="panel-head"><h2>${icon('plug')}对外地址</h2></div><div class="panel-body"><form id="settings-form"><div class="field"><label>基础地址</label><input name="public_url" value="${esc(s.public_url)}" required><small>HTTP / HTTPS 均可，不带 /mcp。</small></div>${notice('只修改 MCP / OAuth 标识，不改变监听端口或 Agent 地址。变更后请重新连接并授权。')}<div class="spacer"></div><button class="btn primary" type="submit">保存地址</button></form>${uiHelp('服务信息', `<dl class="kv"><dt>版本</dt><dd>${esc(s.version)}</dd><dt>监听端口</dt><dd>${s.listen_port}（容器内）</dd><dt>MCP 协议</dt><dd>${esc(s.protocol_versions.join(' / '))}</dd><dt>数据目录</dt><dd><code>${esc(s.data_dir)}</code></dd></dl>`)}</div></section><section class="panel"><div class="panel-head"><h2>${icon('lock')}管理员密码</h2></div><div class="panel-body"><form id="password-form"><div class="field"><label>当前密码</label><input name="current_password" type="password" required autocomplete="current-password"></div><div class="field"><label>新密码</label><input name="new_password" type="password" minlength="12" maxlength="256" required autocomplete="new-password" placeholder="至少 12 位"></div><div class="field"><label>确认新密码</label><input name="confirm_password" type="password" minlength="12" required autocomplete="new-password" aria-describedby="password-match-error"><p id="password-match-error" class="field-error" role="status" hidden></p></div><p class="form-note">修改后退出全部浏览器登录，并撤销 MCP 授权；设备密钥不变。</p><button class="btn" type="submit">更新密码并退出</button></form></div></section></div>` +
-    CodePierAccess.html() +
     CodePierPanelUpdate.html() +
     agentExecutionHelp() +
     uiHelp(
@@ -2696,7 +2366,6 @@ function settingsHTML() {
 }
 function bindSettings() {
   if (!S.identity?.instance_admin) return;
-  CodePierAccess.bind();
   CodePierPanelUpdate.bind();
   const passwordForm = $('#password-form');
   passwordForm.addEventListener('input', () => {
@@ -2944,11 +2613,9 @@ panelActions.register(['audit-next'], async (b, e) => {
 });
 panelActions.register(['export-audit'], async (b, e) => {
   {
-    if (!S.space_id) throw new Error('请先选择仍可访问的工作空间。');
     const url =
       '/api/audit-export?' +
       new URLSearchParams({
-        space_id: S.space_id || '',
         source: S.auditSource,
         q: S.auditQuery,
         offset: '0',
@@ -2965,40 +2632,8 @@ panelActions.register(['copy-endpoint'], async (b, e) => {
   await copy(S.settings.mcp_url);
   return;
 });
-panelActions.register(['copy-coding-endpoint'], async (b, e) => {
-  await copy(codingEndpoint());
-  return;
-});
-panelActions.register(['new-grant'], async (b, e) => {
-  await newGrant();
-  return;
-});
-panelActions.register(['grant-history'], (button) => {
-  S.grantHistoryOpen = !S.grantHistoryOpen;
-  refreshGrantList(button);
-});
-panelActions.register(['grant-page'], (button) => {
-  const group = button.dataset.group;
-  if (!['current', 'history'].includes(group)) return;
-  S.grantPages[group] += Number(button.dataset.delta);
-  refreshGrantList(button);
-});
-panelActions.register(['edit-grant-projects'], async (b, e) => {
-  await CodePierAccess.editGrant(b.dataset.id);
-  return;
-});
-panelActions.register(['revoke-grant'], async (b, e) => {
-  if (confirm('撤销这个凭据的全部访问权限？正在执行的本机任务不会自动停止。')) {
-    await api('/api/grants/' + b.dataset.id, { method: 'DELETE' });
-    await renderPage(false);
-  }
-  return;
-});
 panelActions.register(['retry-identity'], async () => {
   await bootAuthenticated();
-});
-panelActions.register(['copy-role-endpoint'], async () => {
-  await copy(S.settings.role_mcp_url);
 });
 document.addEventListener('click', async (e) => {
   try {
@@ -3033,8 +2668,9 @@ window.addEventListener('hashchange', () => {
   if (nav.some((n) => n[0] === page) && location.hash.slice(1) !== productHash(page))
     history.replaceState(null, '', location.pathname + location.search + '#' + productHash(page));
   if (
-    (page !== S.page ||
-      (['integrations', 'artifacts', 'audit'].includes(page) &&
+    (location.hash !== S.renderHash ||
+      page !== S.page ||
+      (['integrations', 'artifacts', 'audit', 'spaces'].includes(page) &&
         location.hash.slice(1) !== previousContext) ||
       before !== JSON.stringify([S.resourceTab, S.accessTab, S.identityTab])) &&
     nav.some((n) => n[0] === page)

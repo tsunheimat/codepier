@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from contextlib import closing
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -24,6 +26,9 @@ from shared.contracts import ShellExec, tool_definitions
 from shared.crypto import token
 from shared.util import DevError, atomic_json, safe_summary
 from tests.support import wait_for
+from tests.workspace_fixtures import WorkspaceFixture
+from tests.workspace_stack import workspace_stack
+from tests.test_vps import terminal
 
 
 @pytest.fixture
@@ -42,7 +47,7 @@ def shell_agent(tmp_path):
 
 
 def shell_request(root, command="printf ok", **overrides):
-    return {"id": uuid.uuid4().hex, "tool": "shell_exec",
+    return {"id": uuid.uuid4().hex, "tool": "shell_exec","tool_contract_version":1,
             "project": {"root": str(root), "alias": "fixture", "mode": "write", "allow_tasks": True},
             "args": {"project": "fixture", "command": command, "idempotency_key": uuid.uuid4().hex, **overrides}}
 
@@ -150,48 +155,49 @@ def test_shell_mcp_is_an_execute_write_action():
     definition = next(t for t in tool_definitions() if t["name"] == "exec")
     assert not definition["annotations"]["readOnlyHint"]
     assert definition["annotations"]["destructiveHint"] and definition["annotations"]["openWorldHint"]
-    assert set(definition["_meta"]["securitySchemes"][0]["scopes"]) == {"read", "execute"}
+    # OAuth identifies a workspace Connection; per-project read/execute is
+    # checked from its Profile, not flattened into global token scope strings.
+    assert set(definition["_meta"]["securitySchemes"][0]["scopes"]) == {"codepier.workspace"}
     assert definition["securitySchemes"] == definition["_meta"]["securitySchemes"]
 
 
 @pytest.mark.asyncio
-async def test_remote_codex_policy_blocks_before_dispatch_but_preserves_admin_and_shell(monkeypatch):
-    class AuditStore:
-        def __init__(self):
-            self.rows = []
-
-        def audit(self, *args, **kwargs):
-            self.rows.append((args, kwargs))
-
-        async def run(self, function, /, *args, **kwargs):
-            # Match the Store worker interface; all policy assertions stay real.
-            return await asyncio.to_thread(function, *args, **kwargs)
-
-    store = AuditStore()
-    runtime = object.__new__(Runtime)
-    runtime.store = store
-    runtime._loop = None
-    principal = Principal("mcp:test:ChatGPT", "user", {"read", "execute", "computer"}, ["*"])
-    monkeypatch.setenv("MCP_BLOCK_LOCAL_CODEX", "true")
-
-    attempts = [
-        ("shell_exec", {"project": "MCP", "command": "/Users/test/.local/bin/codex exec task",
-                        "cwd": ".", "timeout_seconds": 60, "env": {}, "idempotency_key": "codex-block-shell"}),
-        ("computer_status", {"project": "MCP", "probe": True}),
-        ("computer_apps", {"project": "MCP"}),
-    ]
-    for name, args in attempts:
-        with pytest.raises(DevError) as caught:
-            await runtime.invoke(name, args, principal)
-        assert caught.value.code == "CODEX_REMOTE_DISABLED"
-
-    assert len(store.rows) == len(attempts)
-    assert all(row[1]["status"] == "denied" for row in store.rows)
-    assert remote_codex_denial("shell_exec", {"command": "printf ordinary-shell"}, principal) is None
-    assert remote_codex_denial("computer_status", {"probe": False}, principal) is None
-    assert remote_codex_denial("computer_session_close", {}, principal) is None
-    admin = Principal("panel:admin", "user", {"read", "execute", "computer"}, ["*"], admin=True)
-    assert remote_codex_denial("shell_exec", {"command": "codex --version"}, admin) is None
+async def test_remote_codex_policy_blocks_before_dispatch_but_preserves_admin_and_shell(tmp_path, monkeypatch):
+    fixture = WorkspaceFixture(tmp_path/'workspace-policy')
+    store = fixture.store
+    rows, original_audit = [], store.audit
+    def audit(*args, **kwargs):
+        rows.append((args, kwargs))
+        return original_audit(*args, **kwargs)
+    monkeypatch.setattr(store, 'audit', audit)
+    monkeypatch.setenv('MCP_BLOCK_LOCAL_CODEX', 'true')
+    try:
+        # Give this disposable Connection the resource actions under test so
+        # the independent deployment-level Codex denial is actually reached.
+        _, principal = fixture.connect({'project_rules': [{'projects': ['project'],
+            'actions': ['read', 'write', 'execute', 'computer']}]})
+        runtime = Runtime(store)
+        rows.clear()
+        attempts = [
+            ('shell_exec', {'project': 'codepier', 'command': '/Users/test/.local/bin/codex exec task',
+                'cwd': '.', 'timeout_seconds': 60, 'env': {}, 'idempotency_key': 'codex-block-shell'}),
+            ('computer_status', {'project': 'codepier', 'probe': True}),
+            ('computer_apps', {'project': 'codepier'}),
+        ]
+        for name, values in attempts:
+            with pytest.raises(DevError) as caught:
+                await runtime.invoke(name, values, principal)
+            assert caught.value.code == 'CODEX_REMOTE_DISABLED'
+        assert len(rows) == len(attempts)
+        assert all(row[1]['status'] == 'denied' for row in rows)
+        assert store.all('SELECT id FROM operations') == []
+        assert remote_codex_denial('shell_exec', {'command': 'printf ordinary-shell'}, principal) is None
+        assert remote_codex_denial('computer_status', {'probe': False}, principal) is None
+        assert remote_codex_denial('computer_session_close', {}, principal) is None
+        admin = Principal('panel:admin', 'alice', {'read', 'execute', 'computer'}, ['project'], admin=True)
+        assert remote_codex_denial('shell_exec', {'command': 'codex --version'}, admin) is None
+    finally:
+        fixture.close()
 
 
 @pytest.mark.asyncio
@@ -243,39 +249,60 @@ def test_agent_restart_does_not_replay_started_shell(tmp_path):
         resumed.db.close()
 
 
-def test_real_mcp_shell_streaming_replay_restart_cancel_and_scope(stack):
-    stack.stop_agent()
-    stack.config["shell"] = {"enabled": True, "projects": ["Imago"], "command": ["/bin/sh", "-c"]}
-    atomic_json(stack.config_path, stack.config)
-    stack.start_agent()
-    info = stack.mcp("workspace", {"project": "Imago", "operation": "status"})
-    assert info["structuredContent"]["shell"]["enabled"]
-    args = {"project": "Imago", "command": "printf started; printf once >> shell-count; sleep 3; printf done; exit 7", "idempotency_key": uuid.uuid4().hex, "yield_seconds": 0}
-    receipt = stack.mcp("exec", args)["structuredContent"]
-    opid = receipt["operation_id"]
-    assert receipt["pending"]
-    wait_for(lambda: "started" in stack.client.get('/api/operations/' + opid).json()["output"])
-    assert stack.mcp("exec", args)["structuredContent"]["operation_id"] == opid
-    stack.hub.terminate(); stack.hub.wait(timeout=12); stack.start_hub(); stack.login()
-    # The original Agent may be inside its valid 30–31 s reconnect backoff.
-    completed = stack.poll(opid, timeout=45)
-    assert completed["state"] == "failed" and completed["result"]["data"]["exit_code"] == 7
-    assert "done" in completed["output"] and (stack.imago / "shell-count").read_text() == "once"
-    cancelled = stack.mcp("exec", {"project": "Imago", "command": "printf cancel-start; sleep 20; touch must-not-exist", "idempotency_key": uuid.uuid4().hex})["structuredContent"]["operation_id"]
-    wait_for(lambda: "cancel-start" in stack.client.get('/api/operations/' + cancelled).json()["output"])
-    stack.mcp("process", {"operation": "cancel", "operation_ids": [cancelled]})
-    assert stack.poll(cancelled)["state"] == "cancelled"
-    assert not (stack.imago / "must-not-exist").exists()
-    grant = stack.must(stack.client.post('/api/grants', json={"label": "shell-read-only", "scopes": ["read"], "projects": [stack.project['id']], "days": 1}))
-    denied = stack.mcp("exec", {**args, "idempotency_key": uuid.uuid4().hex}, token_value=grant["token"])
-    assert denied["isError"] and "execute" in denied["content"][0]["text"]
+def project_connection(stack, actions):
+    profile = stack.must(stack.client.post('/api/spaces/alice/profiles', json={
+        'label': 'Shell fixture '+uuid.uuid4().hex, 'idempotency_key': uuid.uuid4().hex,
+        'policy': {'project_rules': [{'projects': ['project'], 'actions': actions}]}}))
+    return stack.must(stack.client.post('/api/spaces/alice/connections', json={
+        'name': 'Shell fixture', 'profile_id': profile['id'], 'profile_version': profile['version'],
+        'consent_mode': 'fixed', 'idempotency_key': uuid.uuid4().hex}))
 
 
-def test_offline_shell_revoked_before_delivery_does_not_execute(stack):
-    stack.stop_agent()
-    grant = stack.must(stack.client.post('/api/grants', json={"label": "shell-revoke", "scopes": ["read", "execute"], "projects": [stack.project['id']], "days": 1}))
-    receipt = stack.mcp("exec", {"project": "Imago", "command": "touch revoked-shell", "idempotency_key": uuid.uuid4().hex}, token_value=grant["token"])["structuredContent"]
-    stack.must(stack.client.delete('/api/grants/' + grant['grant_id']))
-    stack.start_agent()
-    assert stack.poll(receipt["operation_id"])["state"] == "failed"
-    assert not (stack.imago / "revoked-shell").exists()
+@pytest.mark.integration
+def test_real_mcp_shell_streaming_replay_restart_cancel_and_scope(tmp_path):
+    with workspace_stack(tmp_path/'streaming') as stack:
+        info = stack.mcp('workspace', {'project': 'codepier', 'operation': 'status'})
+        assert info['shell']['enabled']
+        values = {'project': 'codepier', 'command': 'printf started; printf once >> shell-count; sleep 3; printf done; exit 7',
+            'idempotency_key': uuid.uuid4().hex, 'yield_seconds': 0}
+        receipt = stack.mcp('exec', values)
+        opid = receipt['operation_id']
+        assert receipt['pending']
+        wait_for(lambda: 'started' in stack.client.get('/api/operations/'+opid).json()['output'])
+        assert stack.mcp('exec', values)['operation_id'] == opid
+        stack.restart_hub()
+        completed = terminal(stack, opid)
+        assert completed['state'] == 'failed' and completed['result']['data']['exit_code'] == 7
+        assert 'done' in completed['output'] and (stack.project_root/'shell-count').read_text() == 'once'
+        cancelled = stack.mcp('exec', {'project': 'codepier', 'command': 'printf cancel-start; sleep 20; touch must-not-exist',
+            'idempotency_key': uuid.uuid4().hex, 'yield_seconds': 0})['operation_id']
+        wait_for(lambda: 'cancel-start' in stack.client.get('/api/operations/'+cancelled).json()['output'])
+        stack.mcp('process', {'operation': 'cancel', 'operation_ids': [cancelled]})
+        assert terminal(stack, cancelled)['state'] == 'cancelled'
+        assert not (stack.project_root/'must-not-exist').exists()
+        connection = project_connection(stack, ['read'])
+        denied = stack.mcp('exec', {**values, 'idempotency_key': uuid.uuid4().hex},
+            token=connection['token'], expect_error=True)
+        assert denied['error']['code'] == 'WORKSPACE_POLICY_DENIED'
+
+
+@pytest.mark.integration
+def test_offline_shell_revoked_before_delivery_does_not_execute(tmp_path):
+    with workspace_stack(tmp_path/'offline') as stack:
+        stack.agent.terminate(); stack.agent.wait(timeout=10)
+        wait_for(lambda: not next(d['online'] for d in stack.client.get('/api/devices').json()['devices'] if d['id']=='a'))
+        connection = project_connection(stack, ['read', 'execute'])
+        receipt = stack.mcp('exec', {'project': 'codepier', 'command': 'touch revoked-shell',
+            'idempotency_key': uuid.uuid4().hex, 'yield_seconds': 0}, token=connection['token'])
+        stack.must(stack.client.post('/api/spaces/alice/connections/'+connection['connection_id']+'/revoke', json={}))
+        stack.start_agent()
+        # Revocation removes receipt-disclosure permission as well. Do not
+        # restore a revoked grant to poll it; inspect only this fixture's DB.
+        denied = stack.client.get('/api/operations/'+receipt['operation_id'])
+        assert denied.status_code == 403 and denied.json()['error']['code'] == 'ACCESS_DENIED'
+        def failed_without_dispatch():
+            with closing(sqlite3.connect(stack.hubdir/'hub.sqlite3')) as db:
+                row = db.execute('SELECT state,attempts FROM operations WHERE id=?', (receipt['operation_id'],)).fetchone()
+            return row if row and row[0] == 'failed' else None
+        assert wait_for(failed_without_dispatch, timeout=25) == ('failed', 0)
+        assert not (stack.project_root/'revoked-shell').exists()

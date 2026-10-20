@@ -107,16 +107,33 @@ class BuiltinHub:
         return None
 
     def project(self, device, root, *, alias='Mounted', mode='write'):
-        body = {'device_id': device, 'root': str(root), 'alias': alias, 'mode': mode,
-                'allow_tasks': False, 'idempotency_key': uuid.uuid4().hex}
-        response = self.client.post('/api/projects', json=body)
-        if response.status_code == 409 and response.json().get('error', {}).get('code') == 'VALIDATION_PENDING':
-            operation = response.json()['error']['operation_id']
-            wait_for(lambda: self.client.get('/api/operations/' + operation).json()['state'] not in
-                     {'queued', 'running', 'reconnecting', 'cancelling'}, timeout=30)
-            response = self.client.post('/api/projects', json=body)
-        assert response.status_code == 200, response.text
-        return response.json()
+        # The fixture calls real workspace binding APIs; the application does
+        # not translate or revive a device/root Project request.
+        if not hasattr(self,'space_id'):
+            response=self.client.post('/api/spaces',json={'label':'Mounted workspace',
+                'idempotency_key':uuid.uuid4().hex})
+            assert response.status_code==201,response.text
+            self.space_id=response.json()['id']
+            response=self.client.put(f'/api/spaces/{self.space_id}/devices/{device}',json={
+                'expected_version':0,'idempotency_key':uuid.uuid4().hex})
+            assert response.status_code==200,response.text
+        def create(kind,body):
+            path=f'/api/spaces/{self.space_id}/{kind}'
+            values={**body,'idempotency_key':uuid.uuid4().hex}
+            response=self.client.post(path,json=values)
+            if response.status_code==409 and response.json().get('error',{}).get('code')=='VALIDATION_PENDING':
+                identifier=response.json()['error']['operation_id']
+                def completed():
+                    row=self.client.get('/api/operations/'+identifier).json()
+                    return row if row['state'] not in {'queued','running','reconnecting','cancelling'} else None
+                row=wait_for(completed,timeout=30)
+                assert row['state']=='succeeded',row
+                response=self.client.post(path,json=values)
+            assert response.status_code==201,response.text
+            return response.json()
+        folder=create('folders',{'name':alias+' folder','source_kind':'device','device_id':device,
+            'device_path':str(root),'mode':mode,'allow_tasks':False})
+        return create('projects',{'alias':alias,'folder_id':folder['id'],'subpath':'.'})
 
     def call(self, tool, **arguments):
         return self.client.post('/api/tools/call', json={'tool': tool, 'arguments': arguments})
@@ -229,10 +246,10 @@ def test_mounted_project_read_write_revocation_and_restart_without_websocket(tmp
         revision = saved['revision']
         wait_for(lambda: hub.applied(identity, revision), timeout=30)
         mapping = hub.project(identity, project)
-        response = hub.call('fs_read', project='Mounted', path='README.md')
+        response = hub.call('fs_read', project=mapping['id'], path='README.md')
         assert response.status_code == 200, response.text
         assert response.json()['content'] == 'mounted project\n'
-        write_args = {'project': 'Mounted', 'path': 'local.txt', 'content': 'private IPC\n',
+        write_args = {'project': mapping['id'], 'path': 'local.txt', 'content': 'private IPC\n',
                       'expected_sha256': 'new', 'idempotency_key': uuid.uuid4().hex}
         response = hub.call('fs_write', **write_args)
         assert response.status_code == 200, response.text
@@ -248,7 +265,7 @@ def test_mounted_project_read_write_revocation_and_restart_without_websocket(tmp
         response = hub.call('fs_write', **write_args)
         assert response.status_code == 200, response.text
         assert response.json()['operation_id'] == first_operation
-        response = hub.call('fs_read', project='Mounted', path='local.txt')
+        response = hub.call('fs_read', project=mapping['id'], path='local.txt')
         assert response.status_code == 200 and response.json()['content'] == 'private IPC\n'
         saved = hub.roots(identity, [{'path': str(workspace), 'writable': False}], revision=revision)
         revision = saved['revision']
@@ -259,7 +276,7 @@ def test_mounted_project_read_write_revocation_and_restart_without_websocket(tmp
         assert not (project / 'denied.txt').exists()
         saved = hub.roots(identity, [], revision=revision)
         wait_for(lambda: hub.applied(identity, saved['revision']), timeout=30)
-        response = hub.call('fs_read', project='Mounted', path='README.md')
+        response = hub.call('fs_read', project=mapping['id'], path='README.md')
         assert response.status_code == 409, response.text
         assert response.json()['error']['code'] == 'ROOT_NOT_ALLOWED'
         projects = hub.client.get('/api/projects').json()['projects']
@@ -270,10 +287,10 @@ def test_mounted_project_read_write_revocation_and_restart_without_websocket(tmp
         (alternate / 'README.md').write_text('alternate project\n')
         saved = hub.roots(identity, [{'path': str(alternate), 'writable': False}], revision=saved['revision'])
         wait_for(lambda: hub.applied(identity, saved['revision']), timeout=30)
-        hub.project(identity, alternate, alias='Alternate', mode='read')
-        response = hub.call('fs_read', project='Alternate', path='README.md')
+        other=hub.project(identity,alternate,alias='Alternate',mode='read')
+        response = hub.call('fs_read', project=other['id'], path='README.md')
         assert response.status_code == 200 and response.json()['content'] == 'alternate project\n'
-        response = hub.call('fs_read', project='Mounted', path='README.md')
+        response = hub.call('fs_read', project=mapping['id'], path='README.md')
         assert response.status_code == 409 and response.json()['error']['code'] == 'ROOT_NOT_ALLOWED'
         restored = [{'path': str(workspace), 'writable': True}, {'path': str(alternate), 'writable': False}]
         saved = hub.roots(identity, restored, revision=saved['revision'])

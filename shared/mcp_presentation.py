@@ -135,6 +135,14 @@ def _view(value, *, explicit_skill=False):
     for key, item in value.items():
         if key in _OPAQUE:
             result[key] = item
+        elif key == 'route' and isinstance(item,dict) and ('source_key' in item or 'view_hash' in item):
+            # Source-lock keys and mapping hashes belong to Hub admission, not
+            # routine model discovery. Device-source subpaths may be absolute.
+            # Keep the executed action/runner receipt; never mutate its stored
+            # route or rewrite any source, command output or call arguments.
+            result[key] = {field:deepcopy(item[field]) for field in ('family','device_id') if field in item}
+        elif key in {'route_context','_source_boundary','_original_source_boundary'}:
+            continue
         elif key in {'error', 'errors', 'warnings', 'denial', 'transport_error', 'scan_error'}:
             result[key] = error_view(item)
         else:
@@ -145,7 +153,7 @@ def _view(value, *, explicit_skill=False):
 def present(name, arguments, value):
     # Account identity is intentionally returned by the profile tool. VPS
     # connection identities likewise remain usable; only nested projects change.
-    if name in {'get_profile', 'get_access_context'}:
+    if name in {'get_profile', 'get_access_context', 'get_execution_options'}:
         return deepcopy(value)
     explicit_skill = name == 'skills_read' or name in {'workspace', 'project_query'} and arguments.get('operation') == 'skill'
     return _view(deepcopy(value), explicit_skill=explicit_skill)

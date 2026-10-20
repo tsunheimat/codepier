@@ -89,12 +89,14 @@ def test_rch_leases_require_unique_strict_remote_identity(tmp_path):
 
 
 def test_shared_source_holds_overlap_not_sibling_projects():
-    row = {'id': 'prior', 'tool': 'routed_exec', 'state': 'needs_review',
-        'route_context': json.dumps({'source_root_id': 'same-nfs', 'subpath': 'app'})}
+    # One pool can be bound into multiple workspaces. Lock identity comes from
+    # shared bytes, not the removed per-space source_root_id/route model.
+    row = {'id': 'prior', 'tool': 'routed_exec', 'state': 'needs_review', 'space_id': 'first',
+        'route_context': json.dumps({'source_key': 'pool:same-nfs', 'subpath': 'app'})}
     routing = ProjectRouting(SimpleNamespace(store=SimpleNamespace(all=lambda *args: [row])))
-    def op(path, tool='write', source='same-nfs'):
-        return {'id': 'next', 'tool': tool, 'created': 2, 'space_id': 's', 'attempts': 0,
-            'route_context': json.dumps({'source_root_id': source, 'subpath': path})}
+    def op(path, tool='write', source='pool:same-nfs'):
+        return {'id': 'next', 'tool': tool, 'created': 2, 'space_id': 'second', 'attempts': 0,
+            'route_context': json.dumps({'source_key': source, 'subpath': path})}
     assert routing.source_blocker(op('app/subdir')) == 'prior'
     assert routing.source_blocker(op('.')) == 'prior'
     assert routing.source_blocker(op('sibling')) is None
@@ -108,3 +110,41 @@ def test_family_resolution_is_explicit_not_command_regex():
     assert family_for('exec', {'action': 'shell', 'target': 'vps:abc'}) == 'ssh'
     assert family_for('routed_job_control', {'action': 'cancel'}) == 'test'
     assert family_for('worktrees_create', {}) == 'git'
+
+
+@pytest.mark.parametrize('source,prior_state,prior_family,expected',[
+    ('device:node','running','shell',None),
+    ('device:node','running','test','prior'),
+    ('device:node','needs_review','shell','prior'),
+    ('pool:shared','running','shell','prior'),
+])
+def test_direct_runner_claims_remain_independent_but_shared_and_test_holds_survive(source,prior_state,prior_family,expected):
+    row={'id':'prior','tool':'routed_exec','state':prior_state,
+        'route_context':json.dumps({'source_key':source,'subpath':'app','family':prior_family})}
+    routing=ProjectRouting(SimpleNamespace(store=SimpleNamespace(all=lambda *args:[row])))
+    current={'id':'next','tool':'routed_exec','created':2,'attempts':0,
+        'route_context':json.dumps({'source_key':source,'subpath':'app','family':'shell'})}
+    assert routing.source_blocker(current)==expected
+    current['tool']='session';current['args_summary']=json.dumps({'operation':'close'})
+    assert routing.source_blocker(current) is None
+
+
+@pytest.mark.parametrize("family",["computer","browser"])
+@pytest.mark.parametrize("source",["device:node","pool:shared"])
+def test_ui_lease_coordination_does_not_claim_source_bytes(family,source):
+    from types import SimpleNamespace
+    from hub.project_routing import ProjectRouting, family_for
+    # Families come from reviewed Hub tool contracts, never model-supplied labels.
+    tool="computer_session_close" if family=="computer" else "browser_session_close"
+    assert family_for(tool,{})==family
+    context={"source_key":source,"subpath":"app","family":family}
+    previous={"id":"prior","tool":tool,"state":"needs_review","route_context":json.dumps(context)}
+    routing=ProjectRouting(SimpleNamespace(store=SimpleNamespace(all=lambda *args:[previous])))
+    current={"id":"next","created":2,"attempts":0,"tool":tool,"route_context":json.dumps(context)}
+    assert routing.source_blocker(current) is None
+    current.update(tool="routed_exec",route_context=json.dumps({**context,"family":"test"}))
+    assert routing.source_blocker(current) is None
+    # The same uncertain outcome from a source-dependent command still holds
+    # its bytes. This is not a fallback to another source or an implicit release.
+    previous.update(tool="routed_exec",route_context=json.dumps({**context,"family":"shell"}))
+    assert routing.source_blocker(current)=="prior"

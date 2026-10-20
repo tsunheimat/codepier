@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import contextlib
 import json
 import os
@@ -9,11 +10,11 @@ import time
 import unicodedata
 import uuid
 from hub.access_profiles import effective_grant, refresh_profile_principal, current_profile, access_context
-from hub.roles import require_role, role_project_scopes, principal_grant
+from hub.permissions import require_access, project_scopes, principal_grant
 from hub import iam
 from hub.builtin_agent import is_builtin_device, require_external_device
 from hub.builtin_roots import load_settings
-from shared.role_contracts import ROLE_TOOLS
+from shared.workspace_tools import WORKSPACE_TOOLS
 from hub.principal import Principal, refresh_principal
 from hub.dispatch_plan import DeferredCall
 from shared.config import RuntimeConfig
@@ -74,6 +75,7 @@ class Connection:
         self.native_security_protocol = 0
         self.tool_protocol = None
         self.project_routing_protocol = 0
+        self.workspace_protocol = 0
 
     async def send(self, body):
         # A half-open peer must not hold the scheduler/send lock indefinitely.
@@ -96,6 +98,10 @@ class Runtime:
         self.store = store
         from hub.project_routing import ProjectRouting
         self.routing = ProjectRouting(self)
+        from hub.workspace_resources import WorkspaceResources
+        self.workspace_resources = WorkspaceResources(self)
+        from hub.execution_sessions import ExecutionSessions
+        self.execution_sessions = ExecutionSessions(self)
         self.builtin_agent = None
         self._loop = None
         try:
@@ -135,7 +141,7 @@ class Runtime:
         self.stopping = False
         # Requests and their IDs are durable; restarting the Hub is not a task failure.
         await self.store.run(self.store.execute, "UPDATE operations SET state='reconnecting',next_attempt=0,transport_error='Hub restarted; reconciling with Agent' WHERE state IN ('running','reconnecting','cancelling') AND payload IS NOT NULL")
-        await self.store.run(self.store.execute, "UPDATE operations SET state='needs_review',error='Legacy operation has no durable request; inspect its outcome' WHERE state IN ('queued','running','reconnecting','cancelling','unknown','interrupted') AND payload IS NULL AND result IS NULL")
+        await self.store.run(self.store.execute, "UPDATE operations SET state='needs_review',error='Durable operation payload is missing; inspect its original outcome' WHERE state IN ('queued','running','reconnecting','cancelling','unknown','interrupted') AND payload IS NULL AND result IS NULL")
         self.worker = asyncio.create_task(self.delivery_loop(), name="durable-delivery")
 
     def on_loop(self, callback, *args):
@@ -187,7 +193,7 @@ class Runtime:
         return bool(connection and not connection.unusable and time.time() - connection.last_seen < 45 and self.connection_authorized(device_id, connection))
 
     def connection_authorized(self, device_id, connection):
-        device = self.store.one("SELECT id,enabled,secret,space_id,owner_user_id FROM devices WHERE id=?", (device_id,))
+        device = self.store.one("SELECT id,enabled,secret,owner_user_id FROM devices WHERE id=?", (device_id,))
         if not (iam.device_identity_active(self.store, device) and
                 (getattr(connection, "device_secret", None) is None or connection.device_secret == device["secret"])):
             return False
@@ -233,70 +239,97 @@ class Runtime:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(connection.socket.close(code=4003, reason=reason), 2)
 
-    def grant_principal(self, grant):
-        scopes, projects, _ = effective_grant(self.store, grant)
-        return Principal('mcp:' + grant['id'] + ':' + grant['label'], grant['user_id'], scopes, projects,
-                         grant_id=grant['id'], profile_id=grant.get('profile_id'),
-                         authorization_mode=grant.get('authorization_mode', 'fixed'), role_id=grant.get('role_id'),
-                         space_id=grant.get('space_id'), identity_id=grant.get('identity_id'), user_epoch=grant.get('user_epoch',1))
+    def grant_principal(self,grant_id):
+        row=self.store.one('SELECT * FROM grants WHERE id=? AND revoked=0',(grant_id,))
+        if not row:
+            raise DevError('INVALID_TOKEN','Connection revoked',401)
+        scopes,projects,_=effective_grant(self.store,row)
+        return Principal('mcp:'+row['id']+':'+row['label'],row['user_id'],scopes,projects,
+                         grant_id=row['id'],profile_id=row['profile_id'],space_id=row['space_id'],
+                         identity_id=row['identity_id'],user_epoch=row['user_epoch'])
 
-    def authorize(self, principal, action, *, project_id=None, device_id=None, creation=None):
-        try:
-            return require_role(self.store, principal, action, project_id=project_id, device_id=device_id, creation=creation)
-        except DevError as exc:
-            # Do not commit a caller's mutation transaction merely to log a denial.
-            with self.store.lock:
-                if not self.store.db.in_transaction:
-                    self.store.audit(principal.actor, 'role.denied', project_id or device_id or '', 'denied',
-                                     {'action': action, 'code': exc.code})
-            raise
+    def authorize(self,principal,action,*,project_id=None,device_id=None,creation=None):
+        if device_id is not None:
+            iam.require_device(self.store,principal,device_id,creation=creation)
+        return require_access(self.store,principal,action,project_id=project_id,device_id=device_id,
+                              folder_id=creation.get('folder_id') if creation else None)
 
     def visible_project(self, p: dict, principal: Principal):
         return p.get("space_id") == principal.space_id and (principal.admin or "*" in principal.projects or p["id"] in principal.projects)
 
     @iam.read_decision
-    def project(self, value: str, principal: Principal):
-        principal = refresh_profile_principal(self.store, principal)
-        row = self.store.one("SELECT p.*,d.name AS device_name,d.enabled AS device_enabled FROM projects p LEFT JOIN devices d ON d.id=p.device_id WHERE (p.id=? OR p.alias_key=?) AND p.space_id=?", (value, alias_key(value), principal.space_id))
-        if not row or not self.visible_project(row, principal):
-            raise DevError("PROJECT_NOT_FOUND", "未找到已授权的项目别名，请先调用 projects_list", 404)
-        self.authorize(principal, 'read', project_id=row['id'])
-        return self.routing.hydrate(row, principal)
+    def project(self,value:str,principal:Principal):
+        row=self.store.one('SELECT * FROM projects WHERE space_id=? AND id=?',(principal.space_id,value))
+        if not row:
+            row=self.store.one('SELECT * FROM projects WHERE space_id=? AND alias_key=?',(principal.space_id,alias_key(value)))
+        if not row:
+            raise DevError('PROJECT_NOT_FOUND','Project is not provided by this authenticated connection',404)
+        self.authorize(principal,'read',project_id=row['id'])
+        return self.routing.hydrate(row,principal)
 
-    def project_public(self, p):
-        if p.get('routing_managed'):
-            return {**{k: p[k] for k in ('id', 'alias', 'description', 'mode', 'allow_tasks', 'routing_managed', 'routing_version', 'source_root_id', 'subpath')},
-                'device_id': p.get('device_id') or '', 'device_name': p.get('device_name') or '', 'root': p.get('root') or '',
-                'allow_tasks': bool(p['allow_tasks']), 'source_bound': bool(p.get('source_root_id')),
-                'execution_routes': p.get('execution_routes', []),
-                'online': any(r.get('online') for r in p.get('execution_routes', []))}
-        return {k: p[k] for k in ("id", "alias", "device_id", "root", "description", "mode", "allow_tasks", "device_name") if k in p} | {"online": self.online(p["device_id"]), "allow_tasks": bool(p.get("allow_tasks"))}
+    def project_public(self,project):
+        # Ordinary discovery does not publish execution alternatives or require
+        # the model to understand the workspace's resource/mapping abstraction.
+        from hub.workspace_sources import resolve_shell
+        try:
+            resolve_shell(self.store,project)
+            shell_enabled=True
+        except DevError:
+            shell_enabled=False
+        return {k:project[k] for k in ('id','alias','description','mode','allow_tasks')} | {
+            'root':project.get('logical_root',''),'online':bool(project.get('device_enabled') and self.online(project.get('device_id',''))),
+            'source_bound':bool(project.get('source_bound',False)),'shell_enabled':shell_enabled,
+            'version':project.get('version',1),
+            **({'source_error':project['source_error']} if project.get('source_error') else {})}
 
     @iam.read_decision
-    def list_projects(self, principal):
-        principal = refresh_profile_principal(self.store, principal)
-        self.authorize(principal, 'read')
-        return [self.project_public(self.routing.hydrate(p, principal)) for p in self.store.all("SELECT p.*,d.name AS device_name FROM projects p LEFT JOIN devices d ON d.id=p.device_id WHERE p.space_id=? ORDER BY p.alias_key", (principal.space_id,)) if self.visible_project(p, principal)]
+    def list_projects(self,principal:Principal):
+        principal=refresh_principal(self.store,principal)
+        if principal.space_id is None and not principal.grant_id:
+            result=[]
+            for scoped in iam.panel_workspaces(self.store,principal):
+                space=self.store.one('SELECT id,label FROM spaces WHERE id=?',(scoped.space_id,))
+                result.extend({**project,'workspace':space} for project in self.list_projects(scoped))
+            return result
+        result=[]
+        for row in self.store.all('SELECT * FROM projects WHERE space_id=? ORDER BY alias_key,id',(principal.space_id,)):
+            if 'read' not in project_scopes(self.store,principal,row['id']):
+                continue
+            projected=self.project_public(self.routing.hydrate(row,principal))
+            if not principal.grant_id:
+                projected.update(folder_id=row['folder_id'],subpath=row['subpath'])
+            result.append(projected)
+        return result
 
     @iam.read_decision
-    def operation_row(self, id: str, principal: Principal, *, status_only=False):
-        principal = refresh_profile_principal(self.store, principal)
-        columns = "id,grant_id,project_id,device_id,tool,state,space_id,owner_user_id,visibility,route_context" if status_only else "*"
-        row = self.store.one(f"SELECT {columns} FROM operations WHERE id=?", (id,))
-        principal = iam.require_record(self.store, principal, row)
-        self.routing.require_receipt(row, principal)
-        if row['project_id']:
-            self.authorize(principal, TOOLS[row['tool']].scope, project_id=row['project_id'])
-        if row['tool'] == 'exec':
-            summary = self.store.one('SELECT args_summary FROM operations WHERE id=?', (id,))
-            target = json.loads(summary['args_summary']).get('target', '')
-            if target.startswith('vps:'):
-                self.vps.require(target[4:], principal, 'execute')
-        elif row['tool'] == 'system_validate':
-            self.authorize(principal, 'projects.create', device_id=row['device_id'])
-        if row['tool'] in (COMPUTER_TOOLS - {'computer_status'}) | {'browser_open', 'browser_snapshot', 'browser_action', 'browser_close'} and 'computer' not in principal.scopes:
-            raise DevError('INSUFFICIENT_SCOPE', '读取桌面操作结果仍需 computer 权限', 403)
-        return row
+    def operation_row(self,identifier,principal,*,status_only=False):
+        principal=refresh_principal(self.store,principal)
+        # Waiting and disclosure checks need the persisted authorization
+        # envelope, not large command output, result or encrypted payloads.
+        # All the same current identity/resource checks run for both views.
+        columns=('id,device_id,project_id,actor,grant_id,tool,args_summary,state,created,updated,'
+            'space_id,owner_user_id,visibility,route_context,authorization_context,output_seq,'
+            'attempts,cancel_requested,accepted_at') if status_only else '*'
+        op=self.store.one('SELECT '+columns+' FROM operations WHERE id=?',(identifier,))
+        if op and principal.space_id is None and not principal.grant_id:
+            # Global panel lists have no mutable active workspace. The stored
+            # receipt selects its workspace, then normal live membership and
+            # private-owner/connection checks still decide whether it is visible.
+            principal=iam.live_principal(self.store,replace(principal,space_id=op['space_id']))
+        if not op or op.get('space_id')!=principal.space_id:
+            raise DevError('NOT_FOUND','Operation not found',404)
+        if principal.grant_id:
+            if op['grant_id']!=principal.grant_id:
+                raise DevError('NOT_FOUND','Operation belongs to another connection',404)
+        elif op['owner_user_id']!=principal.user_id:
+            if not principal.instance_admin:
+                raise DevError('NOT_FOUND','Operation belongs to another owner',404)
+        denied=self.permission_error(op,principal=principal,status_only=True)
+        if denied:
+            raise DevError('ACCESS_DENIED',denied,403,operation_id=identifier)
+        self.integrations.disclosure_guard(op,principal)
+        self.routing.require_receipt(op,principal)
+        return op
 
     async def wait_operation(self, id: str, principal: Principal, seconds: int):
         event = asyncio.Event()
@@ -336,6 +369,10 @@ class Runtime:
     def operation(self, id: str, principal: Principal, view: dict | None = None):
         row = self.operation_row(id, principal)
         result = dict(row)
+        result.pop('authorization_context',None)
+        if principal.grant_id:
+            result.pop('space_id',None)
+            result.pop('owner_user_id',None)
         options = view or {}
         include_result = options.get("include_result", True)
         include_output = options.get("include_output", True)
@@ -413,6 +450,8 @@ class Runtime:
         return {"operations": visible, "next_before_created": rows[args["limit"]-1]["created"] if len(rows) > args["limit"] else None}
 
     async def invoke(self, name: str, raw: dict, principal: Principal):
+        from hub.resource_context import tool_context
+        principal = await self.store.run(tool_context, self.store, principal, name, raw)
         context = iam.audit_context.set((self.store, principal.actor, principal.space_id, principal.user_id))
         try:
             return await self._invoke_async(name, raw, principal)
@@ -442,7 +481,7 @@ class Runtime:
             await self.wait_operation(args["operation_id"], principal, args["wait_seconds"])
             return await self.store.run(self._read_after_wait, args, principal)
         receipt = await self.dispatch(name, prepared.arguments, prepared.project, principal, background=name in PROCESS_TOOLS)
-        if name == 'exec' and receipt.get('pending') and prepared.arguments['yield_seconds']:
+        if name in {'exec','session'} and receipt.get('pending') and prepared.arguments['yield_seconds']:
             await self.wait_operation(receipt['operation_id'], principal, prepared.arguments['yield_seconds'])
             return await self.store.run(self._read_after_wait, {'operation_id': receipt['operation_id'], 'output_limit': 8000}, principal)
         return receipt
@@ -460,8 +499,8 @@ class Runtime:
             raise DevError("UNKNOWN_TOOL", "不存在此工具", 404)
         if tool.scope not in principal.scopes:
             self.store.audit(principal.actor, name, status="denied", detail={"reason": "scope"})
-            code = 'ROLE_POLICY_DENIED' if principal.authorization_mode == 'role' else 'INSUFFICIENT_SCOPE'
-            raise DevError(code, f"当前凭据/角色缺少 {tool.scope} 权限", 403, required_scope=tool.scope)
+            code = 'WORKSPACE_POLICY_DENIED'
+            raise DevError(code, f"This connection lacks  {tool.scope} 权限", 403, required_scope=tool.scope)
         try:
             args = tool.model.model_validate(raw).model_dump()
             if args.get('workspace_id') == '': args.pop('workspace_id', None)
@@ -476,25 +515,28 @@ class Runtime:
         if name in {'get_profile', 'get_access_context'}:
             self.authorize(principal, name)
         elif name == 'projects_create':
-            self.authorize(principal, 'projects.create', device_id=args['device_id'], creation=args)
+            require_access(self.store, principal, 'projects.create', folder_id=args['folder_id'])
             return DeferredCall("project_create", args, None)
-        elif name == 'devices_list':
-            self.authorize(principal, 'read')
-            devices = []
-            for device in self.store.all('SELECT id,name,enabled FROM devices WHERE space_id=? ORDER BY name,id',(principal.space_id,)):
+        elif name == 'folders_list':
+            folders=[]
+            for folder in self.store.all('SELECT id,name FROM space_folders WHERE space_id=? AND enabled=1 ORDER BY name,id',(principal.space_id,)):
                 try:
-                    require_role(self.store, principal, 'devices.read', device_id=device['id'])
-                except DevError as exc:
-                    if exc.code == 'ROLE_POLICY_DENIED':
-                        continue
-                    raise
-                devices.append({**device, 'enabled': bool(device['enabled']), 'online': self.online(device['id'])})
-            return {'devices': devices}
+                    require_access(self.store,principal,'read',folder_id=folder['id'])
+                except DevError:
+                    continue
+                folders.append(folder)
+            return {'folders':folders}
+        elif name in {'artifacts_list','diagnostics_get'} and principal.space_id is None and not principal.grant_id:
+            # A logged-in panel overview has no ambient workspace. These two
+            # read-only aggregators enumerate live memberships and recheck each
+            # returned resource and its exact Folder mapping themselves.
+            # MCP Connections still follow the bound-workspace gate below.
+            pass
         else:
-            self.authorize(principal, 'read')
-            if args.get('project'):
-                scoped_project = self.project(args['project'], principal)
-                self.authorize(principal, tool.scope, project_id=scoped_project['id'])
+            self.authorize(principal,'read')
+            if args.get('project') and not (name in {'exec','session'} and args.get('target','agent')!='agent'):
+                scoped_project=self.project(args['project'],principal)
+                self.authorize(principal,tool.scope,project_id=scoped_project['id'])
         from shared.integration_contracts import ADMIN_TOOLS, REMOTE_TOOLS as INTEGRATION_REMOTE_TOOLS
         if name in ADMIN_TOOLS and not principal.admin:
             raise DevError('OWNER_REQUIRED', '此操作只允许面板主理人执行', 403)
@@ -505,11 +547,13 @@ class Runtime:
         elif name == "get_access_context":
             result = access_context(self.store, principal)
             from hub.client_connections import effective_access
-            result['resource_permissions'] = ({'projects': [], 'vps': [], 'mcp': []}
-                if result.get('role', {}).get('enabled') is False else effective_access(self, principal))
-        elif name in {'project_routes_get', 'project_tests_list'}:
-            project = self.project(args['project'], principal)
-            result = {'routes': project.get('execution_routes', []), 'routing_managed': bool(project.get('routing_managed'))} if name == 'project_routes_get' else self.routing.tests(project, principal)
+            result['resource_permissions'] = effective_access(self, principal)
+        elif name in {'get_execution_options','project_tests_list'}:
+            project=self.project(args['project'],principal)
+            result=self.routing.options(project,principal,args.get('action','shell')) if name=='get_execution_options' else self.routing.tests(project,principal)
+        elif name=='session':
+            project=self.execution_sessions.prepare(args,principal)
+            return DeferredCall('dispatch',args,project)
         elif name == "projects_list":
             result = {"projects": self.list_projects(principal)}
         elif name == "vps":
@@ -538,7 +582,13 @@ class Runtime:
         elif name == "operations_cancel":
             return DeferredCall("cancel", args)
         else:
-            project = self.routing.select(self.project(args["project"], principal), name, args, principal)
+            if name=='exec' and args.get('target','agent')!='agent':
+                project=self.vps.execution_project(args,principal)
+            else:
+                pinned=None
+                if name=='routed_job_control':
+                    pinned=self.operation_row(args['original_operation_id'],principal)['device_id']
+                project=self.routing.select(self.project(args['project'],principal),name,args,principal,pinned_device=pinned)
             if name == "routed_job_control":
                 self.routing.authorize_job_control(project, args, principal)
             if name in MUTATING and name != "computer_session_close" and project["mode"] != "write":
@@ -673,7 +723,23 @@ class Runtime:
                 "elapsed_seconds": round(max(0, (time.time() if pending else op["updated"]) - op["created"]), 1),
                 "deadline": op["deadline"], "note": "已持久保存。网络恢复后继续同一操作；请查询 operation_id，不要换新幂等键重复提交。"}
 
-    def _admit_operation(self, name: str, args: dict, project: dict, principal: Principal, background=False):
+    def require_folder_context(self,principal,project,tool):
+        from hub.workspace_sources import select_view,fingerprint
+        context=project.get('_folder_context') or {}
+        if tool!='fs_tree' or set(context)!={'folder_id','view_hash','device_id'}:
+            raise DevError('FOLDER_CONTEXT_REQUIRED','Only bounded folder browsing is allowed',403)
+        require_access(self.store,principal,'read',folder_id=context['folder_id'])
+        view=select_view(self.store,{'id':'','space_id':principal.space_id,'folder_id':context['folder_id'],'subpath':'.'})
+        if (fingerprint(view)!=context['view_hash'] or view['device_id']!=context['device_id']
+                or view['root']!=project['root'] or project.get('mode')!='read' or project.get('allow_tasks')):
+            raise DevError('FOLDER_CONTEXT_CHANGED','The original folder view changed',409)
+        return view['device_id']
+
+    def _admit_operation(self,name,args,project,principal,background=False):
+        with self.store.transaction():
+            return self._admit_operation_transaction(name,args,project,principal,background)
+
+    def _admit_operation_transaction(self, name: str, args: dict, project: dict, principal: Principal, background=False):
         principal = refresh_principal(self.store, principal)
         project, name, args = self.routing.before_admission(project, name, args, principal)
         if getattr(self, "panel_maintenance", None):
@@ -688,17 +754,27 @@ class Runtime:
                 raise DevError('INSUFFICIENT_SCOPE', 'MCP 不允许设备生命周期操作', 403)
             iam.require_device(self.store, principal, project['device_id'], manage=True)
             require_external_device(self.store, project['device_id'])
+        elif project.get('_session_context'):
+            self.execution_sessions.validate(principal,project)
+        elif project.get('_vps_context'):
+            self.vps.require(project['_vps_context']['id'],principal,'execute')
+        elif project.get('_validation_context'):
+            device=self.workspace_resources.require_validation(principal,project,name)
+            if device!=project['device_id']:
+                raise DevError('VALIDATION_TARGET_CHANGED','Validation must use its original device',403)
+        elif project.get('_folder_context'):
+            self.require_folder_context(principal,project,name)
         elif project.get('id'):
-            self.authorize(principal, TOOLS[name].scope, project_id=project['id'])
-        elif name == 'system_validate' and not principal.admin:
-            self.authorize(principal, 'projects.create', device_id=project['device_id'], creation=project)
-        snapshot = {k: project[k] for k in ("id", "alias", "root", "mode", "allow_tasks", "_route_context", "_execution_plan", "_source_boundary") if k in project}
-        if project.get("_source_boundary") and self.online(project["device_id"]):
+            self.authorize(principal,TOOLS[name].scope,project_id=project['id'])
+        else:
+            raise DevError('RESOURCE_CONTEXT_REQUIRED','Operations require an explicit workspace resource or trusted inventory intent',403)
+        snapshot = {k: project[k] for k in ("id", "alias", "root", "mode", "allow_tasks", "_route_context", "_execution_plan", "_source_boundary", "_validation_context", "_folder_context", "_vps_context", "_session_context") if k in project}
+        if (project.get('_source_boundary') or project.get('_vps_context') or project.get('_session_context')) and self.online(project['device_id']):
             self.routing.require_protocol(self.connections.get(project["device_id"]))
         if name in {"open_workspace", "show_changes", "apply_patch", "edit"}:
             snapshot["_coding_owner"] = "grant:" + principal.grant_id if principal.grant_id else principal.actor
             snapshot["_coding_device"] = project["device_id"]
-            snapshot["_coding_scopes"] = sorted(role_project_scopes(self.store, principal, project['id']))
+            snapshot["_coding_scopes"] = sorted(project_scopes(self.store, principal, project['id']))
         if name in COMPUTER_TOOLS:
             snapshot["_computer_owner"] = "grant:" + principal.grant_id if principal.grant_id else principal.actor
             snapshot["_computer_admin"] = principal.admin
@@ -707,7 +783,7 @@ class Runtime:
         if name == 'exec' and args.get('target', '').startswith('vps:'):
             resources.append({'type': 'vps', 'id': args['target'][4:]})
         with self.store.lock:
-            old = self.store.one("SELECT * FROM operations WHERE space_id=? AND actor=? AND idem=?", (principal.space_id, principal.actor, idem)) if idem else None
+            old = self.store.one("SELECT * FROM operations WHERE space_id IS ? AND actor=? AND idem=?", (principal.space_id, principal.actor, idem)) if idem else None
             if name == "tasks_list" and not idem:
                 # Reuse only an outstanding metadata query from this exact grant.
                 # Explicit keys retain their own receipts; completed results are
@@ -752,9 +828,8 @@ class Runtime:
                 request = {"tool": name, "args": args, "project": snapshot, "tool_contract_version": wire_version(name),
                            "principal_context": {"user_id": principal.user_id, "space_id": principal.space_id,
                            "user_epoch": principal.user_epoch, "identity_id": principal.identity_id}}
-                if name == "exec" and args["target"].startswith("vps:"):
-                    vps_args = {**args, "vps": args["target"][4:]}
-                    request["vps_ref"] = self.vps.reference(vps_args, project, principal)
+                if project.get('_vps_context'):
+                    request['vps_ref'] = project['_vps_context']
                 payload = self.store.encrypt(json.dumps(request, ensure_ascii=False))
                 lifecycle_ttl = 900 if name == "agent_update" else 120
                 deadline_seconds = (min(self.queue_seconds, 15) if name in {"computer_action", "browser_action"} else
@@ -764,9 +839,11 @@ class Runtime:
                 # A crash between INSERT and a later UPDATE must never create a
                 # replayable routed operation without its shared-source hold.
                 route_context = json.dumps(project["_route_context"], sort_keys=True) if project.get("_route_context") else None
-                self.store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,idem,state,created,updated,payload,deadline,space_id,owner_user_id,route_context) VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?)",
+                self.store.execute("INSERT INTO operations(id,device_id,project_id,actor,grant_id,tool,args_summary,fingerprint,idem,state,created,updated,payload,deadline,space_id,owner_user_id,route_context,authorization_context) VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?)",
                     (id, project["device_id"], project.get("id"), principal.actor, principal.grant_id, name,
-                     json.dumps(operation_summary(args), ensure_ascii=False), fingerprint, idem, now, now, payload, now + deadline_seconds, principal.space_id, principal.user_id, route_context))
+                     json.dumps(operation_summary(args), ensure_ascii=False), fingerprint, idem, now, now, payload, now + deadline_seconds, principal.space_id, principal.user_id, route_context, json.dumps(snapshot,sort_keys=True)))
+                if name=='session':
+                    self.execution_sessions.admitted(id,args,project,principal)
                 self.store.audit(principal.actor, name, project.get("alias", ""), "queued", {"operation_id": id, "args": operation_summary(args)})
                 self.diagnostics.record(id, "hub_received")
                 self.publish("operation", {"id": id, "state": "queued", "tool": name})
@@ -802,8 +879,7 @@ class Runtime:
 
     def operation_principal(self, op, request=None):
         if op.get('grant_id'):
-            grant = self.store.one('SELECT * FROM grants WHERE id=?', (op['grant_id'],))
-            return self.grant_principal(grant)
+            return self.grant_principal(op['grant_id'])
         context = (request or {}).get('principal_context') or {}
         owner = op.get('owner_user_id')
         if not owner:
@@ -812,54 +888,75 @@ class Runtime:
                               user_epoch=context.get('user_epoch'), identity_id=context.get('identity_id'))
         return iam.live_principal(self.store, principal)
 
-    def permission_error(self, op, request, *, defer_identity=False):
+    def permission_error(self,op,*,principal=None,status_only=False,defer_identity=False):
+        if not op.get('payload') and not status_only:
+            return 'The durable request is unavailable; its outcome must be inspected without replay'
         try:
-            caller = self.operation_principal(op, request)
-            if op['project_id']:
-                self.authorize(caller, TOOLS[op['tool']].scope, project_id=op['project_id'])
+            request=json.loads(self.store.decrypt(op['payload'])) if op.get('payload') else None
+            snapshot=request['project'] if request else json.loads(op.get('authorization_context') or '{}')
+            if op['grant_id']:
+                caller=self.grant_principal(op['grant_id'])
+            elif principal:
+                caller=refresh_profile_principal(self.store,principal)
             else:
-                iam.require_device(self.store, caller, op['device_id'], manage=op['tool'] != 'system_validate',
-                                   creation=request['project'] if op['tool'] == 'system_validate' else None)
+                context=(request or {}).get('principal_context',{})
+                if not context:
+                    context={'user_id':op['owner_user_id'],'space_id':op['space_id']}
+                if context.get('space_id')!=op['space_id'] or context.get('user_id')!=op['owner_user_id']:
+                    return 'The durable account/workspace identity does not match its operation'
+                caller=iam.live_principal(self.store,Principal(op['actor'],context['user_id'],{'read'},[],
+                    space_id=context['space_id'],user_epoch=context.get('user_epoch'),identity_id=context.get('identity_id')))
+            if op['tool'] in DEVICE_ACTIONS:
+                iam.require_device(self.store,caller,op['device_id'],manage=True)
+                require_external_device(self.store,op['device_id'])
+            elif snapshot.get('_validation_context'):
+                expected=self.workspace_resources.require_validation(caller,snapshot,op['tool'],observe=status_only)
+                if expected!=op['device_id']:
+                    return 'The original validation device does not match'
+            elif snapshot.get('_folder_context'):
+                self.require_folder_context(caller,snapshot,op['tool'])
+            elif snapshot.get('_session_context'):
+                # The stored open envelope is completed before the Session is used.
+                # Later calls retain the entire original selected device envelope.
+                with_device={**snapshot,'device_id':op['device_id'],'space_id':op['space_id']}
+                self.execution_sessions.validate(caller,with_device)
+            elif snapshot.get('_vps_context'):
+                self.vps.require(snapshot['_vps_context']['id'],caller,'execute')
+                if op['project_id']:
+                    require_access(self.store,caller,'read',project_id=op['project_id'])
+            elif op['project_id']:
+                require_access(self.store,caller,'read' if status_only else TOOLS[op['tool']].scope,project_id=op['project_id'])
+            else:
+                return 'The operation has no authorized resource context'
+            if not status_only and request:
+                denial=remote_codex_denial(op['tool'],request['args'],caller)
+                if denial:
+                    return denial
+                if not snapshot.get('_session_context') or snapshot['_session_context'].get('opening'):
+                    routed=self.routing.revalidate(op,request,caller)
+                    if routed:
+                        return routed
+                if op['tool']=='routed_job_control':
+                    selected={**snapshot,'device_id':op['device_id']}
+                    self.routing.authorize_job_control(selected,request['args'],caller)
+                self.integrations.before_delivery(op,request,caller)
+                if request['project'].get('_integration_control'):
+                    self.store.execute('UPDATE operations SET payload=? WHERE id=?',
+                        (self.store.encrypt(json.dumps(request,ensure_ascii=False)),op['id']))
+                if request['project'].get('_coding_owner'):
+                    current=self.project(op['project_id'],caller)
+                    request['project']['_coding_scopes']=sorted(project_scopes(self.store,caller,current['id']))
+                    self.store.execute('UPDATE operations SET payload=? WHERE id=?',
+                        (self.store.encrypt(json.dumps(request,ensure_ascii=False)),op['id']))
+                if snapshot.get('_vps_context'):
+                    return self.vps.permission_error(request,op['project_id'],caller)
+            return None
         except DevError as exc:
-            if defer_identity and exc.code in {'ENTITLEMENTS_STALE', 'ENTITLEMENTS_UNAVAILABLE'}:
+            if defer_identity and exc.code in {'ENTITLEMENTS_STALE','ENTITLEMENTS_UNAVAILABLE'}:
                 raise
             return exc.message
-        if not op["project_id"]:
-            if op['grant_id']:
-                try:
-                    grant = self.store.one('SELECT * FROM grants WHERE id=?', (op['grant_id'],))
-                    caller = self.grant_principal(grant)
-                    if op['tool'] != 'system_validate':
-                        return 'MCP 不允许设备生命周期操作'
-                    require_role(self.store, caller, 'projects.create', device_id=op['device_id'], creation=request['project'])
-                except DevError as exc:
-                    return exc.message
-            return None
-        project = self.store.one("SELECT * FROM projects WHERE id=?", (op["project_id"],))
-        if request["project"].get("_route_context"):
-            denied = self.routing.revalidate(op, request, caller)
-            if denied:
-                return denied
-            project = self.routing.select(project, op["tool"], request["args"], caller)
-        elif not project or project["root"] != request["project"]["root"] or project["device_id"] != op["device_id"] or project["alias"] != request["project"].get("alias"):
-            return "项目映射在排队期间被删除或修改，未在新的路径执行"
-        if "vps_ref" in request:
-            denied = self.vps.permission_error(request, op["project_id"], caller)
-            if denied:
-                return denied
-        scope = TOOLS[op["tool"]].scope
-        if op["tool"] in MUTATING and op["tool"] != "computer_session_close" and project["mode"] != "write" or op["tool"] in PROCESS_TOOLS and not project["allow_tasks"]:
-            return "排队操作的项目写入/任务权限已撤销"
-        if op["grant_id"]:
-            grant = self.store.one("SELECT * FROM grants WHERE id=?", (op["grant_id"],))
-            try:
-                scopes, projects, _ = effective_grant(self.store, grant)
-                require_role(self.store, self.grant_principal(grant), scope, project_id=op['project_id'])
-            except DevError:
-                return "排队操作的 MCP 授权或访问 Profile 已撤销/停用"
-            if scope not in scopes or not ("*" in projects or op["project_id"] in projects):
-                return "排队操作的 MCP 授权或访问 Profile 已缩小"
-        return None
+        except (ValueError,KeyError,TypeError):
+            return 'The stored authorization context is invalid; no authority or replacement target was inferred'
 
     def _purge_computer(self):
         with self.store.lock, self.store.db:
@@ -941,7 +1038,7 @@ class Runtime:
                 return
             identity_pending = False
             try:
-                denied = self.permission_error(op, request, defer_identity=True)
+                denied = self.permission_error(op, defer_identity=True)
             except DevError as exc:
                 # A missing fresh snapshot is not a revocation. Preserve the
                 # original operation and payload, but never dispatch without a
@@ -954,7 +1051,7 @@ class Runtime:
             if not denied and not op["cancel_requested"]:
                 blocker = self.routing.source_blocker(op)
                 if blocker:
-                    self.store.execute("UPDATE operations SET transport_error=?,next_attempt=? WHERE id=?", ("Waiting for shared source operation " + blocker, now + 1, id))
+                    self.store.execute("UPDATE operations SET transport_error=?,next_attempt=? WHERE id=?", ("Waiting for another operation on this shared source", now + 1, id))
                     return
             # Never trust a client-supplied origin, UA or project field. Durable
             # actor/grant columns originate from Auth, not tool arguments.
@@ -962,7 +1059,7 @@ class Runtime:
             grant = self.store.one('SELECT * FROM grants WHERE id=?', (op['grant_id'],)) if op['grant_id'] else None
             try:
                 delivery_principal = self.operation_principal(op, request)
-                delivery_scopes = sorted(role_project_scopes(self.store, delivery_principal, op['project_id'])) if op['project_id'] else []
+                delivery_scopes = sorted(project_scopes(self.store, delivery_principal, op['project_id'])) if op['project_id'] else []
                 delivery_admin = delivery_principal.admin
             except DevError:
                 delivery_scopes, delivery_admin = [], False
@@ -974,7 +1071,7 @@ class Runtime:
             if not op['accepted_at'] and op['project_id'] and op['tool'] in TOOLS:
                 current_project = self.store.one('SELECT * FROM projects WHERE id=?', (op['project_id'],))
                 if current_project:
-                    try:self.integrations.guard(op['tool'], request['args'], current_project, delivery_principal)
+                    try:self.integrations.guard(op['tool'], request['args'], {**current_project, **request['project'], 'device_id': op['device_id']}, delivery_principal)
                     except DevError as exc:denied = denied or exc.message
             request["execution_policy"] = {"version": POLICY_VERSION,
                 "origin": "panel" if panel else "mcp",
@@ -1075,6 +1172,7 @@ class Runtime:
             data["command_ok"] = type(data["exit_code"]) is int and data["exit_code"] == 0 and not data.get("timed_out") and not data.get("cancelled") and not data.get("remote_execution_uncertain")
             result = {**result, "data": data}
         self.integrations.complete(op, result)
+        self.execution_sessions.completed(op,result)
         if op.get('route_context') and result.get('ok'):
             result = {**result, 'data': {**(result.get('data') or {}), 'route': json.loads(op['route_context'])}}
         if op["tool"] == "artifacts_register" and result["ok"]:
@@ -1104,7 +1202,7 @@ class Runtime:
             error = data.get('error') or {'message': '批量补丁未完成，请核查备份与回滚结果'}
         if data.get("remote_execution_uncertain") or error.get("code") in {"RCH_ALREADY_SUBMITTED", "RCH_JOB_IDENTITY_CHANGED", "RCH_EXECUTION_UNCERTAIN"}:
             state = "needs_review"
-            error = {"message": "Remote RCH outcome is unconfirmed; recover the original job identity, never replay it"}
+            error = {"message": "Remote execution outcome is unconfirmed; observe the original operation or session, never replay it"}
         self.routing.complete_control(op, data)
         output = str(data.get("output", op.get("output", "")))[-131072:]
         changed = self.store.execute("UPDATE operations SET state=?,result=?,error=?,output=?,updated=?,output_seq=output_seq+?,payload=NULL,transport_error=NULL WHERE id=? AND state NOT IN ('succeeded','failed','cancelled')",
@@ -1254,6 +1352,7 @@ class Runtime:
                 raise ValueError("Invalid hello")
             connection.tool_protocol = negotiate(hello)
             connection.project_routing_protocol = 1 if hello.get('project_routing_protocol') == 1 else 0
+            connection.workspace_protocol = 1 if type(hello.get('workspace_protocol')) is int and hello['workspace_protocol']==1 else 0
             connection.journal_id = hello.get("journal_id")
             connection.protocol = hello.get("delivery_protocol", 1)
             connection.cancel_pending_protocol = 1 if type(hello.get("cancel_pending_protocol")) is int and hello["cancel_pending_protocol"] == 1 else 0
@@ -1273,6 +1372,10 @@ class Runtime:
             if isinstance(actions, list) and len(actions) <= 16 and all(isinstance(x, str) and len(x) <= 100 for x in actions):
                 info["device_actions"] = sorted(set(actions) & DEVICE_ACTIONS)
             info["management"] = public_management(hello.get("management"))
+            info["shell_enabled"] = hello.get("shell_enabled") is True
+            info["ssh_enabled"] = hello.get("ssh_enabled") is True
+            info["workspace_protocol"] = connection.workspace_protocol
+            info["execution_sessions"] = hello.get("execution_sessions", {})
             info["cancel_pending_protocol"] = connection.cancel_pending_protocol
             connection.native_security_protocol = 1 if hello.get("native_security_protocol") == 1 else 0
             info["native_security_protocol"] = connection.native_security_protocol

@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from tests.catalog_assertions import NATIVE_CATALOG
 from tests.support import running_stack, wait_for
 from shared.util import atomic_json
 from shared.core_contracts import CORE_TOOLS
@@ -28,8 +29,7 @@ def core_stack(tmp_path_factory):
         config['computer'] = {'enabled': True, 'projects': [stack.project['id']], 'allowed_apps': ['Fixture'], 'plugin_root': str(provider), 'call_timeout_seconds': 5}
         atomic_json(stack.config_path, config)
         stack.start_agent()
-        stack.desktop_token = stack.must(stack.client.post('/api/grants', json={'label': 'Core desktop fixture',
-            'scopes': ['read', 'computer'], 'projects': [stack.project['id']], 'days': 1}))['token']
+        stack.desktop_token = stack.create_connection(stack.create_profile({'project_rules':[{'projects':[stack.project['id']],'actions':['read', 'computer']}]}))['token']
         stack.provider = provider
         yield stack
 
@@ -45,20 +45,20 @@ def finish(stack, receipt, token=None):
     result, response = call(stack, 'process', {'operation': 'wait', 'operation_ids': [receipt['operation_id']], 'wait_seconds': 5}, token)
     operation = result['operations'][0]
     assert not operation.get('pending'), operation
-    assert operation['state'] == 'succeeded', operation
+    assert operation['state']=='succeeded',json.dumps({'id':operation['id'],'state':operation['state'],'result':operation.get('result'),'error':operation.get('error')})
     return operation['result']['data'], response
 
 
 def test_default_catalog_and_removed_aliases(core_stack):
     stack = core_stack
-    assert {t['name'] for t in stack.rpc('tools/list').json()['result']['tools']} == CORE_TOOLS | QUERY_TOOLS | {'get_profile', 'get_access_context'}
+    assert {t['name'] for t in stack.rpc('tools/list').json()['result']['tools']} == NATIVE_CATALOG
     for retired in ['fs_read', 'shell_exec', 'operations_get', 'browser_status', 'computer_apps', 'vps_list', 'vps_exec']:
         response = stack.mcp(retired, {'project': 'Imago'})
         assert response['isError']
     full = stack.client.post('/mcp?profile=full', headers={'Accept': 'application/json, text/event-stream',
         'Authorization': 'Bearer ' + stack.pat}, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
-    names = {t['name'] for t in full.json()['result']['tools']}
-    assert len(names) == 14 and 'edit' in names and 'apply_patch' not in names and 'computer' in names and 'computer_action' not in names
+    assert full.status_code==400 and full.json()['error']['code']==-32602
+    assert 'result' not in full.json()
 
 
 def test_short_exec_and_files_during_another_command(core_stack):
@@ -78,7 +78,7 @@ def test_short_exec_and_files_during_another_command(core_stack):
             live, _ = finish(stack, live)
         assert live['build']['runtime']['version'] and live['running_jobs'] >= 1
         diagnostics, _ = call(stack, 'process', {'operation': 'diagnostics', 'project': 'Imago'})
-        assert diagnostics['tool_count'] == 14
+        assert diagnostics['tool_count']==len(NATIVE_CATALOG)
         assert diagnostics['native_core_tool_count'] == 10
         created, _ = call(stack, 'write', {'path': 'nested/new.txt', 'content': 'alpha\nbeta\n', 'expected_sha256': 'new', 'idempotency_key': uuid.uuid4().hex})
         read, _ = call(stack, 'read', {'path': 'nested/new.txt'})
@@ -116,7 +116,7 @@ def test_computer_images_actions_and_browser_status(core_stack):
     stack = core_stack
     token = stack.desktop_token
     rejected = stack.mcp('computer', {'project': 'Imago', 'operation': 'apps'})
-    assert rejected['isError'] and 'computer' in rejected['_meta']['mcp/www_authenticate'][0]
+    assert rejected['isError'] and rejected['structuredContent']['error']['code']=='WORKSPACE_POLICY_DENIED'
     opened, _ = call(stack, 'computer', {'operation': 'open', 'app': 'Fixture', 'idempotency_key': uuid.uuid4().hex}, token)
     session = opened['session_id']
     try:

@@ -86,13 +86,13 @@ class Gateway:
     def tools(self, principal):
         if not self.enabled:
             return []
-        result = [catalog.definition(binding['alias'], tool, principal.authorization_mode) for binding, tool in policy.visible_tools(self.store, principal)]
+        result = [catalog.definition(binding['alias'], tool) for binding, tool in policy.visible_tools(self.store, principal)]
         result.extend(self.plugins.tools(principal))
         try:
             policy.grant_context(self.store, principal)
         except DevError:
             return result
-        return result + [catalog.status_definition(principal.authorization_mode)]
+        return result + [catalog.status_definition()]
 
     def list_tools(self, principal, native, cursor=None):
         return catalog.page(native + self.tools(principal), cursor,
@@ -135,7 +135,7 @@ class Gateway:
                 if (fresh.user_id, fresh.space_id) != (principal.user_id, principal.space_id):
                     raise DevError('GATEWAY_IDENTITY_CHANGED', '身份已变化，请重新开始', 409)
                 account = managed_account(self.store, fresh, account_id)
-                connector = self.store.one('SELECT * FROM gateway_connectors WHERE id=? AND space_id=?', (account['connector_id'], fresh.space_id))
+                connector = self.store.one('SELECT * FROM gateway_connectors WHERE id=?', (account['connector_id'],))
                 if not connector or not connector['enabled'] or not account['enabled']:
                     raise DevError('GATEWAY_DISABLED', '帐户或连接已暂停', 409)
                 return account, connector, self.store.decrypt(account['secret'])

@@ -31,8 +31,7 @@ def form_for(client_id, tokens):
 def request_for(cookie='session'):
     return Request({'type': 'http', 'scheme': 'http', 'server': ('testserver', 80),
                     'path': '/api/session', 'query_string': b'',
-                    'headers': [(b'cookie', ('rd_session=' + cookie).encode()),
-                                (b'x-codepier-space', b'legacy')]})
+                    'headers': [(b'cookie', ('rd_session=' + cookie).encode())]})
 
 
 def test_default_policy_keeps_session_and_refresh_until_revoked():

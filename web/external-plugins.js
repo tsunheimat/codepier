@@ -2,7 +2,9 @@
 // Declarative forms only. Manifests never supply HTML, JavaScript or credentials.
 window.CodePierExternalPlugins = (() => {
   let ticket = 0;
-  const base = '/api/external-integrations';
+  let base = '',
+    workspaceId = '';
+  const workspaceRoot = () => '/api/spaces/' + encodeURIComponent(workspaceId);
   const button = (action, id, label) =>
     `<button class="btn small" data-ext-action="${action}" data-ext-id="${esc(id)}">${esc(label)}</button>`;
   const option = (value, label, selected = false) =>
@@ -13,13 +15,13 @@ window.CodePierExternalPlugins = (() => {
     `<pre class="code-box gw-wrap">${esc(JSON.stringify(value, null, 2))}</pre>`;
   function intent() {
     const session = S.session,
-      space = S.space_id,
+      space = location.hash,
       page = S.page,
       modalId = S.modalIntent || 0,
       current = ++ticket;
     return () =>
       session === S.session &&
-      space === S.space_id &&
+      space === location.hash &&
       page === S.page &&
       modalId === (S.modalIntent || 0) &&
       current === ticket;
@@ -27,23 +29,26 @@ window.CodePierExternalPlugins = (() => {
   async function inventory() {
     const [catalog, gateway] = await Promise.all([
       api('/api/external-plugins'),
-      api('/api/mcp-gateway'),
+      api(workspaceRoot() + '/mcp-gateway'),
     ]);
     const integrations =
       gateway.space_admin && gateway.enabled ? (await api(base)).integrations : [];
     return { catalog: catalog.plugins, gateway, integrations };
   }
-  async function html() {
+  async function html(spaceId) {
+    if (!spaceId) throw new Error('从明确的工作空间打开外部插件。');
+    workspaceId = spaceId;
+    base = workspaceRoot() + '/external-integrations';
     const data = await inventory();
     if (!data.gateway.enabled) return '';
     const body = data.gateway.space_admin
-      ? `<div class="actions">${button('configure', '', '添加插件集成')}</div>${data.integrations.map((row) => `<article class="grant-row" data-ext-integration="${esc(row.id)}"><div><strong>${esc(row.alias)}</strong> · ${esc(row.plugin_id)} · v${row.version} · ${row.enabled ? '启用' : '停用'}<p class="mono gw-wrap">${esc(row.id)}</p></div><div class="actions">${button('configure', row.id, '配置集成')}${button('projects', row.id, '项目绑定')}${button('role', row.id, '角色动作')}${button('toggle', row.id, row.enabled ? '停用' : '启用')}</div></article>`).join('') || '<p>尚无插件集成。</p>'}`
-      : '<p>插件集成由空间管理员配置；客户端使用前仍需角色授权与独立同意。</p>';
+      ? `<div class="actions">${button('configure', '', '添加插件集成')}</div>${data.integrations.map((row) => `<article class="grant-row" data-ext-integration="${esc(row.id)}"><div><strong>${esc(row.alias)}</strong> · ${esc(row.plugin_id)} · v${row.version} · ${row.enabled ? '启用' : '停用'}<p class="mono gw-wrap">${esc(row.id)}</p></div><div class="actions">${button('configure', row.id, '配置集成')}${button('projects', row.id, '项目绑定')}${button('profile', row.id, 'Profile 动作')}${button('toggle', row.id, row.enabled ? '停用' : '启用')}</div></article>`).join('') || '<p>尚无插件集成。</p>'}`
+      : '<p>插件集成由空间管理员配置；客户端使用前仍需Profile 授权与独立同意。</p>';
     return `<section class="panel" id="external-plugins-panel"><div class="panel-head"><h2>External plugins · 外部插件</h2></div><div class="panel-body"><p>空间配置一次，项目填写外部资源 ID。插件动作与原始 MCP 工具分别授权。</p>${body}<details><summary>已安装契约与开发入口</summary>${data.catalog.map((item) => `<h3>${esc(item.manifest.title)} · ${esc(item.manifest.version)}</h3>${json(item.manifest)}`).join('')}<p>部署管理员可通过 CODEPIER_EXTERNAL_PLUGIN_DIR 加载只读 JSON 清单。项目编辑不会安装插件代码。</p></details></div></section>`;
   }
   function form(title, body, save) {
     const session = S.session,
-      space = S.space_id,
+      space = location.hash,
       page = S.page;
     const dialog = modal(
       title,
@@ -53,7 +58,7 @@ window.CodePierExternalPlugins = (() => {
     );
     const node = $('#ext-form', dialog);
     const current = () =>
-      dialog.isConnected && session === S.session && space === S.space_id && page === S.page;
+      dialog.isConnected && session === S.session && space === location.hash && page === S.page;
     node.onsubmit = async (event) => {
       event.preventDefault();
       if (!current() || node.dataset.submitting || node.dataset.uncertain) return;
@@ -243,12 +248,18 @@ window.CodePierExternalPlugins = (() => {
     const row = data.integrations.find((r) => r.id === id);
     if (!row) throw new Error('集成已变化，请刷新');
     const attachments = (await api(base + '/' + id + '/projects')).attachments;
+    const availableProjects = (await api(workspaceRoot() + '/projects')).projects;
     if (!valid()) return;
     const manifest = data.catalog.find((i) => i.manifest.id === row.plugin_id)?.manifest;
     if (!manifest) throw new Error('插件尚未安装');
     const f = form(
       '插件项目绑定',
-      `<p>${esc(row.alias)} · 只配置外部资源 ID，不移动文件，也不授予权限。</p>${select('project', 'CodePier 项目', (S.projects || []).map((p) => option(p.id, p.alias, p.id === selectedProject)).join(''), 'required')}${select('mode', '操作', option('attach', '保存 / 重新绑定') + option('detach', '解除绑定（保留资源）'))}<div id="ext-project-config"></div>`,
+      `<p>${esc(row.alias)} · 只配置外部资源 ID，不移动文件，也不授予权限。</p>${select(
+        'project',
+        'CodePier 项目',
+        availableProjects.map((p) => option(p.id, p.alias, p.id === selectedProject)).join(''),
+        'required',
+      )}${select('mode', '操作', option('attach', '保存 / 重新绑定') + option('detach', '解除绑定（保留资源）'))}<div id="ext-project-config"></div>`,
       async (node) => {
         const project = node.elements.project.value,
           old = attachments.find((a) => a.project_id === project);
@@ -277,25 +288,31 @@ window.CodePierExternalPlugins = (() => {
     f.node.elements.mode.onchange = draw;
     draw();
   }
-  async function role(id) {
+  async function profile(id) {
     const valid = intent(),
       data = await inventory(),
-      roles = (await api('/api/access-roles')).roles;
+      profiles = (await api(workspaceRoot() + '/profiles')).profiles,
+      availableProjects = (await api(workspaceRoot() + '/projects')).projects;
     if (!valid()) return;
     const row = data.integrations.find((r) => r.id === id),
       manifest = data.catalog.find((i) => i.manifest.id === row?.plugin_id)?.manifest;
-    if (!manifest || !roles.length) throw new Error('请先配置集成并建立角色');
+    if (!manifest || !profiles.length) throw new Error('请先配置集成并建立 Profile');
     const scopeOption = Object.values(manifest.actions).some((a) => a.scope === 'space')
       ? option('_space', '空间范围（不是全部项目）')
       : '';
     const f = form(
-      '插件角色动作',
-      `${select('role', '角色', roles.map((r) => option(r.id, r.label)).join(''), 'required')}${select('target', '动作作用范围', (S.projects || []).map((p) => option(p.id, p.alias)).join('') + scopeOption, 'required')}<div id="ext-role-actions"></div><p class="form-note">只修改当前集成与所选范围的动作。其他规则保持不变；项目动作仍需已有项目读取权，不会获得原始 MCP 工具权限。客户端须另行同意。</p>`,
+      '插件 Profile 动作',
+      `${select('profile', 'Profile', profiles.map((r) => option(r.id, r.label)).join(''), 'required')}${select(
+        'target',
+        '动作作用范围',
+        availableProjects.map((p) => option(p.id, p.alias)).join('') + scopeOption,
+        'required',
+      )}<div id="ext-profile-actions"></div><p class="form-note">只修改当前集成与所选范围的动作。其他规则保持不变；项目动作仍需已有项目读取权，不会获得原始 MCP 工具权限。客户端须另行同意。</p>`,
       async (node) => {
-        const current = roles.find((r) => r.id === node.elements.role.value),
+        const current = profiles.find((r) => r.id === node.elements.profile.value),
           target = node.elements.target.value,
           scope = target === '_space' ? 'space' : 'project';
-        const rules = (current.plugin_rules || []).flatMap((rule) => {
+        const rules = (current.policy.plugin_rules || []).flatMap((rule) => {
           if (rule.integration_id !== id || rule.scope !== scope) return [rule];
           if (scope === 'space') return [];
           const remaining = rule.projects.filter((p) => p !== target);
@@ -309,26 +326,23 @@ window.CodePierExternalPlugins = (() => {
             projects: scope === 'space' ? [] : [target],
             actions,
           });
-        await api('/api/access-roles/' + current.id, {
+        await api(workspaceRoot() + '/profiles/' + current.id, {
           method: 'PUT',
           body: JSON.stringify({
             label: current.label,
             enabled: current.enabled,
-            project_rules: current.project_rules,
-            device_rules: current.device_rules,
-            connector_rules: current.connector_rules,
-            vps_rules: current.vps_rules,
-            plugin_rules: rules,
+            policy: { ...current.policy, plugin_rules: rules },
+            idempotency_key: 'plugin-profile-' + uid(),
             expected_version: current.version,
           }),
         });
       },
     );
     const draw = () => {
-      const current = roles.find((r) => r.id === f.node.elements.role.value),
+      const current = profiles.find((r) => r.id === f.node.elements.profile.value),
         target = f.node.elements.target.value,
         scope = target === '_space' ? 'space' : 'project';
-      const selected = (current.plugin_rules || [])
+      const selected = (current.policy.plugin_rules || [])
         .filter(
           (r) =>
             r.integration_id === id &&
@@ -336,7 +350,7 @@ window.CodePierExternalPlugins = (() => {
             (scope === 'space' || r.projects.includes(target)),
         )
         .flatMap((r) => r.actions);
-      $('#ext-role-actions', f.dialog).innerHTML = Object.entries(manifest.actions)
+      $('#ext-profile-actions', f.dialog).innerHTML = Object.entries(manifest.actions)
         .filter(([, a]) => a.scope === scope)
         .map(
           ([name, a]) =>
@@ -344,7 +358,7 @@ window.CodePierExternalPlugins = (() => {
         )
         .join('');
     };
-    f.node.elements.role.onchange = draw;
+    f.node.elements.profile.onchange = draw;
     f.node.elements.target.onchange = draw;
     draw();
   }
@@ -364,14 +378,20 @@ window.CodePierExternalPlugins = (() => {
         }),
     );
   }
-  async function consent(grant) {
+  async function consent(grant, spaceId) {
+    if (!spaceId) throw new Error('从连接所属的明确工作空间审阅插件同意。');
     const valid = intent(),
-      path = base + '/grants/' + encodeURIComponent(grant) + '/consent',
+      path =
+        '/api/spaces/' +
+        encodeURIComponent(spaceId) +
+        '/external-integrations/grants/' +
+        encodeURIComponent(grant) +
+        '/consent',
       preview = await api(path);
     if (!valid()) return;
     form(
       '插件动作与目标同意',
-      `${preview.routes.map((r) => `<article class="grant-row"><div><h3>${esc(r.integration_alias)} · ${esc(r.action)} · ${esc(r.effect)}</h3><p>CodePier 项目：${esc(r.project_id || '空间范围')}；后端账号：${esc(r.backend_account.label)}；工具：${esc(r.backend_tool)}</p>${json({ project: r.project_config, space: r.space_config })}${r.broader_direct_access.length ? '<p class="error-text">此连接另有同账号的原始 MCP 工具权限，可绕过插件范围限制。请在角色中移除不需要的直接权限。</p>' : ''}</div></article>`).join('') || '<p>没有可同意的动作。请检查项目绑定、角色规则、后端账号和外部 MCP 同意。</p>'}${select('mode', '操作', (preview.routes.length ? option('approve', '明确同意以上当前动作与目标') : '') + (preview.has_consent ? option('revoke', '撤回全部插件动作同意') : ''), 'required')}<label class="check"><input type="checkbox" required>我已阅读动作、外部目标与账号。插件或绑定改变后不会自动扩展本次同意。</label>`,
+      `${preview.routes.map((r) => `<article class="grant-row"><div><h3>${esc(r.integration_alias)} · ${esc(r.action)} · ${esc(r.effect)}</h3><p>CodePier 项目：${esc(r.project_id || '空间范围')}；后端账号：${esc(r.backend_account.label)}；工具：${esc(r.backend_tool)}</p>${json({ project: r.project_config, space: r.space_config })}${r.broader_direct_access.length ? '<p class="error-text">此连接另有同账号的原始 MCP 工具权限，可绕过插件范围限制。请在工作空间 Profile 中移除不需要的直接权限。</p>' : ''}</div></article>`).join('') || '<p>没有可同意的动作。请检查工作空间项目绑定、成员与 Profile 权限、后端账号和外部 MCP 同意。</p>'}${select('mode', '操作', (preview.routes.length ? option('approve', '明确同意以上当前动作与目标') : '') + (preview.has_consent ? option('revoke', '撤回全部插件动作同意') : ''), 'required')}<label class="check"><input type="checkbox" required>我已阅读动作、外部目标与账号。插件或绑定改变后不会自动扩展本次同意。</label>`,
       (node) =>
         node.elements.mode.value === 'revoke'
           ? api(path, { method: 'DELETE' })
@@ -379,7 +399,7 @@ window.CodePierExternalPlugins = (() => {
               method: 'POST',
               body: JSON.stringify({
                 confirmed: true,
-                expected_role_version: preview.role_version,
+                expected_profile_version: preview.profile_version,
                 review_hash: preview.review_hash,
               }),
             }),
@@ -388,9 +408,12 @@ window.CodePierExternalPlugins = (() => {
   document.addEventListener('click', (event) => {
     const node = event.target.closest('[data-ext-action]');
     if (!node || node.disabled) return;
-    const actions = { configure, projects, role, toggle, consent };
+    const actions = { configure, projects, profile, toggle, consent };
     const action = actions[node.dataset.extAction];
-    if (action) action(node.dataset.extId).catch((error) => toast(error.message, true));
+    if (action)
+      action(node.dataset.extId, node.dataset.extSpace).catch((error) =>
+        toast(error.message, true),
+      );
   });
   return { html, consent, configFields, configValue };
 })();

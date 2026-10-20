@@ -44,14 +44,6 @@ class BuiltinRootsInput(Model):
     revision: int = Field(ge=0, le=2**53 - 1)
 
 
-class ProjectInput(Model):
-    alias: str = Field(min_length=1, max_length=64)
-    device_id: str = Field(min_length=1, max_length=100)
-    root: str = Field(min_length=1, max_length=2048)
-    description: str = Field(default="", max_length=1000)
-    mode: str = Field(default="write", pattern=r"^(read|write)$")
-    allow_tasks: bool = False
-    idempotency_key: str = Field(default="", max_length=128, pattern=r"^[a-zA-Z0-9_.:-]*$")
 
 
 class ToolCall(Model):
@@ -59,18 +51,6 @@ class ToolCall(Model):
     arguments: dict = Field(default_factory=dict)
 
 
-class TokenInput(Model):
-    label: str = Field(min_length=1, max_length=80)
-    scopes: list[str] = Field(min_length=1, max_length=4)
-    projects: list[str] = Field(default_factory=list, max_length=1000)
-    all_projects: bool = False
-    days: int = Field(default=30, ge=1, le=365)
-    profile_id: str | None = Field(default=None, min_length=1, max_length=100)
-    profile_version: int | None = Field(default=None, ge=1)
-    authorization_mode: str = Field(default='fixed', pattern=r'^(fixed|role)$')
-    role_version: int | None = Field(default=None, ge=1)
-    confirm_dynamic_role: bool = False
-    confirm_external_mcp: bool = Field(default=False, strict=True)
 
 
 

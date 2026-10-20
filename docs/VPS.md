@@ -1,67 +1,19 @@
-# VPS 管理与 SSH 调用
+# Whole-workspace VPS and saved OpenSSH targets
 
-## 保存连接
+VPS metadata is inventory. Assign the whole resource to a workspace with its
+Runner and registered `connection_ref`. Top-level execution needs no Project or
+launcher-side folder. The SSH account, not the UI category, defines OS authority.
 
-打开面板 **Resources → VPS → 添加 VPS**，填写名称、IP / 域名、SSH 端口、账号和密码。可补充服务商、地区、系统 / 配置与备注，方便识别面板、边缘节点和业务服务器。不要把密码填进备注；备注属于可读取的连接信息。
+`display_mode` is `top_level`, `project_only` or `both`. Project modes require at
+least one same-workspace Project. Both entries reference the same binding and
+permissions; placement is not separate authorization or a project-directory sandbox.
+`vps` discovers top-level entries; `vps(project=...)` discovers Project entries.
 
-名称唯一；相同地址、端口、账号的连接不能重复创建。同一 IP 的不同端口或账号可以分别建档。IPv6 地址在保存时规范化。
+The Runner uses system OpenSSH Host aliases and optional absolute local config
+files. IdentityFile, ssh-agent, ProxyJump and known_hosts remain with OpenSSH.
+There is no password/sshpass adapter. `exec`/`process` perform one-shot work;
+`session` owns persistent shells/PTYs and original operation receipts. Do not infer
+remote termination from local SSH client cancellation. See the full guide for
+configuration, current platform support and uncertainty semantics.
 
-新建必须填写密码。编辑时密码框始终为空；留空保留原密码，填写新密码才会替换。保存接口不返回密码，也没有密码读取接口。本版支持保存密码认证，未新增私钥导入或跳板机配置。
-
-主机密钥默认 **严格验证**，要求项目所属 Agent 已有可信的 known_hosts 记录。首次连接可明确选择 **信任首次连接，拒绝后续密钥变化**。两种模式都拒绝已知主机密钥异常变化，不自动关闭校验。
-
-## 项目关联与明确执行路线
-
-在 VPS 卡片点击 **分配项目**，可勾选多个项目。也可在 **Resources → Projects → 资源详情 → 关联 VPS** 中给一个项目勾选多台服务器。调整一个项目不会清除其他项目的分配。
-
-关联仅说明用途。在连接配置中，另外选择一个明确的执行项目 / Agent 路线；执行由该 Agent 发起，不要求在每台 VPS 安装 CodePier Agent。关联其他 Agent 上的项目不会增加执行路线或授予访问。
-
-客户端须在 Access → Roles 获得该 VPS 的 read / execute 规则。Project execute 不隐含 VPS execute；执行还需要明确路线的项目可写、允许任务、角色允许该项目 execute，且 Agent 本机启用 Shell 并明确允许该项目。项目分配不是远程操作系统沙箱：命令拥有保存的 SSH 账号权限，不会只被限制在某个远程目录。
-
-其他窗口改动配置或分配后，旧表单不能覆盖新配置；重新打开、核对再保存。删除项目时，其 VPS 分配自动移除，服务器连接本身保留。
-
-## 在 ChatGPT 中调用
-
-部署新版 Hub 并刷新连接工具目录后，所有 MCP 目录统一使用 `vps` 查询、`exec` 执行；旧名字已移除。详见 [九个 MCP 工具](CORE_TOOLS.md)。
-
-`vps` 参数示例：
-
-    {"project":"Imago","query":"广州"}
-
-返回明确获授予 VPS read 的名称、IP、端口、账号、启停状态及可见项目。不返回密码，不暴露未授权项目的名称或编号。支持 offset / limit 分页，按 next_offset 继续。
-
-`exec` 参数示例：
-
-    {"project":"Imago","target":"vps:<列表返回的连接编号>","command":"df -h","timeout_seconds":30,"idempotency_key":"unique-intent-example-001"}
-
-使用列表返回的精确 `target`，不再按名称或 IP 隐式选择。多个端口或账号要先从列表中选定连接，不能覆盖已保存配置。
-
-可以直接说：**“SSH 到 Imago 的广州面板，检查磁盘。”** 或 **“连接已保存的这台 IP，检查服务状态。”** 客户端先查询授权连接，确定项目和目标后执行，不需要再次发送密码。工具调用仍受客户端正常的执行确认与授权约束。
-
-## 检查连接与执行结果
-
-卡片的 **已启用** 是配置开关，不代表服务器在线。点击 **检查连接**，使用已配置且获授权的执行项目 / Agent 路线，再点击开始。固定检查只读取主机名、账号、系统和根目录磁盘信息，不修改远程服务器。
-
-Agent 离线时，操作进入原有持久队列；关闭弹窗不取消已提交操作，结果可在 **操作审计** 中按 operation_id 查询。恢复使用原幂等键与回执，不重复创建命令。
-
-提交命令后，用 `process(operation="wait"/"get", operation_ids=[...])` 查询原回执。相同请求重试保留原幂等键；不同命令使用同一键会被拒绝。超时、认证失败、主机密钥问题和非零退出均保留真实结果，不把失败当成功。
-
-取消会停止本地 SSH 传输，但不保证远程进程停止或回滚。不要因断线就用新键重跑结果不明的写命令。
-
-## 凭据与撤销
-
-密码使用 Hub 现有主密钥加密保存在数据库。排队只保存连接 ID、配置修订号与明确执行路线标识；发送到 Agent 前才解密，通过已有加密 Agent 通道传送。Agent 用子进程环境变量供给 SSH，不把密码放进命令参数。
-
-工具返回、参数摘要、公开连接列表和审计不返回密码。现有 SSH 执行器对输出中的实际密码进行流式脱敏，包括跨分块的情况。浏览器不将密码写入 localStorage 或 sessionStorage，关闭表单后丢弃输入。
-
-停用、删除、改换地址 / 账号 / 密码或改变执行路线，会阻止尚未下发的旧请求。移除再恢复执行路线不会使旧队列复活；关联用途的改变不改变执行权。仅修改名称、说明不改变固定执行目标。已经发出且结果不明的请求恢复原 Agent 账本，不宣称远程命令没有执行；已下发或被 Agent 接收的操作（包括 Agent 本地等待执行的任务）不会因取消分配或删除连接自动停止，需查询原回执；需要停止时单独取消原操作，但仍不保证远端进程停止。
-
-同时备份 **hub.sqlite3 与对应 master.key**。缺失密钥时不会生成新密钥覆盖已有加密数据，应恢复配套备份。Hub 主机管理员仍有解密能力，需保护账号、数据目录和备份。生产面板宜使用可信 HTTPS。
-
-## 更新与验证范围
-
-本功能需要更新 Hub 服务端和静态页面。Hub 和 Agent 都需要更新到支持新 exec 工具契约的版本，Agent 还需已安装 ssh / sshpass。旧 Agent 会返回明确的升级提示，不会猜测新参数的含义。本功能不会自动重启或停止生产 Agent。
-
-自动化测试使用隔离 Hub、Agent 和模拟 SSH 可执行程序，实际验证子进程、加密通道、回执与输出处理；Chromium/WebKit 测试实际操作面板。这不等同于已经登录真实 VPS，也不代表已经部署生产。
-
-旧关联数据会保留，但升级不会从关联推导 VPS 权限或路线。未明确路线的旧排队 SSH 请求在发送前被拒绝；原回执仍保留。详见 [升级与访问规则](RESOURCE_MODEL.md)。
+See [Workspace setup and contracts](WORKSPACES.md) for the complete development model.

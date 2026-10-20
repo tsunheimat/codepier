@@ -70,10 +70,7 @@ def test_interrupted_call_breaks_timing_continuity_but_serial_calls_measure_it()
 
 def test_readiness_does_not_present_project_configuration_as_caller_authority(integrated_stack):
     s = integrated_stack
-    grant = s.client.post('/api/grants', json={
-        'label':'Readiness read-only caller', 'scopes':['read'],
-        'projects':[s.project['id']], 'days':1,
-    }).json()
+    grant = s.create_connection(s.create_profile({'project_rules':[{'projects':[s.project['id']],'actions':['read']}]}))
     try:
         result = s.mcp('workspace', {'project': 'Imago', 'operation': 'readiness'}, token_value=grant['token'])['structuredContent']
         if result.get('pending'):
@@ -87,7 +84,7 @@ def test_readiness_does_not_present_project_configuration_as_caller_authority(in
         assert result['execution']['shell']['enabled'] is True  # local configuration is still shown, separately
         assert result['execution']['shell']['caller_permitted'] is False
     finally:
-        s.client.delete('/api/grants/' + grant['grant_id'])
+        s.client.post(f'/api/spaces/{s.space_id}/connections/' + grant['connection_id'] + '/revoke')
 
 
 @pytest.mark.parametrize('enabled', [False, True])

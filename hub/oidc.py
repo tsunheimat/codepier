@@ -27,6 +27,7 @@ from typing import Literal
 
 from hub.db_worker import database_endpoint
 from hub.access import AccessModel
+from hub.permissions import AccessPolicy, validate_policy
 from hub import iam
 from hub.config import OIDC_SEED_PROVIDER_ID
 from shared.config import ConfigurationError
@@ -118,9 +119,7 @@ class ProviderInput(AccessModel):
 class GroupMappingInput(AccessModel):
     group_name: str = Field(min_length=1,max_length=200)
     space_id: str = Field(min_length=1,max_length=100)
-    level: Literal['admin','member','guest'] = 'member'
-    role_id: str | None = Field(default=None,max_length=100)
-    may_delegate: bool = False
+    policy: AccessPolicy
     expected_version: int | None = Field(default=None,ge=1)
 
 
@@ -389,7 +388,7 @@ class OIDCService:
         return {'group_policy_source':'userinfo','group_policy_required':required,'warnings':warnings}
 
     def warn_group_compatibility(self):
-        # Runs once at Hub startup, including an upgrade/reopen of schema 10.
+        # Runs once at workspace Hub startup.
         # No provider labels, group names or identity/credential data are logged.
         if self.store.one("SELECT 1 AS ok FROM oidc_providers p WHERE p.required_group<>'' OR EXISTS (SELECT 1 FROM group_mappings m WHERE m.provider_id=p.id) LIMIT 1"):
             import logging
@@ -402,14 +401,11 @@ class OIDCService:
         """Called in a write transaction. Remove only this identity's sources."""
         store=self.store;prefix='oidc:'+identity['id']+':'
         store.db.execute('UPDATE memberships SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',(identity['user_id'],len(prefix),prefix))
-        store.db.execute('UPDATE role_assignments SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',(identity['user_id'],len(prefix),prefix))
         expires=time.time()+provider['freshness_seconds']
         for mapping in store.all('SELECT * FROM group_mappings WHERE provider_id=?',(provider['id'],)):
             if mapping['group_name'] not in groups:continue
             source=prefix+mapping['id']
-            store.db.execute('INSERT INTO memberships(space_id,user_id,source,level,active,expires) VALUES(?,?,?,?,1,?) ON CONFLICT(space_id,user_id,source) DO UPDATE SET level=excluded.level,active=1,expires=excluded.expires,version=memberships.version+1',(mapping['space_id'],identity['user_id'],source,mapping['level'],expires))
-            if mapping['role_id']:
-                store.db.execute('INSERT INTO role_assignments(role_id,user_id,space_id,source,may_delegate,active,expires) VALUES(?,?,?,?,?,1,?) ON CONFLICT(role_id,user_id,source) DO UPDATE SET may_delegate=excluded.may_delegate,active=1,expires=excluded.expires,version=role_assignments.version+1',(mapping['role_id'],identity['user_id'],mapping['space_id'],source,mapping['may_delegate'],expires))
+            store.db.execute('INSERT INTO memberships(space_id,user_id,source,policy,active,expires) VALUES(?,?,?,?,1,?) ON CONFLICT(space_id,user_id,source) DO UPDATE SET policy=excluded.policy,active=1,expires=excluded.expires,version=memberships.version+1',(mapping['space_id'],identity['user_id'],source,mapping['policy'],expires))
         store.db.execute("UPDATE external_identities SET groups_json=?,checked_at=?,fresh_until=?,enabled=1,disabled_reason='' WHERE id=?",(json.dumps(groups),time.time(),expires,identity['id']))
         self.runtime.wake_delivery();self.runtime.publish('iam',{'user_id':identity['user_id']})
 
@@ -421,7 +417,7 @@ class OIDCService:
         """
         prefix='oidc:'+identity['id']+':'
         self.store.db.execute('UPDATE external_identities SET enabled=0,disabled_reason=?,fresh_until=0 WHERE id=?',(reason,identity['id']))
-        for table in ('memberships','role_assignments'):
+        for table in ('memberships',):
             self.store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',(identity['user_id'],len(prefix),prefix))
         self.store.db.execute('DELETE FROM sessions WHERE id_hash IN (SELECT session_hash FROM session_security WHERE identity_id=?)',(identity['id'],))
         if revoke:
@@ -457,7 +453,7 @@ class OIDCService:
                 store.db.execute('UPDATE external_identities SET fresh_until=0,checked_at=0 WHERE provider_id=?',(identifier,))
                 for identity in store.all('SELECT * FROM external_identities WHERE provider_id=?',(identifier,)):
                     prefix='oidc:'+identity['id']+':'
-                    for table in ('memberships','role_assignments'):
+                    for table in ('memberships',):
                         store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE substr(source,1,?)=?',(len(prefix),prefix))
         else:
             store.db.execute('INSERT INTO oidc_providers(id,label,issuer,client_id,client_secret,discovery_url,enabled,admission,group_claim,required_group,scopes,endpoint_origins,freshness_seconds,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(identifier,*values,time.time()))
@@ -638,7 +634,7 @@ class OIDCService:
                 if not still_current():return
                 self.store.db.execute('UPDATE external_identities SET fresh_until=0 WHERE id=?',(identifier,))
                 prefix='oidc:'+identifier+':'
-                for table in ('memberships','role_assignments'):
+                for table in ('memberships',):
                     self.store.db.execute(f'UPDATE {table} SET active=0,version=version+1 WHERE user_id=? AND substr(source,1,?)=?',
                                           (identity['user_id'],len(prefix),prefix))
                 self.runtime.publish('iam',{'user_id':identity['user_id']})
@@ -774,8 +770,7 @@ class OIDCService:
         @database_endpoint(store)
         def mapping_targets(request:Request):
             auth.instance(request)
-            return {'spaces':store.all("SELECT id,label FROM spaces WHERE active=1 AND kind='team'"),
-                    'roles':store.all("SELECT r.id,r.label,r.space_id FROM access_roles r JOIN spaces s ON s.id=r.space_id WHERE s.active=1 AND s.kind='team'")}
+            return {'spaces':store.all("SELECT id,label FROM spaces WHERE active=1 AND kind='workspace'")}
 
         @router.get('/api/iam/oidc/providers/{identifier}/mappings')
         @database_endpoint(store)
@@ -789,10 +784,13 @@ class OIDCService:
             p=auth.instance(request,True);self.provider(identifier,enabled=False)
             with store.lock,store.db:
                 store.db.execute('BEGIN IMMEDIATE');auth.instance(request,True)
-                if not store.one("SELECT id FROM spaces WHERE id=? AND active=1 AND kind='team'",(body.space_id,)):raise DevError('SPACE_NOT_FOUND','空间不存在',404)
-                if body.role_id and not store.one('SELECT id FROM access_roles WHERE id=? AND space_id=?',(body.role_id,body.space_id)):raise DevError('ROLE_NOT_FOUND','角色不属于指定空间',404)
+                if not store.one("SELECT id FROM spaces WHERE id=? AND active=1 AND kind='workspace'",(body.space_id,)):raise DevError('SPACE_NOT_FOUND','空间不存在',404)
+                scoped = auth.panel(request, True, space_id=body.space_id)
+                iam.require_space_capability(store, scoped, 'members')
+                from hub.iam_api import delegation_guard
+                delegation_guard(store, scoped, body.policy)
                 mid='map_'+uuid.uuid4().hex
-                store.db.execute('INSERT INTO group_mappings(id,provider_id,group_name,space_id,level,role_id,may_delegate) VALUES(?,?,?,?,?,?,?)',(mid,identifier,body.group_name,body.space_id,body.level,body.role_id,int(body.may_delegate)))
+                store.db.execute('INSERT INTO group_mappings(id,provider_id,group_name,space_id,policy) VALUES(?,?,?,?,?)',(mid,identifier,body.group_name,body.space_id,body.policy.model_dump_json()))
                 store.db.execute('UPDATE external_identities SET checked_at=0 WHERE provider_id=?',(identifier,))
                 iam.audit(store,p,'oidc.mapping_created',mid)
             return store.one('SELECT * FROM group_mappings WHERE id=?',(mid,))
@@ -806,7 +804,7 @@ class OIDCService:
                 if not row:raise DevError('MAPPING_NOT_FOUND','映射不存在',404)
                 for identity in store.all('SELECT id FROM external_identities WHERE provider_id=?',(row['provider_id'],)):
                     source='oidc:'+identity['id']+':'+identifier
-                    store.db.execute('UPDATE memberships SET active=0,version=version+1 WHERE source=?',(source,));store.db.execute('UPDATE role_assignments SET active=0,version=version+1 WHERE source=?',(source,))
+                    store.db.execute('UPDATE memberships SET active=0,version=version+1 WHERE source=?',(source,))
                 store.db.execute('DELETE FROM group_mappings WHERE id=?',(identifier,));iam.audit(store,p,'oidc.mapping_deleted',identifier)
             return {'ok':True}
 
@@ -851,7 +849,7 @@ class OIDCService:
                 store.audit('panel:'+user['username'],'oidc.unlinked',identifier,commit=False)
             return {'ok':True,'relogin_required':session['identity_id']==identifier}
 
-        async def finish_callback(request:Request,legacy_identifier:str|None=None):
+        async def finish_callback(request:Request):
             params=dict(request.query_params)
             if len(params)!=len(request.query_params.multi_items()):raise DevError('OIDC_CALLBACK_INVALID','回调参数重复',400)
             state=params.get('state','');code=params.get('code','')
@@ -861,8 +859,7 @@ class OIDCService:
                 with store.lock,store.db:
                     store.db.execute('BEGIN IMMEDIATE')
                     txn=store.one('SELECT * FROM oidc_transactions WHERE state_hash=? AND expires>? AND used=0',(state_hash,time.time()))
-                    if (not txn or legacy_identifier is not None and txn['provider_id']!=legacy_identifier
-                            or not hmac.compare_digest(txn['browser_hash'],digest(request.cookies.get(cookie_name,'')))):
+                    if (not txn or not hmac.compare_digest(txn['browser_hash'],digest(request.cookies.get(cookie_name,'')))):
                         raise DevError('OIDC_STATE_INVALID','登录状态已过期、已使用或不属于本浏览器',400)
                     if txn['link_user_id'] and digest(request.cookies.get('rd_session',''))!=txn['link_session_hash']:raise DevError('LINK_SESSION_EXPIRED','关联期间账号已切换',401)
                     store.db.execute('UPDATE oidc_transactions SET used=1 WHERE state_hash=? AND provider_id=?',(state_hash,txn['provider_id']))
@@ -875,8 +872,7 @@ class OIDCService:
                 if 'iss' in params and params['iss']!=provider['issuer']:raise DevError('OIDC_ISSUER_MISMATCH','回调身份来源不匹配',401)
                 meta,keys=await self.metadata(provider)
                 def exchange_form():
-                    suffix='/auth/oidc/'+legacy_identifier+'/callback' if legacy_identifier is not None else '/auth/oidc/callback'
-                    return {'grant_type':'authorization_code','code':code,'redirect_uri':self.public_url()+suffix,'code_verifier':store.decrypt(txn['verifier'])}
+                    return {'grant_type':'authorization_code','code':code,'redirect_uri':self.public_url()+'/auth/oidc/callback','code_verifier':store.decrypt(txn['verifier'])}
                 tokens=await self.exchange(provider,meta,await store.run(exchange_form))
                 if tokens.get('token_type','').lower()!='bearer' or not isinstance(tokens.get('access_token'),str):raise DevError('OIDC_TOKEN_INVALID','没有收到有效访问令牌',401)
                 claims=await self.verify_claims(tokens.get('id_token'),provider,keys,nonce=txn['nonce'],access_token=tokens['access_token'])
@@ -894,19 +890,11 @@ class OIDCService:
                         return cookie(RedirectResponse(txn['return_to'],status_code=303),value['cookie'])
                 response=await store.run(finish_login)
             response.delete_cookie(cookie_name,path='/auth/oidc/callback')
-            if legacy_identifier is not None:
-                response.delete_cookie(cookie_name,path='/auth/oidc/'+legacy_identifier+'/callback')
             return response
 
         @router.get('/auth/oidc/callback')
         async def callback(request:Request):
             return await finish_callback(request)
-
-        # Compatibility for OIDC transactions started before the stable callback
-        # route was introduced. New authorization requests never emit this URL.
-        @router.get('/auth/oidc/{identifier}/callback',include_in_schema=False)
-        async def legacy_callback(identifier:str,request:Request):
-            return await finish_callback(request,identifier)
 
         @router.post('/auth/oidc/{identifier}/backchannel-logout')
         async def backchannel(identifier:str,request:Request):
