@@ -320,7 +320,30 @@ window.CodePierSpaces = (() => {
               .join('');
         }
       }
-      content = panel(titles[address.tab], content || empty('尚无项目。'), add);
+      content = panel(
+        titles[address.tab],
+        content || empty(address.tab === 'connections' ? '尚无 MCP 连接。' : '尚无项目。'),
+        add,
+      );
+      if (address.tab === 'connections') {
+        const settings = await api('/api/settings');
+        data.mcp_url = settings.mcp_url;
+        content =
+          panel(
+            'MCP 连接地址',
+            field(
+              'mcp_endpoint',
+              'MCP Server URL',
+              settings.mcp_url,
+              'id="workspace-mcp-url" readonly spellcheck="false"',
+            ) +
+              '<div class="actions">' +
+              button('copy-mcp-url', '复制 MCP 地址') +
+              '</div>' +
+              '<p class="form-note">在 ChatGPT 或其他 MCP 客户端中使用此地址，选择 OAuth；支持动态客户端注册（DCR），无需填写旧 Client ID。授权时先选择工作空间，再选择 Profile。</p>' +
+              '<p class="form-note">不要添加 authorization=role、space 或 profile 参数。更换 Hub 数据库后，请新建客户端连接，不要仅重连旧 OAuth 注册。</p>',
+          ) + content;
+      }
     }
     if (login !== S.session || page !== location.hash) return '';
     snapshot = { space, address, data };
@@ -1097,7 +1120,6 @@ window.CodePierSpaces = (() => {
     );
   }
   function policyEditorHTML(policy = {}, member = false) {
-    // Explicit resource/action pairs remain editable without invented roles.
     return (
       (member
         ? multi(
@@ -1110,28 +1132,84 @@ window.CodePierSpaces = (() => {
             policy.manage || [],
           )
         : '') +
-      check(
-        'raw_policy',
-        '直接使用完整 JSON 策略（保留全部/未来资源选择器）',
-        [...(policy.project_rules || []), ...(policy.vps_rules || [])].some(
-          (r) => r.all_projects || r.all_vps || r.excluded_projects?.length,
-        ),
-      ) +
-      '<div data-policy-pairs></div><details aria-label="高级策略配置"><summary>高级策略（外部 MCP / 插件 / 精确选择器）</summary>' +
+      check('raw_policy', '直接使用完整 JSON 策略（复杂规则不自动转换）') +
+      '<p data-policy-status class="form-note" role="status"></p><fieldset class="ws-policy-visual" data-policy-pairs aria-label="可视化资源权限"></fieldset>' +
+      '<details aria-label="高级策略配置"><summary>高级策略（外部 MCP / 插件 / 精确选择器）</summary>' +
       textArea(
         'policy_extra',
         '完整策略 JSON',
         JSON.stringify(policy, null, 2),
         'spellcheck="false"',
       ) +
-      '<p class="form-note">保存时，下方可视化项目/VPS选择会覆盖 JSON 中对应的规则；外部工具、文件来源委派等其他规则保留。</p></details>'
+      '<p class="form-note">可视化模式保存 Project/VPS 选择；外部工具、文件来源委派等其他规则保留。JSON 模式以完整 JSON 为准，不使用可视化选择。</p></details>'
     );
   }
   async function bindPolicy(f, space, policy = {}) {
+    const login = S.session;
     const [projects, vps] = await Promise.all([
       api(root(space.id) + '/projects'),
       api(root(space.id) + '/vps'),
     ]);
+    if (!f.isConnected || login !== S.session) return;
+    const visual = $('[data-policy-pairs]', f),
+      raw = f.elements.raw_policy;
+    const status = $('[data-policy-status]', f),
+      member = !!f.elements.manage;
+    // Complex rules are never flattened into a broader all-project grant.
+    const representable = (value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const projectRules = value.project_rules ?? [],
+        vpsRules = value.vps_rules ?? [];
+      const validRules = (rules, kind, actions) =>
+        Array.isArray(rules) &&
+        rules.every((r) => {
+          if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+          const keys = [
+            kind,
+            'all_' + kind,
+            'actions',
+            ...(kind === 'projects' ? ['excluded_projects'] : []),
+          ];
+          if (Object.keys(r).some((key) => !keys.includes(key))) return false;
+          if (r['all_' + kind] !== undefined && typeof r['all_' + kind] !== 'boolean') return false;
+          if (
+            !Array.isArray(r.actions) ||
+            !r.actions.includes('read') ||
+            r.actions.some((action) => !actions.includes(action)) ||
+            new Set(r.actions).size !== r.actions.length
+          )
+            return false;
+          for (const key of [kind, ...(kind === 'projects' ? ['excluded_projects'] : [])]) {
+            if (
+              r[key] !== undefined &&
+              (!Array.isArray(r[key]) ||
+                r[key].some((id) => typeof id !== 'string') ||
+                new Set(r[key]).size !== r[key].length)
+            )
+              return false;
+          }
+          return r['all_' + kind] || !!r[kind]?.length;
+        });
+      if (
+        !validRules(projectRules, 'projects', ['read', 'write', 'execute', 'computer']) ||
+        !validRules(vpsRules, 'vps', ['read', 'execute'])
+      )
+        return false;
+      const all = projectRules.filter((r) => r.all_projects);
+      if (all.length && (all.length !== 1 || projectRules.length !== 1 || all[0].projects?.length))
+        return false;
+      if (!all.length && projectRules.some((r) => r.excluded_projects?.length)) return false;
+      return (
+        !projectRules.some((r) =>
+          [...(r.projects || []), ...(r.excluded_projects || [])].some(
+            (id) => !projects.projects.some((p) => p.id === id),
+          ),
+        ) &&
+        !vpsRules.some(
+          (r) => r.all_vps || (r.vps || []).some((id) => !vps.vps.some((v) => v.id === id)),
+        )
+      );
+    };
     const actionsFor = (rules, id, key) =>
       new Set(
         (rules || [])
@@ -1142,35 +1220,127 @@ window.CodePierSpaces = (() => {
           )
           .flatMap((r) => r.actions),
       );
-    const pairs = (kind, rows, actions) =>
-      rows
-        .map((x) => {
-          const allowed = actionsFor(
-            policy[kind === 'projects' ? 'project_rules' : 'vps_rules'],
-            x.id,
-            kind,
-          );
-          return `<fieldset class="ws-options"><legend>${esc(x.alias || x.name)}</legend>${actions.map((a) => `<label class="check"><input type="checkbox" data-policy-kind="${kind}" data-resource="${esc(x.id)}" value="${a}" ${allowed.has(a) ? 'checked' : ''}>${a}</label>`).join('')}</fieldset>`;
-        })
-        .join('');
-    $('[data-policy-pairs]', f).innerHTML =
-      '<h3>Project 权限</h3>' +
-      pairs('projects', projects.projects, ['read', 'write', 'execute', 'computer']) +
-      '<h3>VPS 权限</h3>' +
-      pairs('vps', vps.vps, ['read', 'execute']);
-    // Selecting a non-read action includes the required read permission. Clearing
-    // read clears its dependent actions; unrelated resources never inherit them.
-    $$('[data-policy-kind]', f).forEach(
-      (n) =>
-        (n.onchange = () => {
-          const group = [...n.closest('fieldset').querySelectorAll('input')];
+    const actionGroup = (kind, id, title, actions, selected) =>
+      `<fieldset class="ws-options"><legend>${esc(title)}</legend>${actions.map((a) => `<label class="check"><input type="checkbox" data-policy-kind="${kind}" data-resource="${esc(id)}" value="${a}" ${selected.has(a) ? 'checked' : ''}>${a}</label>`).join('')}${kind !== 'vps' ? `<button type="button" class="btn small" data-policy-rwe aria-label="${esc(title)}：选择 read + write + execute">read + write + execute</button>` : ''}</fieldset>`;
+    const render = (value) => {
+      const all = (value.project_rules || []).find((r) => r.all_projects);
+      visual.innerHTML =
+        '<h3>Project 权限</h3>' +
+        check('all_projects', '全部当前及未来 Projects（仅此工作空间）', !!all) +
+        '<p class="form-note">权限始终与当前成员权限取交集，不授予管理权或其他资源权限。未来项目需在 MCP 授权时明确选择「跟随 Profile 变化」；固定连接不会自动扩大。</p>' +
+        (!manage(space, 'workspace')
+          ? '<p class="form-note">全部/未来项目规则仅工作空间管理员可配置。</p>'
+          : '') +
+        '<div data-policy-all-projects>' +
+        actionGroup(
+          'all-projects',
+          '',
+          '全部 Projects 的操作',
+          ['read', 'write', 'execute', 'computer'],
+          new Set(all?.actions || []),
+        ) +
+        multi(
+          'excluded_projects',
+          '排除这些 Projects',
+          projects.projects.map((p) => [p.id, p.alias]),
+          all?.excluded_projects || [],
+        ) +
+        '</div><div data-policy-selected-projects>' +
+        '<button type="button" class="btn small" data-policy-rwe-listed>所有已列项目：read + write + execute</button>' +
+        (projects.projects
+          .map((p) =>
+            actionGroup(
+              'projects',
+              p.id,
+              p.alias,
+              ['read', 'write', 'execute', 'computer'],
+              actionsFor(value.project_rules, p.id, 'projects'),
+            ),
+          )
+          .join('') || '<p class="form-note">尚无 Project；管理员仍可配置全部/未来项目规则。</p>') +
+        '</div><h3>VPS 权限</h3>' +
+        vps.vps
+          .map((p) =>
+            actionGroup(
+              'vps',
+              p.id,
+              p.name,
+              ['read', 'execute'],
+              actionsFor(value.vps_rules, p.id, 'vps'),
+            ),
+          )
+          .join('');
+      const updateScope = () => {
+        $('[data-policy-all-projects]', f).hidden = !f.elements.all_projects.checked;
+        $('[data-policy-selected-projects]', f).hidden = f.elements.all_projects.checked;
+      };
+      f.elements.all_projects.disabled = !manage(space, 'workspace');
+      f.elements.all_projects.onchange = updateScope;
+      updateScope();
+      $$('[data-policy-kind]', f).forEach((n) => {
+        n.onchange = () => {
+          const group = [...n.closest('fieldset').querySelectorAll('[data-policy-kind]')];
           if (n.checked && n.value !== 'read') group.find((x) => x.value === 'read').checked = true;
           if (!n.checked && n.value === 'read') group.forEach((x) => (x.checked = false));
-        }),
-    );
+        };
+      });
+      const selectRWE = (group) =>
+        $$('[data-policy-kind]', group).forEach((n) => {
+          if (['read', 'write', 'execute'].includes(n.value)) n.checked = true;
+        });
+      $$('[data-policy-rwe]', f).forEach(
+        (b) => (b.onclick = () => selectRWE(b.closest('fieldset'))),
+      );
+      $('[data-policy-rwe-listed]', f).onclick = () =>
+        selectRWE($('[data-policy-selected-projects]', f));
+    };
+    const mode = () => {
+      visual.disabled = raw.checked;
+      visual.hidden = raw.checked;
+      $$('[name="manage"]', f).forEach((n) => (n.disabled = raw.checked));
+      if (raw.checked) $('[aria-label="高级策略配置"]', f).open = true;
+    };
+    const complexMessage =
+      '此策略含混合、复杂或未列出的资源规则。已保留完整 JSON；请在高级策略中编辑，不会自动扩大或丢失权限。';
+    raw.checked = !representable(policy);
+    render(policy);
+    status.textContent = raw.checked ? complexMessage : '';
+    mode();
+    let jsonBaseline = f.elements.policy_extra.value;
+    raw.onchange = () => {
+      try {
+        if (raw.checked) {
+          // Preserve manually edited JSON. Otherwise transfer the current visual
+          // draft, never the stale JSON from when this dialog was opened.
+          if (f.elements.policy_extra.value === jsonBaseline) {
+            raw.checked = false;
+            const current = readPolicy(f, member);
+            f.elements.policy_extra.value = JSON.stringify(current, null, 2);
+            jsonBaseline = f.elements.policy_extra.value;
+            raw.checked = true;
+          }
+        } else {
+          raw.checked = true;
+          const current = readPolicy(f, member);
+          if (!representable(current)) throw new Error(complexMessage);
+          render(current);
+          jsonBaseline = f.elements.policy_extra.value;
+          $$('[name="manage"]', f).forEach(
+            (n) => (n.checked = (current.manage || []).includes(n.value)),
+          );
+          raw.checked = false;
+        }
+        status.textContent = '';
+      } catch (e) {
+        status.textContent = e.message;
+      }
+      mode();
+    };
   }
   function readPolicy(f, member = false) {
     const policy = JSON.parse(f.elements.policy_extra.value || '{}');
+    if (!policy || typeof policy !== 'object' || Array.isArray(policy))
+      throw new Error('策略必须是 JSON 对象。');
     if (f.elements.raw_policy.checked) {
       if (!member && policy.manage?.length) throw new Error('Profile 不包含管理权限。');
       return policy;
@@ -1179,6 +1349,20 @@ window.CodePierSpaces = (() => {
       ['projects', 'project_rules'],
       ['vps', 'vps_rules'],
     ]) {
+      if (kind === 'projects' && f.elements.all_projects.checked) {
+        const actions = $$('[data-policy-kind="all-projects"]:checked', f).map((n) => n.value);
+        if (!actions.includes('read'))
+          throw new Error('请选择全部 Projects 的操作权限（至少 read）；未选择不表示允许全部。');
+        policy.project_rules = [
+          {
+            projects: [],
+            all_projects: true,
+            actions,
+            excluded_projects: values(f, 'excluded_projects'),
+          },
+        ];
+        continue;
+      }
       const groups = new Map();
       $$(`input[data-policy-kind="${kind}"]:checked`, f).forEach((n) => {
         if (!groups.has(n.dataset.resource)) groups.set(n.dataset.resource, []);
@@ -1728,6 +1912,8 @@ window.CodePierSpaces = (() => {
                   true,
                 );
                 return renderPage(false);
+              case 'copy-mcp-url':
+                return copy(captured.data.mcp_url);
               case 'new-connections':
                 return newConnection(space.id);
               case 'plugin-consent':

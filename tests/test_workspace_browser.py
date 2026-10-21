@@ -192,7 +192,7 @@ def test_workspace_navigation_executes_real_page_scripts(workspace_server, works
     ]:
         page.locator(f'.product-tabs a[href="#spaces/alice/{tab}"]').click()
         expect(page).to_have_url(re.compile('#spaces/alice/' + tab + '$'))
-        expect(page.locator('#workspace-page h2')).to_have_text(heading, timeout=10000)
+        expect(page.locator('#workspace-page').get_by_role('heading', name=heading, exact=True)).to_be_visible(timeout=10000)
     assert errors == []
 
 
@@ -341,3 +341,50 @@ def test_navigation_during_revalidation_preserves_url_without_old_content(worksp
         assert '/api/devices' not in reads and '/api/projects' not in reads
         assert page.evaluate('Object.hasOwn(S,"space_id")') is False
         assert writes==[] and errors==[]
+
+
+@pytest.mark.parametrize('viewport',[{'width':1280,'height':900},{'width':390,'height':844}])
+def test_profile_manager_cannot_use_ui_to_expand_all_project_authority(workspace_server,workspace_browser,viewport):
+    server=workspace_server;context,errors=workspace_browser
+    server.must(server.client.put('/api/spaces/alice/members/bob',json={
+        'policy':{'manage':['profiles'],'project_rules':[{'projects':['project'],'actions':['read']}]},
+        'expected_version':0,'idempotency_key':uuid.uuid4().hex}))
+    context.clear_cookies()
+    page=context.new_page();page.set_viewport_size(viewport)
+    page.goto(server.url+'/#spaces/alice/profiles')
+    page.fill('#username','bob');page.fill('#password','a-valid-test-password');page.click('#login-form button')
+    expect(page.locator('#workspace-page h2')).to_have_text('Profiles',timeout=15000)
+    page.locator('[data-ws-action="new-profiles"]').click()
+    form=page.locator('#workspace-form')
+    expect(page.get_by_role('button',name='保存',exact=True)).to_be_enabled()
+    expect(form.locator('[name="all_projects"]')).to_be_disabled()
+    form.locator('[name="label"]').fill('Scoped profile manager')
+    form.locator('[data-policy-kind="projects"][data-resource="project"][value="read"]').check()
+    with page.expect_response(lambda r:r.request.method=='POST' and r.url.endswith('/api/spaces/alice/profiles')) as response:
+        page.get_by_role('button',name='保存',exact=True).click()
+    assert response.value.status==200,response.value.text()
+    profile=response.value.json()
+    expect(form).to_have_count(0,timeout=15000)
+    page.locator('[data-ws-action="profile"][data-id="'+profile['id']+'"]').click()
+    expect(page.get_by_role('button',name='保存',exact=True)).to_be_enabled()
+    form.locator('[name="raw_policy"]').check()
+    form.locator('[name="policy_extra"]').fill(json.dumps({'project_rules':[{'all_projects':True,'actions':['read']}]}))
+    with page.expect_response(lambda r:r.request.method=='PUT' and r.url.endswith('/profiles/'+profile['id'])) as denied:
+        page.get_by_role('button',name='保存',exact=True).click()
+    assert denied.value.status==403 and denied.value.json()['error']['code']=='DELEGATION_EXCEEDED'
+    assert server.must(server.client.get('/api/spaces/alice/profiles/'+profile['id']))==profile
+    assert errors==[]
+
+
+def test_mcp_endpoint_is_available_to_member_without_instance_or_space_management(workspace_server,workspace_browser):
+    server=workspace_server;context,errors=workspace_browser
+    server.must(server.client.put('/api/spaces/alice/members/bob',json={
+        'policy':{'project_rules':[{'projects':['project'],'actions':['read']}]},
+        'expected_version':0,'idempotency_key':uuid.uuid4().hex}))
+    context.clear_cookies()
+    page=context.new_page()
+    page.goto(server.url+'/#spaces/alice/connections')
+    page.fill('#username','bob');page.fill('#password','a-valid-test-password');page.click('#login-form button')
+    expect(page.get_by_label('MCP Server URL',exact=True)).to_have_value(server.url+'/mcp',timeout=15000)
+    expect(page.locator('[data-ws-action="copy-mcp-url"]')).to_be_visible()
+    assert errors==[]

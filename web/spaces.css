@@ -61,3 +61,37 @@
     flex-wrap: wrap;
   }
 }
+
+/* Profile policy controls stay usable on narrow screens and in JSON mode. */
+.ws-policy-visual {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.ws-policy-visual[hidden],
+.ws-policy-visual [hidden] {
+  display: none;
+}
+.ws-policy-visual [data-policy-rwe] {
+  grid-column: 1 / -1;
+  justify-self: start;
+  white-space: normal;
+}
+.ws-policy-visual [data-policy-rwe-listed] {
+  white-space: normal;
+  margin-bottom: 12px;
+}
+
+/* Long workspace labels and endpoint URLs must not widen mobile pages. */
+#workspace-page .page-head > div:first-child {
+  min-width: 0;
+  max-width: 100%;
+}
+#workspace-page .page-head h1 {
+  overflow-wrap: anywhere;
+}
+#workspace-mcp-url {
+  min-width: 0;
+  max-width: 100%;
+}
