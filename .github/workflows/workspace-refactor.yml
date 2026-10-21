@@ -55,6 +55,8 @@ jobs:
             tests/test_session_windows_contracts.py tests/test_external_plugins_contract.py \
             tests/test_core_tools.py tests/test_core_output_schemas.py \
             tests/test_ssh.py tests/test_vps.py tests/test_shell.py \
+            tests/test_runner_settings.py tests/test_runner_settings_http.py \
+            tests/test_ssh_discovery.py tests/test_vps_cutoff.py \
             tests/test_iam_integration.py tests/test_oidc_integration.py \
             tests/test_oidc_bootstrap.py tests/test_oidc_continuity.py \
             tests/test_oidc_review_regressions.py tests/test_oidc_review_followups.py \
@@ -92,7 +94,7 @@ jobs:
         run: |
           mkdir -p dist/workspace-browser
           .venv/bin/python -m pytest -q tests/test_workspace_browser.py tests/test_vps_ui.py tests/test_frontend_core.py \
-            tests/test_mcp_gateway_ui.py \
+            tests/test_mcp_gateway_ui.py tests/test_runner_settings_ui.py \
             --junitxml=dist/workspace-browser/browser.xml
       - name: Retain browser test evidence only
         if: always()
