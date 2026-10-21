@@ -47,7 +47,7 @@ for(const file of ['web/mcp-gateway.js','web/external-plugins.js','web/spaces.js
     'spaces/alice/members','spaces/alice/mcp','resources/folders','resources/storage','resources/vps'])
 def test_workspace_templates_use_real_explicit_http_projection(web, route):
     client,_=web
-    endpoints=['/api/spaces','/api/spaces/alice','/api/iam/me','/api/projects','/api/devices','/api/folders','/api/vps','/api/storage-pools',
+    endpoints=['/api/settings','/api/spaces','/api/spaces/alice','/api/iam/me','/api/projects','/api/devices','/api/folders','/api/vps','/api/storage-pools',
         '/api/spaces/alice/mcp-gateway','/api/spaces/alice/external-integrations','/api/external-plugins']
     endpoints += ['/api/spaces/alice/'+tab for tab in ['projects','sources','devices','vps','profiles','connections','members','invites']]
     responses={}
