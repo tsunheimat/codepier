@@ -55,7 +55,7 @@ jobs:
             tests/test_session_windows_contracts.py tests/test_external_plugins_contract.py \
             tests/test_core_tools.py tests/test_core_output_schemas.py \
             tests/test_ssh.py tests/test_vps.py tests/test_shell.py \
-            tests/test_runner_settings.py tests/test_runner_settings_http.py \
+            tests/test_runner_settings.py tests/test_runner_settings_http.py tests/test_workspace_observations.py \
             tests/test_ssh_discovery.py tests/test_vps_cutoff.py \
             tests/test_iam_integration.py tests/test_oidc_integration.py \
             tests/test_oidc_bootstrap.py tests/test_oidc_continuity.py \

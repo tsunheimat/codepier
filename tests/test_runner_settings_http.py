@@ -6,6 +6,7 @@ import time
 import uuid
 from dataclasses import replace
 
+import httpx
 import pytest
 
 from hub.runner_settings import cache_key, require_settings_access
@@ -74,11 +75,12 @@ def test_mcp_cannot_acquire_settings_access_via_workspace_device_permissions(web
 
 
 @pytest.mark.integration
-def test_real_runner_settings_default_denial_owner_opt_in_cas_and_no_session_interruption(tmp_path):
+@pytest.mark.parametrize('discovery_state', ['live', 'unavailable', 'cached'])
+def test_real_runner_settings_default_denial_owner_opt_in_cas_and_no_session_interruption(tmp_path, monkeypatch, discovery_state):
     with workspace_stack(tmp_path/'settings-roundtrip') as server:
         client = server.client
         def snapshot():
-            return server.finish(server.must(client.get('/api/devices/a/settings')))
+            return server.runner_read('settings')
         def submit(operation, **values):
             return server.must(client.post('/api/devices/a/settings', json=body(operation, **values)))
         current = snapshot()
@@ -125,10 +127,43 @@ def test_real_runner_settings_default_denial_owner_opt_in_cas_and_no_session_int
             assert executed['stdout'] == 'retained-session'
             rollback = server.finish(submit('rollback', expected_revision=live['revision'], backup_revision=changed['backup_revision']))
             assert rollback['saved'] and json.loads(server.config_path.read_text())['name'] == 'Runner a'
+            # Persistence is not live application. Observe this exact rollback
+            # revision on the same Runner before continuing the acceptance flow.
+            for _ in range(100):
+                restored = snapshot()
+                if (restored['revision'] == rollback['revision']
+                        and restored['effective']['name'] == 'Runner a'
+                        and not restored['pending_fields']):
+                    break
+                time.sleep(.1)
+            assert restored['revision'] == rollback['revision']
+            assert restored['effective']['name'] == 'Runner a'
+            assert not restored['pending_fields']
         finally:
             server.execute('session', operation='close', session_id=session_id)
-        discovered = server.finish(server.must(client.get('/api/devices/a/ssh-hosts')))
+        # Deterministically exercise the documented read response during the
+        # rollback/re-advertisement gap. The next read still uses the real Hub
+        # and Runner; no mutation or execution receipt is submitted twice.
+        original_get = client.get
+        discovery_reads = []
+        def observe_get(url, **kwargs):
+            if url == '/api/devices/a/ssh-hosts':
+                discovery_reads.append(url)
+                if discovery_state != 'live' and len(discovery_reads) == 1:
+                    hosts = [] if discovery_state == 'unavailable' else [
+                        {'host_alias':'fixture', 'discovered':True, 'owner_approved':True,
+                         'status':'configured', 'tested':False}]
+                    return httpx.Response(200, json={
+                        'protocol':current['protocol'], 'status':discovery_state,
+                        'stale':True, 'editable':False, 'observed_at':None if not hosts else 1,
+                        'hosts':hosts})
+            return original_get(url, **kwargs)
+        monkeypatch.setattr(client, 'get', observe_get)
+        discovered = server.runner_read('ssh-hosts')
         fixture = next(host for host in discovered['hosts'] if host['host_alias']=='fixture')
+        assert not discovered.get('stale'), discovered
+        if discovery_state != 'live':
+            assert len(discovery_reads) >= 2
         assert fixture['owner_approved'] and fixture['discovered'] and fixture['status']=='configured'
         assert not fixture['tested']
         # A display-only edit is independent of the Space's immutable target.
@@ -139,12 +174,14 @@ def test_real_runner_settings_default_denial_owner_opt_in_cas_and_no_session_int
         assert saved['description']=='verified metadata flow'
 
 
+@pytest.mark.parametrize('has_cache', [False, True])
 @pytest.mark.parametrize('route,kind',[('settings','snapshot'),('ssh-hosts','discover')])
-def test_read_reconnect_race_returns_stale_observation_without_replaying(web, monkeypatch, route, kind):
+def test_read_reconnect_race_returns_stale_observation_without_replaying(web, monkeypatch, route, kind, has_cache):
     client, app = web
     value = {'configuration':{'name':'last observed'}, 'editable':True, 'observed_at':1,
              'hosts':[], 'ssh_enabled':True}
-    app.state.store.execute('INSERT INTO meta(key,value) VALUES(?,?)', (cache_key('a',kind),json.dumps(value)))
+    if has_cache:
+        app.state.store.execute('INSERT INTO meta(key,value) VALUES(?,?)', (cache_key('a',kind),json.dumps(value)))
     monkeypatch.setattr(app.state.runtime,'online',lambda device:True)
     calls=[]
     async def disconnected(*args):
@@ -154,7 +191,11 @@ def test_read_reconnect_race_returns_stale_observation_without_replaying(web, mo
     response=client.get('/api/devices/a/'+route)
     assert response.status_code==200,response.text
     result=response.json()
-    assert result['stale'] and not result['editable'] and result['observed_at']==1
+    assert result['stale'] and not result['editable']
+    assert result['observed_at'] == (1 if has_cache else None)
+    assert result['status'] == ('cached' if has_cache else 'unavailable')
+    if kind == 'discover':
+        assert result['hosts'] == []
     assert len(calls)==1 and not app.state.store.all("SELECT id FROM operations WHERE tool='runner_settings'")
 
 
