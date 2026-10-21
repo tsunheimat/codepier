@@ -187,7 +187,7 @@ PUBLIC_DOCS = {
     'docs/RELEASING.md',
     'docs/SECURITY.md',
     'docs/START-HERE.md',
-    'docs/VPS.md',
+    'docs/VPS.md', 'docs/RUNNER_SETTINGS.md',
 }
 
 

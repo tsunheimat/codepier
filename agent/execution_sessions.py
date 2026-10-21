@@ -91,6 +91,7 @@ class Handle:
     guard: object | None = None
     close_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     busy: bool = False
+    limits: dict = field(default_factory=lambda: validate_sessions({}))
 
     def status(self):
         if self.state == 'active' and self.process.returncode is not None:
@@ -176,8 +177,8 @@ class SessionManager:
         while True:
             await asyncio.sleep(5)
             now = time.monotonic()
-            limits = self.agent.config.get('sessions', validate_sessions({}))
             for handle in list(self.handles.values()):
+                limits = handle.limits
                 if handle.state == 'active' and (now - handle.born > limits['lifetime_seconds'] or
                         not handle.busy and now - handle.touched > limits['idle_seconds']):
                     await self._close(handle, 'expired')
@@ -281,7 +282,7 @@ class SessionManager:
                         from agent.native_windows import ProcessJob
                         guard = ProcessJob(process.pid)
                 handle = Handle(identifier, binding, args['mode'], process, remote,
-                    target_fingerprint(self.agent.config, project) if remote else None, spec.shell, master=master, guard=guard)
+                    target_fingerprint(self.agent.config, project) if remote else None, spec.shell, master=master, guard=guard, limits=dict(settings))
                 self.handles[identifier] = handle
                 handle.reader = asyncio.create_task(
                     self._windows_pty_output(handle) if isinstance(process, ConPTYProcess)

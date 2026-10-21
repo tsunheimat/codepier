@@ -38,7 +38,7 @@ def advertisement(catalog_sha256):
     # time, after that registration, to avoid a contracts/protocol import cycle.
     from shared.contracts import TOOLS
     from shared.agent_lifecycle import DEVICE_ACTIONS
-    names = {name for name, tool in TOOLS.items() if not tool.local} | DEVICE_ACTIONS | {'system_validate'}
+    names = {name for name, tool in TOOLS.items() if not tool.local} | DEVICE_ACTIONS | {'system_validate', 'runner_settings'}
     return {'version': VERSION, 'contract_protocol': CONTRACT_PROTOCOL,
             'catalog_sha256': catalog_sha256,
             'tool_contracts': {name: wire_version(name) for name in sorted(names)}}

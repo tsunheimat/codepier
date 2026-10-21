@@ -18,6 +18,8 @@ def validate_config(value: object, config_path: Path) -> dict:
     if not isinstance(value, dict) or not valid_json_value(value):
         raise ValueError("Agent 配置必须是 JSON 对象")
     c = copy.deepcopy(value)
+    from shared.runner_settings import validate_management
+    c["settings_management"] = validate_management(c.get("settings_management", {}))
     checkpoint_max_mib = c.get("checkpoint_max_mib", 100)
     if type(checkpoint_max_mib) is not int or not 1 <= checkpoint_max_mib <= 4096:
         raise ValueError("checkpoint_max_mib 必须是 1–4096 的整数")

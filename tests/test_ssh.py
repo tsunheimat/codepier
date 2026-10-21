@@ -28,10 +28,9 @@ SECRET = "fixture-only-'$; with spaces"
 TARGET = 'vps:' + 'a'*32
 
 
-def saved_project():
-    return {'id': None, 'root': '', '_vps_context': {
-        'id': 'a'*32, 'resource_id': 'server', 'connection_ref': 'prod'},
-        '_ssh_target': {'vps_id': 'a'*32, 'resource_id': 'server', 'connection_ref': 'prod'}}
+def saved_project(config):
+    from tests.vps_fixtures import ssh_project
+    return ssh_project(config)
 
 
 @pytest.mark.parametrize('alias', ['-oProxyCommand=evil', 'a;id', 'user@host',
@@ -66,7 +65,7 @@ def test_runner_configuration_rejects_unknown_or_unsafe_inputs(settings):
     ('unlisted', 'SSH_TARGET_NOT_CONFIGURED')])
 def test_authority_checked_before_even_resolving_openssh(tmp_path, monkeypatch, denial, code):
     agent, _ = setup(tmp_path)
-    project = saved_project()
+    project = saved_project(agent.config)
     if denial == 'disabled': agent.config['ssh']['enabled'] = False
     elif denial == 'builtin': agent.config['builtin_root_policy'] = True
     elif denial == 'missing_binding': project.pop('_vps_context')
@@ -87,7 +86,7 @@ def test_ssh_argv_preserves_config_file_as_a_single_argument(tmp_path, monkeypat
     config.write_text('Host production\n  HostName fixture.invalid\n')
     agent.config['ssh']['targets']['prod'].update(config_file=str(config), host_key_policy=policy)
     monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **kw: '/usr/bin/ssh')
-    argv = ssh_argv(agent.config, saved_project(), tty=tty)
+    argv = ssh_argv(agent.config, saved_project(agent.config), tty=tty)
     assert argv[0:2] == ['/usr/bin/ssh', '-tt' if tty else '-T']
     assert argv[-2:] == ['--', 'production']
     assert argv[argv.index('-F')+1] == str(config)
@@ -98,7 +97,7 @@ def test_ssh_argv_preserves_config_file_as_a_single_argument(tmp_path, monkeypat
 
 def test_dependency_config_and_command_timeout_fail_closed(tmp_path, monkeypatch):
     agent, _ = setup(tmp_path)
-    project = saved_project()
+    project = saved_project(agent.config)
     monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **kw: None)
     with pytest.raises(DevError) as missing:
         ssh_argv(agent.config, project)
@@ -106,9 +105,11 @@ def test_dependency_config_and_command_timeout_fail_closed(tmp_path, monkeypatch
     monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **kw: '/usr/bin/ssh')
     agent.config['ssh']['targets']['prod']['config_file'] = str(tmp_path/'absent')
     with pytest.raises(DevError) as missing_config:
+        project = saved_project(agent.config)
         ssh_argv(agent.config, project)
     assert missing_config.value.code == 'SSH_CONFIG_UNAVAILABLE'
     agent.config['ssh']['targets']['prod']['config_file'] = None
+    project = saved_project(agent.config)
     agent.config['ssh']['max_timeout_seconds'] = 5
     with pytest.raises(DevError) as timeout:
         SSHBackend(agent).plan(project, {'command': 'true', 'timeout_seconds': 6})
@@ -118,7 +119,7 @@ def test_dependency_config_and_command_timeout_fail_closed(tmp_path, monkeypatch
 def test_saved_target_does_not_require_a_local_project_folder(tmp_path):
     agent, _ = setup(tmp_path)
     agent.config['shell']['enabled'] = False
-    assert target_config(agent.config, saved_project())['host_alias'] == 'production'
+    assert target_config(agent.config, saved_project(agent.config))['host_alias'] == 'production'
 
 
 def test_fingerprint_changes_with_connection_and_config_bytes(tmp_path):
@@ -126,14 +127,17 @@ def test_fingerprint_changes_with_connection_and_config_bytes(tmp_path):
     config = tmp_path/'config'
     config.write_text('Host production\n  HostName first.invalid\n')
     agent.config['ssh']['targets']['prod']['config_file'] = str(config)
-    project = saved_project()
+    project = saved_project(agent.config)
     first = target_fingerprint(agent.config, project)
     assert first == target_fingerprint(copy.deepcopy(agent.config), project)
     config.write_text('Host production\n  HostName second.invalid\n')
+    with pytest.raises(DevError, match='configuration changed'):
+        target_fingerprint(agent.config, project)
+    project = saved_project(agent.config)
     second = target_fingerprint(agent.config, project)
     assert second != first
     agent.config['ssh']['targets']['prod']['host_alias'] = 'another'
-    assert target_fingerprint(agent.config, project) not in {first, second}
+    assert target_fingerprint(agent.config, saved_project(agent.config)) not in {first, second}
 
 
 def test_remote_cwd_and_environment_are_quoted_as_data(tmp_path):

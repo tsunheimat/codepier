@@ -326,19 +326,22 @@ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), owner_user_id T
 );
 
 CREATE TABLE vps_connections (
-id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL, host TEXT NOT NULL DEFAULT '',
- provider TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '', system TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL,
+ runner_device_id TEXT NOT NULL REFERENCES devices(id), host_alias TEXT NOT NULL,
+ connection_ref TEXT NOT NULL, target_fingerprint TEXT NOT NULL,
+ target_version INTEGER NOT NULL DEFAULT 1 CHECK(target_version>0),
+ description TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}',
  owner_user_id TEXT NOT NULL REFERENCES users(id), enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
- version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), created REAL NOT NULL, updated REAL NOT NULL
+ version INTEGER NOT NULL DEFAULT 1 CHECK(version>0), created REAL NOT NULL, updated REAL NOT NULL,
+ UNIQUE(runner_device_id,host_alias)
 );
 
 CREATE TABLE space_vps (
 id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id), resource_id TEXT NOT NULL REFERENCES vps_connections(id),
- name TEXT NOT NULL, name_key TEXT NOT NULL, runner_device_id TEXT NOT NULL, connection_ref TEXT NOT NULL,
+ name TEXT NOT NULL, name_key TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
  display_mode TEXT NOT NULL DEFAULT 'top_level' CHECK(display_mode IN ('top_level','project_only','both')),
  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)), version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
- UNIQUE(space_id,resource_id), UNIQUE(space_id,name_key), UNIQUE(space_id,id),
- FOREIGN KEY(runner_device_id) REFERENCES devices(id)
+ UNIQUE(space_id,resource_id), UNIQUE(space_id,name_key), UNIQUE(space_id,id)
 );
 
 CREATE TABLE vps_projects (

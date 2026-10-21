@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import copy
 import contextlib
 import codecs
 import json
@@ -46,6 +47,7 @@ class Agent:
     def __init__(self, config_path: Path):
         self.config_path = config_path.expanduser().resolve()
         self.config = self.load_config()
+        self.startup_settings = copy.deepcopy(self.config)
         self.state_dir = Path(self.config.get("state_dir", str(self.config_path.parent / "state"))).expanduser().resolve()
         self.instance_lock = InstanceLock(self.state_dir / ".agent.lock")
         try:
@@ -203,6 +205,10 @@ class Agent:
                         continue
                     # Do not pretend a hot-reloaded state_dir changed the open journal.
                     c["state_dir"] = str(self.state_dir)
+                    # Native services hold startup configuration. Defer these
+                    # complete groups instead of claiming a partial hot reload.
+                    for section in ('computer', 'integrations'):
+                        c[section] = copy.deepcopy(self.config[section])
                     if c == self.config:
                         old = current
                         continue
@@ -545,6 +551,11 @@ class Agent:
                 root, spec = self.engine.root(project)
                 self.journal.mark_running(id)
                 result = {"root": str(root), "writable": spec.get("writable", True), "allow_tasks": spec.get("allow_tasks", False)}
+            elif tool == 'runner_settings':
+                from agent.runner_settings import execute as execute_settings
+                self.journal.mark_running(id)
+                await self.send({'type': 'started', 'id': id})
+                result = await execute_settings(self, id, args, (execution_policy or {}).get('origin'))
             elif tool in DEVICE_ACTIONS:
                 if getattr(self.computer, 'session', None):
                     raise DevError("COMPUTER_BUSY", "请先结束桌面控制会话，再更新、重启或卸载 Agent", 409)

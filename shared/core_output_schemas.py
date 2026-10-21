@@ -282,12 +282,12 @@ def build_core_output_schemas(legacy, *, include_queries=False):
         computer.append(copy(name, fields=fields))
 
     vps = obj({
-        **{key: STR for key in ('id', 'name', 'host', 'provider', 'region', 'system', 'notes', 'target')},
-        'enabled': BOOL, 'version': INT, 'online': BOOL, 'can_execute': BOOL,
+        **{key: STR for key in ('id', 'name', 'host_alias', 'description', 'target')},
+        'metadata': OBJ, 'enabled': BOOL, 'version': INT, 'online': BOOL, 'can_execute': BOOL,
         'display_mode': {'type': 'string', 'enum': ['top_level', 'project_only', 'both']},
         'actions': array({'type': 'string', 'enum': ['read', 'execute']}),
         'projects': array(obj({'id': STR, 'alias': STR}, ('id', 'alias'))),
-    }, ('id', 'name', 'host', 'target', 'enabled', 'projects', 'display_mode', 'actions', 'can_execute', 'online'))
+    }, ('id', 'name', 'host_alias', 'target', 'enabled', 'projects', 'display_mode', 'actions', 'can_execute', 'online'))
     result = {
         'workspace': union(workspace),
         'read': union(read), 'write': union(write), 'edit': union(edit),

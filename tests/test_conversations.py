@@ -35,8 +35,7 @@ def test_multiple_resources_and_concurrent_conversations_never_share_active_proj
     app,b=team;client=b['alice'];testing,_=inventory(app,b['owner'])
     another_project(app)
     testing=must(b['owner'].put('/api/spaces/team/vps/'+testing['id'],json={
-        'resource_id':testing['resource_id'],'name':testing['name'],'runner_device_id':'device-team',
-        'connection_ref':'testing','display_mode':'both','projects':['project-team'],
+        'resource_id':testing['resource_id'],'name':testing['name'],'display_mode':'both','projects':['project-team'],
         'expected_version':testing['version'],'idempotency_key':uuid.uuid4().hex}))
     policy={'project_rules':[{'actions':['read','write','execute'],'all_projects':True}],
         'vps_rules':[{'actions':['read','execute'],'vps':[testing['id']]}]}

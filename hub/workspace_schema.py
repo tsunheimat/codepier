@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 SCHEMA_VERSION = 'workspace-2'
+VPS_SCHEMA_VERSION = 'resource-owned-1'
 SCHEMA = Path(__file__).with_name('schema.sql').read_text(encoding='utf-8')
 
 # These are rejection signatures, never migration inputs or supported tables.
@@ -22,6 +23,15 @@ RETIRED_COLUMNS = {
 
 
 def require_current_model(db, tables):
+    vps_marker = db.execute("SELECT value FROM meta WHERE key='vps_schema'").fetchone()
+    retired_vps = {'runner_device_id', 'connection_ref'} & {row[1] for row in db.execute('PRAGMA table_info(space_vps)')}
+    resource_columns = {row[1] for row in db.execute('PRAGMA table_info(vps_connections)')}
+    invalid_resource = (bool({'host', 'provider', 'region', 'system', 'notes', 'execution_project_id'} & resource_columns)
+                        or not {'runner_device_id', 'host_alias', 'connection_ref', 'target_fingerprint', 'target_version'} <= resource_columns)
+    if retired_vps or invalid_resource or not vps_marker or vps_marker[0] != VPS_SCHEMA_VERSION:
+        raise RuntimeError('VPS_CUTOFF_REQUIRED: old VPS data is not supported. Stop the Hub, resolve old remote processes, '
+                           'then run python -m hub.vps_cutoff --data-dir <HUB_DATA_DIR> to preview the VPS-only reset. '
+                           'No existing data was changed. Project files and unrelated workspace data are preserved.')
     if tables & RETIRED_TABLES:
         raise RuntimeError('WORKSPACE_DATABASE_REQUIRED: retired model tables are not supported; '
                            'use a separate empty HUB_DATA_DIR. The database was not modified.')
@@ -51,3 +61,4 @@ def initialize(db):
     if statement.strip():
         raise RuntimeError('Incomplete workspace schema statement')
     db.execute("INSERT INTO meta(key,value) VALUES('schema',?)", (SCHEMA_VERSION,))
+    db.execute("INSERT INTO meta(key,value) VALUES('vps_schema',?)", (VPS_SCHEMA_VERSION,))

@@ -79,3 +79,9 @@ provider acceptance require their own platform and deployment checks.
 
 Source version metadata is not a published release, a passing full CI run, or a
 promise that an existing installation can be upgraded in place.
+
+## Runner 设置与 VPS cutoff
+
+完整 Runner 配置位于设备的「完整管理 → Runner 设置」。远程写入默认关闭，必须由 Runner 所有者在本机明确启用；未授权时仍可查看、预览和导出补丁。参见 [Runner 设置](docs/RUNNER_SETTINGS.md)。
+
+VPS 使用资源级 Runner / SSH Alias，工作空间仅管理显示信息。旧 VPS 数据不保留兼容路径；已有 `workspace-2` 数据库须停机执行明确的 VPS-only cutoff，重新登记 VPS，不需要删除其他项目或存储数据。升级前阅读 [VPS 与 cutoff 操作](docs/VPS.md)。

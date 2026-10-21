@@ -20,19 +20,19 @@ from starlette.requests import Request
 from hub.runtime import Runtime
 from hub.vps import VPSBindingSave, VPSInput
 from shared.util import DevError
-from tests.test_workspace_http import web  # noqa: F401
+from tests.test_workspace_http import web as base_web  # noqa: F401
+from tests.vps_fixtures import observed_runner
 from tests.workspace_fixtures import WorkspaceFixture
 from tests.workspace_stack import workspace_stack
 from tests.support import wait_for
 
 
 def input_body(**changes):
-    return {'name': '测试 VPS', 'host': 'fixture.invalid', 'idempotency_key': uuid.uuid4().hex, **changes}
+    return {'name': '测试 VPS', 'runner_device_id': 'a', 'host_alias': 'fixture', 'idempotency_key': uuid.uuid4().hex, **changes}
 
 
 def binding_body(resource_id, **changes):
-    return {'resource_id': resource_id, 'name': 'Workspace VPS', 'runner_device_id': 'a',
-        'connection_ref': 'fixture', 'display_mode': 'top_level', 'projects': [],
+    return {'resource_id': resource_id, 'name': 'Workspace VPS', 'display_mode': 'top_level', 'projects': [],
         'idempotency_key': uuid.uuid4().hex, **changes}
 
 
@@ -59,10 +59,18 @@ def token_principal(app, connection):
 
 
 @pytest.fixture
+def web(base_web):
+    client, app = base_web
+    with observed_runner(app.state.runtime):
+        yield client, app
+
+
+@pytest.fixture
 def inventory(tmp_path):
     fixture = WorkspaceFixture(tmp_path/'data')
     runtime, owner = Runtime(fixture.store), fixture.principal
-    resource = runtime.vps.save(VPSInput(**input_body()), replace(owner, space_id=None))
+    with observed_runner(runtime):
+        resource = runtime.vps.save(VPSInput(**input_body()), replace(owner, space_id=None))
     binding = runtime.vps.bind(VPSBindingSave(**binding_body(resource['id'])), owner)
     try:
         yield runtime, owner, resource, binding
@@ -107,8 +115,9 @@ def test_inactive_launcher_cross_workspace_project_and_duplicate_resource_reject
     resource = must(client.post('/api/vps', json=input_body()))
     store = app.state.store
     store.execute("UPDATE devices SET enabled=0 WHERE id='c'")
+    response = client.post('/api/vps', json=input_body(runner_device_id='c'))
+    assert response.status_code == 409 and response.json()['error']['code'] == 'SOURCE_DEVICE_UNAVAILABLE'
     for changes, status, code in [
-        (dict(runner_device_id='c'), 409, 'SOURCE_DEVICE_UNAVAILABLE'),
         (dict(display_mode='both', projects=['project', 'missing']), 404, 'PROJECT_NOT_FOUND'),
     ]:
         response = client.post('/api/spaces/alice/vps', json=binding_body(resource['id'], **changes))
@@ -125,27 +134,33 @@ def test_inactive_launcher_cross_workspace_project_and_duplicate_resource_reject
 def test_binding_identity_cannot_be_retargeted_to_another_inventory_vps(web):
     client, _ = web
     first = must(client.post('/api/vps', json=input_body()))
-    second = must(client.post('/api/vps', json=input_body(name='Another')))
+    second = must(client.post('/api/vps', json=input_body(name='Another', host_alias='other')))
     binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
     response = client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(second['id'], expected_version=binding['version']))
     assert response.status_code == 409 and response.json()['error']['code'] == 'VPS_IDENTITY_IMMUTABLE'
 
 
-def test_saved_runner_must_advertise_the_selected_connection_reference(web):
+def test_resource_requires_fresh_unique_owner_approved_alias(web):
     client, app = web
-    resource = must(client.post('/api/vps', json=input_body()))
-    app.state.store.execute("UPDATE devices SET info=? WHERE id='a'", (json.dumps({'shell_enabled': True, 'ssh_targets': ['reviewed']}),))
-    denied = client.post('/api/spaces/alice/vps', json=binding_body(resource['id']))
-    assert denied.status_code == 409 and denied.json()['error']['code'] == 'SSH_REFERENCE_NOT_AVAILABLE'
-    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(resource['id'], connection_ref='reviewed')))
-    assert binding['connection_ref'] == 'reviewed'
+    denied = client.post('/api/vps', json=input_body(host_alias='unapproved'))
+    assert denied.status_code == 409 and denied.json()['error']['code'] == 'SSH_ALIAS_NOT_APPROVED'
+    resource = must(client.post('/api/vps', json=input_body(host_alias='reviewed')))
+    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(resource['id'])))
+    assert binding['host_alias'] == 'reviewed' and 'connection_ref' not in binding
+    for removed in ('runner_device_id', 'connection_ref'):
+        result = client.post('/api/spaces/alice/vps', json=binding_body(resource['id'], **{removed:'reviewed'}))
+        assert result.status_code == 422
+    from hub.runner_settings import cache_key
+    app.state.store.execute('DELETE FROM meta WHERE key=?', (cache_key('a','discover'),))
+    stale = client.post('/api/vps', json=input_body(host_alias='other'))
+    assert stale.status_code == 409 and stale.json()['error']['code'] == 'SSH_DISCOVERY_REQUIRED'
 
 
 def test_read_only_profile_cannot_execute_or_discover_ungranted_vps(web):
     client, app = web
     first = must(client.post('/api/vps', json=input_body()))
     binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
-    second = must(client.post('/api/vps', json=input_body(name='Other inventory')))
+    second = must(client.post('/api/vps', json=input_body(name='Other inventory', host_alias='other')))
     other = must(client.post('/api/spaces/alice/vps', json=binding_body(second['id'], name='Private other')))
     _, connection = issue(client, binding, actions=('read',))
     principal = token_principal(app, connection)
@@ -189,8 +204,8 @@ def test_queued_transport_never_substitutes_another_resource(inventory, change):
     statements = {
         'disable_binding': ('UPDATE space_vps SET enabled=0 WHERE id=?', (binding['id'],)),
         'disable_device': ("UPDATE devices SET enabled=0 WHERE id='a'", ()),
-        'change_runner': ("UPDATE space_vps SET runner_device_id='b' WHERE id=?", (binding['id'],)),
-        'change_reference': ("UPDATE space_vps SET connection_ref='another' WHERE id=?", (binding['id'],)),
+        'change_runner': ("UPDATE vps_connections SET runner_device_id='b' WHERE id=(SELECT resource_id FROM space_vps WHERE id=?)", (binding['id'],)),
+        'change_reference': ("UPDATE vps_connections SET connection_ref='another' WHERE id=(SELECT resource_id FROM space_vps WHERE id=?)", (binding['id'],)),
         'remove_binding': ('DELETE FROM space_vps WHERE id=?', (binding['id'],)),
     }
     runtime.store.execute(*statements[change])
@@ -210,9 +225,11 @@ async def test_dispatched_revoked_request_only_probes_original_receipt(inventory
     runtime.store.execute('UPDATE operations SET attempts=1,accepted_at=? WHERE id=?',
                           (time.time() if accepted else None, identifier))
     if change == 'delete': runtime.store.execute('DELETE FROM space_vps WHERE id=?', (binding['id'],))
+    elif change == 'disable':
+        runtime.vps.bind(VPSBindingSave(**binding_body(resource['id'], expected_version=binding['version'], enabled=False)), owner, binding['id'])
     else:
-        changes = {'enabled': False} if change == 'disable' else {'connection_ref': 'changed'}
-        runtime.vps.bind(VPSBindingSave(**binding_body(resource['id'], expected_version=binding['version'], **changes)), owner, binding['id'])
+        with observed_runner(runtime):
+            runtime.vps.save(VPSInput(**input_body(host_alias='reviewed', expected_version=resource['version'])), owner, resource['id'])
     packets = []
     class Connection:
         journal_id = 'fixture-journal'
@@ -286,13 +303,13 @@ def test_display_metadata_does_not_change_consent_but_connection_changes_do(web,
     runtime = app.state.runtime
     target = {'target': 'vps:'+binding['id']}
     original = runtime.vps.execution_project(target, principal)
-    must(client.put('/api/vps/'+resource['id'], json=input_body(
-        name='New display', host='metadata-only.invalid', expected_version=resource['version'])))
-    changed = must(client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(resource['id'],
+    resource = must(client.put('/api/vps/'+resource['id'], json=input_body(
+        name='New display', description='metadata only', expected_version=resource['version'])))
+    must(client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(resource['id'],
         name='New binding label', display_mode='both', projects=['project'], expected_version=binding['version'])))
     assert runtime.vps.execution_project(target, principal)['_vps_context'] == original['_vps_context']
-    must(client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(resource['id'],
-        connection_ref='another-approved-target', expected_version=changed['version'])))
+    must(client.put('/api/vps/'+resource['id'], json=input_body(
+        host_alias='another-approved-target', expected_version=resource['version'])))
     if live:
         assert runtime.vps.execution_project(target, principal)['_vps_context']['connection_ref'] == 'another-approved-target'
     else:
@@ -307,7 +324,7 @@ def test_same_connection_key_with_changed_input_is_not_a_second_creation(web):
     resource = must(client.post('/api/vps', json=input_body()))
     body = binding_body(resource['id'])
     first = must(client.post('/api/spaces/alice/vps', json=body))
-    conflict = client.post('/api/spaces/alice/vps', json={**body, 'connection_ref': 'different'})
+    conflict = client.post('/api/spaces/alice/vps', json={**body, 'description': 'different'})
     assert conflict.status_code == 409 and conflict.json()['error']['code'] == 'IDEMPOTENCY_CONFLICT'
     assert [r['id'] for r in must(client.get('/api/spaces/alice/vps'))['vps']] == [first['id']]
 

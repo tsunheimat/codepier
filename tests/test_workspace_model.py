@@ -81,14 +81,34 @@ def test_pool_requires_defaults_and_source_can_inherit():
 
 @pytest.mark.parametrize('mode', ['both', 'project_only'])
 def test_project_vps_display_needs_project(mode):
-    with pytest.raises(ValidationError):
-        VPSBindingInput(resource_id='vps', name='server', runner_device_id='runner', connection_ref='ssh-target', display_mode=mode)
+    with pytest.raises(ValidationError, match='Project visibility needs at least one workspace project'):
+        VPSBindingInput(resource_id='vps', name='server', display_mode=mode)
+    binding = VPSBindingInput(resource_id='vps', name='server', display_mode=mode, projects=['project'])
+    assert binding.projects == ['project']
 
 
 def test_top_level_vps_has_no_hidden_project():
-    VPSBindingInput(resource_id='vps', name='server', runner_device_id='runner', connection_ref='ssh-target')
-    with pytest.raises(ValidationError):
-        VPSBindingInput(resource_id='vps', name='server', runner_device_id='runner', connection_ref='ssh-target', projects=['project'])
+    binding = VPSBindingInput(resource_id='vps', name='server')
+    assert binding.display_mode == 'top_level'
+    assert binding.projects == []
+    with pytest.raises(ValidationError, match='Top-level-only VPS bindings do not carry hidden project associations'):
+        VPSBindingInput(resource_id='vps', name='server', projects=['project'])
+
+
+@pytest.mark.parametrize('field', ['runner_device_id', 'connection_ref', 'host_alias', 'host', 'ssh_options'])
+def test_workspace_vps_cannot_override_resource_connection(field):
+    with pytest.raises(ValidationError) as failure:
+        VPSBindingInput(resource_id='vps', name='server', **{field: 'unapproved-target'})
+    assert [(error['loc'], error['type']) for error in failure.value.errors()] == [((field,), 'extra_forbidden')]
+
+
+def test_vps_technical_identity_is_resource_owned(db):
+    resource_columns = {row[1] for row in db.execute('PRAGMA table_info(vps_connections)')}
+    binding_columns = {row[1] for row in db.execute('PRAGMA table_info(space_vps)')}
+    technical = {'runner_device_id', 'connection_ref', 'host_alias', 'target_fingerprint', 'target_version'}
+    assert technical <= resource_columns
+    assert not technical & binding_columns
+    assert {'resource_id', 'space_id', 'name', 'description', 'display_mode'} <= binding_columns
 
 
 def test_schema_contains_no_role_or_dual_project_model(db):

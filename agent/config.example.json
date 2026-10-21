@@ -41,12 +41,16 @@
   },
   "ssh": {
     "enabled": false,
-    "targets": {}
+    "targets": {},
+    "config_files": []
   },
   "sessions": {
     "enabled": false,
     "max_sessions": 16,
     "idle_seconds": 1800,
     "lifetime_seconds": 86400
+  },
+  "settings_management": {
+    "enabled": false
   }
 }

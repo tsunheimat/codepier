@@ -2,10 +2,12 @@
 import json
 import time
 import uuid
+from unittest.mock import patch
 
 import pytest
 
 from hub.permissions import project_scopes
+from tests.vps_fixtures import seed_discovery
 from tests.identity_fixtures import (team, must, call, data, set_member, make_profile,
     make_connection, update_profile, project_policy)  # noqa: F401
 from tests.test_access_profiles import principal
@@ -13,13 +15,24 @@ from tests.test_mcp_gateway import (gw, connector, account, publish, authorize,
     update_policy, error_code)  # noqa: F401
 
 
+def resource(app, browser, name, *, device='device-team', alias=None):
+    alias = alias or name.lower().replace(' ', '-')
+    runtime = app.state.runtime
+    seed_discovery(runtime, device, (alias,))
+    previous = runtime.online
+    # Resource registration consumes an owner-approved observation. This unit
+    # fixture has no live socket and leaves execution queued, as before.
+    with patch.object(runtime, 'online', lambda identifier: identifier == device or previous(identifier)):
+        return must(browser.post('/api/vps', json={'name':name, 'runner_device_id':device,
+            'host_alias':alias, 'idempotency_key':uuid.uuid4().hex}))
+
+
 def inventory(app, browser, *, space='team', device='device-team'):
     rows=[]
     for name in ('Testing','Production'):
-        resource=must(browser.post('/api/vps',json={'name':name,'host':name.lower()+'.invalid',
-            'idempotency_key':uuid.uuid4().hex}))
+        saved=resource(app, browser, name, device=device)
         rows.append(must(browser.post('/api/spaces/'+space+'/vps',json={
-            'resource_id':resource['id'],'name':name,'runner_device_id':device,'connection_ref':name.lower(),
+            'resource_id':saved['id'],'name':name,
             'display_mode':'top_level','projects':[],'idempotency_key':uuid.uuid4().hex})))
     return rows
 
@@ -132,29 +145,29 @@ def test_expired_and_revoked_connections_reject_real_calls(team, end):
 
 def test_vps_transport_is_explicit_without_a_project_execution_route(team):
     app,b=team;testing,_=inventory(app,b['owner'])
-    resource=must(b['owner'].post('/api/vps',json={'name':'Inventory only','host':'metadata.invalid',
-        'idempotency_key':uuid.uuid4().hex}))
-    invalid=b['owner'].post('/api/spaces/team/vps',json={'resource_id':resource['id'],
-        'name':'No transport','display_mode':'top_level','idempotency_key':uuid.uuid4().hex})
+    saved=resource(app,b['owner'],'Inventory only')
+    invalid=b['owner'].post('/api/spaces/team/vps',json={'resource_id':saved['id'],
+        'name':'No legacy transport','execution_project_id':'project-team',
+        'display_mode':'top_level','idempotency_key':uuid.uuid4().hex})
     assert invalid.status_code==422
     _,created=access(b,{'vps_rules':[{'vps':[testing['id']],'actions':['read','execute']}]})
     receipt=data(execute(b['alice'],created['token'],testing))
     assert app.state.store.one('SELECT project_id FROM operations WHERE id=?',(receipt['operation_id'],))['project_id'] is None
-    result_error(execute(b['alice'],created['token'],{'id':resource['id']}),'VPS_NOT_FOUND')
+    result_error(execute(b['alice'],created['token'],{'id':saved['id']}),'VPS_NOT_FOUND')
 
 
 def test_resource_use_never_grants_inventory_or_authorization_administration(team):
     app,b=team;_,created=access(b,project_policy('read','write','execute'))
-    owned=must(b['owner'].post('/api/vps',json={'name':'Owner inventory','host':'metadata.invalid',
-        'idempotency_key':uuid.uuid4().hex}))
-    denied=b['alice'].put('/api/vps/'+owned['id'],json={'name':'Not Alice owned','host':'metadata.invalid',
+    owned=resource(app,b['owner'],'Owner inventory')
+    denied=b['alice'].put('/api/vps/'+owned['id'],json={'name':'Not Alice owned','runner_device_id':'device-team','host_alias':owned['host_alias'],
         'expected_version':owned['version'],'idempotency_key':uuid.uuid4().hex})
     assert denied.status_code==404 and denied.json()['error']['code']=='INVENTORY_RESOURCE_NOT_FOUND'
-    own=must(b['alice'].post('/api/vps',json={'name':'Alice inventory','host':'metadata.invalid',
-        'idempotency_key':uuid.uuid4().hex}))
+    app.state.store.execute('INSERT INTO devices(id,name,secret,owner_user_id,info,created) VALUES(?,?,?,?,?,?)',
+        ('device-alice','Alice owned Runner',app.state.store.encrypt('fixture-device-secret-'+'y'*32),'alice','{}',time.time()))
+    own=resource(app,b['alice'],'Alice inventory',device='device-alice')
     # Registering one's own inventory is not a workspace resource grant.
     assert b['alice'].post('/api/spaces/team/vps',json={'resource_id':own['id'],'name':'No grant',
-        'runner_device_id':'device-team','connection_ref':'testing','display_mode':'top_level',
+        'display_mode':'top_level',
         'idempotency_key':uuid.uuid4().hex}).status_code==403
     assert not app.state.store.all('SELECT id FROM space_vps')
     assert b['alice'].post('/api/spaces/team/profiles',json={'label':'Admin','policy':{},

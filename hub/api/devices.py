@@ -92,6 +92,8 @@ def make_devices_router(context: HubContext):
     store, runtime, auth = context.store, context.runtime, context.auth
     config, maintenance = context.config, context.maintenance
     public_url, BASE = context.public_url, context.base
+    from hub.runner_settings import make_runner_settings_router
+    router.include_router(make_runner_settings_router(auth, runtime))
 
     def wake_builtin(id):
         supervisor = getattr(runtime, "builtin_agent", None)
@@ -216,7 +218,7 @@ def make_devices_router(context: HubContext):
             with store.lock, store.db:
                 principal = auth.panel(request, True)
                 iam.require_device(store, principal, id, manage=True)
-                if store.one("SELECT device_id FROM space_devices WHERE device_id=? UNION SELECT device_id FROM storage_mappings WHERE device_id=? UNION SELECT device_id FROM folders WHERE device_id=? UNION SELECT runner_device_id FROM space_vps WHERE runner_device_id=? LIMIT 1", (id,id,id,id)):
+                if store.one("SELECT device_id FROM space_devices WHERE device_id=? UNION SELECT device_id FROM storage_mappings WHERE device_id=? UNION SELECT device_id FROM folders WHERE device_id=? UNION SELECT runner_device_id FROM vps_connections WHERE runner_device_id=? LIMIT 1", (id,id,id,id)):
                     raise DevError("DEVICE_HAS_PROJECTS", "Remove this device from workspace bindings and storage mappings first", 409)
                 store.execute("DELETE FROM devices WHERE id=?", (id,))
                 store.audit(principal.actor, "device.deleted", id)
