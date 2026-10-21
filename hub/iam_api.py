@@ -151,6 +151,8 @@ def make_iam_router(auth, runtime):
     @database_endpoint(store)
     def create_space(request: Request, body: SpaceCreate):
         principal = auth.panel(request, True)
+        def authorize_replay(current, receipt):
+            iam.require_space_capability(store, replace(current, space_id=receipt['id']), 'workspace')
         def save(current):
             if len(spaces_for(store, current.user_id)) >= 100:
                 raise DevError('WORKSPACE_LIMIT', 'The account workspace limit has been reached', 409)
@@ -160,12 +162,15 @@ def make_iam_router(auth, runtime):
             store.db.execute('INSERT INTO memberships(space_id,user_id,policy) VALUES(?,?,?)', (identifier, current.user_id, owner_policy().model_dump_json()))
             wake(replace(current, space_id=identifier), 'workspace.created', identifier)
             return store.one('SELECT * FROM spaces WHERE id=?', (identifier,))
-        return mutate(store, principal, 'workspace.create', body.idempotency_key, body.model_dump(), save)
+        return mutate(store, principal, 'workspace.create', body.idempotency_key, body.model_dump(), save,
+                      authorize_replay=authorize_replay)
 
     @router.put('/api/spaces/{space_id}')
     @database_endpoint(store)
     def edit_space(space_id: str, request: Request, body: SpaceEdit):
         principal = iam.require_space_capability(store, auth.panel(request, True), 'workspace')
+        def authorize_replay(current, receipt):
+            iam.require_space_capability(store, current, 'workspace')
         def save(current):
             iam.require_space_capability(store, current, 'workspace')
             row = store.one('SELECT * FROM spaces WHERE id=?', (space_id,))
@@ -174,7 +179,8 @@ def make_iam_router(auth, runtime):
             store.db.execute('UPDATE spaces SET label=?,active=?,version=version+1 WHERE id=?', (label, int(body.active), space_id))
             wake(current, 'workspace.updated', space_id)
             return store.one('SELECT * FROM spaces WHERE id=?', (space_id,))
-        return mutate(store, principal, 'workspace.update:'+space_id, body.idempotency_key, body.model_dump(), save)
+        return mutate(store, principal, 'workspace.update:'+space_id, body.idempotency_key, body.model_dump(), save,
+                      authorize_replay=authorize_replay)
 
     @router.post('/api/spaces/{space_id}/restore')
     @database_endpoint(store)
@@ -207,6 +213,14 @@ def make_iam_router(auth, runtime):
     @database_endpoint(store)
     def set_member(space_id: str, user_id: str, request: Request, body: MemberEdit):
         principal = iam.require_space_capability(store, auth.panel(request, True), 'members')
+        def authorize_replay(current, receipt):
+            current = iam.require_space_capability(store, current, 'members')
+            iam.user_security(store, user_id)
+            row = store.one("SELECT * FROM memberships WHERE space_id=? AND user_id=? AND source='manual'", (space_id, user_id))
+            if not row:
+                raise DevError('RESOURCE_NOT_FOUND', 'Workspace member not found', 404)
+            if 'workspace' in _policy(row).manage and not current.admin:
+                raise DevError('WORKSPACE_ADMIN_REQUIRED', 'Only a workspace administrator can change another administrator', 403)
         def save(current):
             iam.require_space_capability(store, current, 'members')
             iam.user_security(store, user_id)
@@ -223,7 +237,8 @@ def make_iam_router(auth, runtime):
             wake(current, 'member.updated', user_id, body.model_dump(exclude={'idempotency_key'}))
             row = store.one("SELECT * FROM memberships WHERE space_id=? AND user_id=? AND source='manual'", (space_id, user_id))
             return {**row, 'policy': json.loads(row['policy'])}
-        return mutate(store, principal, 'member.update:'+user_id, body.idempotency_key, body.model_dump(), save)
+        return mutate(store, principal, 'member.update:'+user_id, body.idempotency_key, body.model_dump(), save,
+                      authorize_replay=authorize_replay)
 
     @router.put('/api/spaces/{space_id}/members/{user_id}/suspension')
     @database_endpoint(store)

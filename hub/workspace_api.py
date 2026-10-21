@@ -290,6 +290,10 @@ def make_workspace_router(auth, runtime):
     def update_execution(request: Request,body: ExecutionSave):
         principal=iam.require_space_capability(store,auth.panel(request,True),'resources')
         project_id=request.path_params.get('project_id')
+        def authorize_replay(current,receipt):
+            iam.require_space_capability(store,current,'resources')
+            if project_id:
+                iam.project_in_space(store,current,project_id)
         def save(current):
             iam.require_space_capability(store,current,'resources')
             if project_id:
@@ -302,7 +306,8 @@ def make_workspace_router(auth, runtime):
             resources.changed(current,identifier)
             row=store.one('SELECT * FROM '+table+' WHERE '+column+'=?',(identifier,))
             return {**row,'settings':json.loads(row['settings'])}
-        return mutate(store,principal,'execution.settings:'+(project_id or 'workspace'),body.idempotency_key,body.model_dump(),save)
+        return mutate(store,principal,'execution.settings:'+(project_id or 'workspace'),body.idempotency_key,body.model_dump(),save,
+                      authorize_replay=authorize_replay)
 
     @router.post('/api/operations/{operation_id}/release-source')
     @database_endpoint(store)

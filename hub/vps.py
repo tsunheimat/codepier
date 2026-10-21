@@ -139,6 +139,8 @@ class VPSService:
                 'next_offset':offset+limit if offset+limit<len(values) else None}
 
     def save(self,body,principal,identifier=None):
+        def authorize_replay(current,receipt):
+            owned_resource(self.store,current,'vps_connections',receipt['id'])
         def write(current):
             old=owned_resource(self.store,current,'vps_connections',identifier) if identifier else None
             checked_version(old,body.expected_version)
@@ -152,9 +154,18 @@ class VPSService:
                 self.store.db.execute('INSERT INTO vps_connections(name,name_key,host,provider,region,system,notes,enabled,updated,id,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(*values,selected,current.user_id,now))
             self.runtime.workspace_resources.changed(current,selected)
             return self.store.one('SELECT * FROM vps_connections WHERE id=?',(selected,))
-        return mutate(self.store,principal,'vps.inventory.save:'+(identifier or 'new'),body.idempotency_key,body.model_dump(),write)
+        return mutate(self.store,principal,'vps.inventory.save:'+(identifier or 'new'),body.idempotency_key,body.model_dump(),write,
+                      authorize_replay=authorize_replay)
 
     def bind(self,body,principal,identifier=None):
+        def authorize_replay(current,receipt):
+            iam.require_space_capability(self.store,current,'resources')
+            owned_resource(self.store,replace(current,space_id=None),'vps_connections',body.resource_id)
+            owned_resource(self.store,replace(current,space_id=None),'devices',body.runner_device_id)
+            if not self.row(receipt['id'],current.space_id):
+                raise DevError('VPS_NOT_FOUND','Workspace VPS binding not found',404)
+            for project_id in body.projects:
+                iam.project_in_space(self.store,current,project_id)
         def write(current):
             iam.require_space_capability(self.store,current,'resources')
             owned_resource(self.store,replace(current,space_id=None),'vps_connections',body.resource_id)
@@ -188,7 +199,8 @@ class VPSService:
                 raise DevError('VPS_BINDING_CONFLICT','The VPS is already bound, its name exists, or a selected resource is outside the workspace',409) from exc
             self.runtime.workspace_resources.changed(current,selected)
             return self.public(self.row(selected,current.space_id),current,management=True)
-        return mutate(self.store,principal,'vps.bind:'+(identifier or 'new'),body.idempotency_key,body.model_dump(),write)
+        return mutate(self.store,principal,'vps.bind:'+(identifier or 'new'),body.idempotency_key,body.model_dump(),write,
+                      authorize_replay=authorize_replay)
 
     def execution_project(self,args,principal):
         target=args.get('target','')

@@ -103,6 +103,11 @@ def editable_policy(store, principal, policy):
 def make_profiles_router(auth,runtime):
     router,store=APIRouter(),runtime.store
 
+    def authorize_replay(current,receipt):
+        iam.require_space_capability(store,current,'profiles')
+        if not store.one('SELECT 1 FROM access_profiles WHERE id=? AND space_id=?',(receipt['id'],current.space_id)):
+            raise DevError('PROFILE_NOT_FOUND','Profile not found',404)
+
     @router.get('/api/spaces/{space_id}/profiles')
     @database_endpoint(store)
     def profiles(request:Request):
@@ -133,7 +138,8 @@ def make_profiles_router(auth,runtime):
             except sqlite3.IntegrityError as exc:
                 raise DevError('PROFILE_NAME_CONFLICT','This workspace already has a Profile with that name',409) from exc
             return public_profile(store.one('SELECT * FROM access_profiles WHERE id=?',(identifier,)))
-        return mutate(store,principal,'profile.create',body.idempotency_key,body.model_dump(),save)
+        return mutate(store,principal,'profile.create',body.idempotency_key,body.model_dump(),save,
+                      authorize_replay=authorize_replay)
 
     @router.put('/api/spaces/{space_id}/profiles/{profile_id}')
     @database_endpoint(store)
@@ -152,5 +158,6 @@ def make_profiles_router(auth,runtime):
                 raise DevError('PROFILE_NAME_CONFLICT','This workspace already has a Profile with that name',409) from exc
             runtime.wake_delivery()
             return public_profile(store.one('SELECT * FROM access_profiles WHERE id=?',(profile_id,)))
-        return mutate(store,principal,'profile.update:'+profile_id,body.idempotency_key,body.model_dump(),save)
+        return mutate(store,principal,'profile.update:'+profile_id,body.idempotency_key,body.model_dump(),save,
+                      authorize_replay=authorize_replay)
     return router

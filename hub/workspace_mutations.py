@@ -21,7 +21,12 @@ def version(row, expected):
         raise DevError('VERSION_CHANGED', 'The resource changed; reload it before saving', 409)
 
 
-def mutate(store, principal, operation, request_key, payload, write):
+def mutate(store, principal, operation, request_key, payload, write, *, authorize_replay):
+    """Recover a receipt only under live, operation-specific resource authority.
+
+    The required replay callback must only authorize: never repeat a write,
+    dispatch validation or compare the request's already-consumed version.
+    """
     if not isinstance(request_key, str) or not 8 <= len(request_key) <= 128:
         raise DevError('IDEMPOTENCY_KEY_REQUIRED', 'An 8-128 character request key is required')
     body=json.dumps(payload,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False)
@@ -34,7 +39,9 @@ def mutate(store, principal, operation, request_key, payload, write):
         if old:
             if old['fingerprint']!=fingerprint:
                 raise DevError('IDEMPOTENCY_CONFLICT','The request key already identifies different arguments',409)
-            return json.loads(old['receipt'])
+            receipt=json.loads(old['receipt'])
+            authorize_replay(principal,receipt)
+            return receipt
         result=write(principal)
         store.db.execute('INSERT INTO workspace_requests VALUES(?,?,?,?,?,?,?)',(*namespace,fingerprint,json.dumps(result,ensure_ascii=False),time.time()))
         iam.audit(store,principal,operation,result.get('id',''),detail={'version':result.get('version')})

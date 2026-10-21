@@ -131,3 +131,44 @@ not synchronize unrelated clones or turn full Shell/SSH into a directory sandbox
 Never delete an old data volume, project folder, shared export or VPS contents to
 make the fresh-schema startup succeed. Publishing a release, replacing a running
 service and initializing production storage remain separate authorized actions.
+
+## Workspace configuration receipt authorization
+
+Configuration retries keep the original request key and payload. A matching
+receipt returns the original saved result only after checking the caller's live
+account, credential and applicable workspace membership, followed by the
+operation's current resource authority. A historical successful write does not
+grant continuing access to its saved configuration.
+
+`hub/workspace_mutations.py` requires an `authorize_replay` callback from every
+caller. It runs inside the receipt transaction. The callback only checks access;
+it must not repeat the write, Runner validation, version increment, notification
+or command. The original `expected_version` has already been consumed and is not
+checked again. Changed payloads still conflict, and request identities remain
+scoped by workspace, account, operation and key.
+
+| Mutation | Current authority required for receipt recovery |
+| --- | --- |
+| Pool update | Inventory ownership or instance administrator; Pool exists |
+| Device binding | Space resource management, Device inventory ownership/admin, binding exists in that Space |
+| Project Shell | Space resource management and Project belongs to that Space |
+| Space/Project execution settings | Space resource management and, for a Project, its Space relationship |
+| VPS inventory create/update | Ownership/admin of the saved inventory VPS, including creation receipts |
+| VPS binding create/update | Space resource management, ownership/admin of the original VPS and Runner, binding in that Space, original Project relationships |
+| Profile create/update | Space Profile management and saved Profile exists in that Space |
+| Space creation | Workspace management in the explicitly saved Space; no ambient Space |
+| Space update | Current workspace management |
+| Member update | Member management, target account and membership exist, workspace-admin authority when the target is now an administrator |
+
+Global inventory access does not require membership in an unrelated Space.
+Enabled/disabled configuration is distinct from authority: disabling a resource
+does not by itself hide a receipt from its authorized manager. Removed resources
+or lost authority cannot be bypassed using the original request key.
+
+`tests/test_workspace_mutation_replay.py` exercises all callers through HTTP,
+including revoked permissions, deleted resources, independent administrator
+authority, identity isolation, payload conflicts and valid retries. Independent
+SQLite readbacks cover configurations, versions, receipts, audit and operation
+records. This addresses issue #11 R4; it does not alter the SSH implementation in
+#9 or establish production VPS acceptance. Hosted CI and integration into main
+remain separate release gates for the resulting source.

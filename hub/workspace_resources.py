@@ -79,6 +79,8 @@ class WorkspaceResources:
 
     def save_pool(self, principal, body, identifier):
         fields=StoragePoolInput.model_validate(body.model_dump(include=set(StoragePoolInput.model_fields)))
+        def authorize_replay(current, receipt):
+            owned_resource(self.store,current,'storage_pools',identifier)
         def save(current):
             old=owned_resource(self.store,current,'storage_pools',identifier)
             checked_version(old,body.expected_version)
@@ -93,9 +95,15 @@ class WorkspaceResources:
                 self.validate_affected(pool_id=identifier)
             self.changed(current,identifier)
             return public_pool(self.store.one('SELECT * FROM storage_pools WHERE id=?',(identifier,)))
-        return mutate(self.store,principal,'storage-pool.save:'+identifier,body.idempotency_key,body.model_dump(),save)
+        return mutate(self.store,principal,'storage-pool.save:'+identifier,body.idempotency_key,body.model_dump(),save,
+                      authorize_replay=authorize_replay)
 
     def bind_device(self, principal, device_id, body):
+        def authorize_replay(current, receipt):
+            iam.require_space_capability(self.store,current,'resources')
+            owned_resource(self.store,replace(current,space_id=None),'devices',device_id)
+            if not self.store.one('SELECT 1 FROM space_devices WHERE space_id=? AND device_id=?',(current.space_id,device_id)):
+                raise DevError('RESOURCE_NOT_FOUND','Workspace Device binding not found',404)
         def save(current):
             iam.require_space_capability(self.store,current,'resources')
             owned_resource(self.store,replace(current,space_id=None),'devices',device_id)
@@ -107,7 +115,8 @@ class WorkspaceResources:
                 (current.space_id,device_id,int(body.enabled)))
             self.changed(current,device_id)
             return self.store.one('SELECT * FROM space_devices WHERE space_id=? AND device_id=?',(current.space_id,device_id))
-        return mutate(self.store,principal,'device.bind:'+device_id,body.idempotency_key,body.model_dump(),save)
+        return mutate(self.store,principal,'device.bind:'+device_id,body.idempotency_key,body.model_dump(),save,
+                      authorize_replay=authorize_replay)
 
     def validate_affected(self, space_id=None, *, source_id=None, pool_id=None, folder_resource_id=None):
         sql='SELECT * FROM space_sources WHERE enabled=1'
@@ -471,6 +480,9 @@ class WorkspaceResources:
         return result
 
     def save_shell(self, principal, body, project_id):
+        def authorize_replay(current, receipt):
+            iam.require_space_capability(self.store,current,'resources')
+            iam.project_in_space(self.store,current,project_id)
         def save(current):
             iam.require_space_capability(self.store,current,'resources')
             project=iam.project_in_space(self.store,current,project_id)
@@ -484,4 +496,5 @@ class WorkspaceResources:
             self.changed(current,project_id)
             row=self.store.one('SELECT * FROM project_shell_settings WHERE project_id=?',(project_id,))
             return {**row,'settings':json.loads(row['settings'])}
-        return mutate(self.store,principal,'shell.save:'+project_id,body.idempotency_key,body.model_dump(),save)
+        return mutate(self.store,principal,'shell.save:'+project_id,body.idempotency_key,body.model_dump(),save,
+                      authorize_replay=authorize_replay)
