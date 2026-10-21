@@ -53,7 +53,12 @@ def open_workspace(context, server, path):
 
 @contextmanager
 def held_account_response(page, lookup, *, initial=False):
-    """Hold one authentic response without intercepting unrelated HTTP or SSE."""
+    """Hold one authentic response without intercepting unrelated HTTP or SSE.
+
+    Observe readiness through a DOM attribute: wait_for_function uses dynamic
+    evaluation which real Chromium/WebKit can reject under the Hub's CSP.
+    Never enable bypass_csp or relax the application policy for this test.
+    """
     script='''lookup => {
         const original = window.fetch;
         const gate = window.accountResponseGate = { original, status: null, count: 0 };
@@ -63,6 +68,7 @@ def held_account_response(page, lookup, *, initial=False):
             if (args[0] === lookup && gate.count === 0) {
                 gate.count++;
                 gate.status = response.status;
+                document.documentElement.setAttribute('data-test-account-response-status', String(response.status));
                 window.fetch = original;
                 await released;
             }
@@ -83,6 +89,7 @@ def held_account_response(page, lookup, *, initial=False):
                 window.fetch = gate.original;
                 gate.release();
                 delete window.accountResponseGate;
+                document.documentElement.removeAttribute('data-test-account-response-status');
             }''')
 
 
@@ -99,7 +106,7 @@ def test_initial_account_lookup_survives_workspace_navigation_without_replaying_
         start='resources/devices' if lookup in {'/api/devices','/api/projects'} else 'spaces'
         with page.expect_request(server.url+lookup):
             page.goto(server.url+'/#'+start,wait_until='domcontentloaded')
-        page.wait_for_function('accountResponseGate.status !== null')
+        expect(page.locator('html')).to_have_attribute('data-test-account-response-status', '200', timeout=15000)
         assert page.evaluate('accountResponseGate.status')==200
         assert page.evaluate('accountResponseGate.count')==1
         # The server response is real; only its delivery to the application is
@@ -328,7 +335,7 @@ def test_navigation_during_revalidation_preserves_url_without_old_content(worksp
     # bytes, workspace reads and the reconnecting EventSource remain untouched.
     with held_account_response(page,'/api/iam/me'):
         with page.expect_request(url):page.evaluate('void recoverPanelAccess()')
-        page.wait_for_function('accountResponseGate.status !== null')
+        expect(page.locator('html')).to_have_attribute('data-test-account-response-status', '200', timeout=15000)
         assert page.evaluate('accountResponseGate.status')==200
         assert page.evaluate('accountResponseGate.count')==1
         expect(page.locator('#breadcrumb-page')).to_have_count(0)
