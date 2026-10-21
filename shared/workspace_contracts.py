@@ -262,8 +262,7 @@ class ProjectInput(WorkspaceModel):
 class VPSBindingInput(WorkspaceModel):
     resource_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
     name: str = Field(min_length=1, max_length=100)
-    runner_device_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
-    connection_ref: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    description: str = Field(default='', max_length=2000)
     display_mode: Literal['top_level', 'project_only', 'both'] = 'top_level'
     projects: list[str] = Field(default_factory=list, max_length=500)
     enabled: bool = True

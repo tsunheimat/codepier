@@ -5,8 +5,6 @@ OpenSSH, not CodePier, resolves IdentityFile, agent, ProxyJump and known_hosts.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 from pathlib import Path
 import re
@@ -17,15 +15,19 @@ from shared.util import DevError
 
 
 def validate_ssh(value):
-    if not isinstance(value, dict) or set(value) - {'enabled', 'targets', 'max_timeout_seconds'}:
+    if not isinstance(value, dict) or set(value) - {'enabled', 'targets', 'max_timeout_seconds', 'config_files'}:
         raise ValueError('ssh must contain enabled, targets and optional max_timeout_seconds')
-    result = {'enabled': False, 'targets': {}, 'max_timeout_seconds': 86400, **value}
+    result = {'enabled': False, 'targets': {}, 'max_timeout_seconds': 86400, 'config_files': [], **value}
     if type(result['enabled']) is not bool:
         raise ValueError('ssh.enabled must be boolean')
     if type(result['max_timeout_seconds']) is not int or not 1 <= result['max_timeout_seconds'] <= 86400:
         raise ValueError('ssh.max_timeout_seconds must be 1–86400')
     if not isinstance(result['targets'], dict) or len(result['targets']) > 500:
         raise ValueError('ssh.targets must be a bounded map of locally approved targets')
+    files = result['config_files']
+    if not isinstance(files, list) or len(files) > 32 or any(not isinstance(p, str) or not Path(p).expanduser().is_absolute() or any(ord(c) < 32 for c in p) for p in files):
+        raise ValueError('ssh.config_files must be a bounded list of absolute Runner-local paths')
+    result['config_files'] = list(dict.fromkeys(str(Path(p).expanduser()) for p in files))
     targets = {}
     for reference, target in result['targets'].items():
         if not isinstance(reference, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', reference):
@@ -52,14 +54,20 @@ def target_config(config, project):
         raise DevError('SSH_DISABLED', 'SSH must be enabled by this Runner owner', 403)
     saved = project.get('_ssh_target')
     binding = project.get('_vps_context')
-    if (not isinstance(saved, dict) or not isinstance(binding, dict)
+    if (not isinstance(saved, dict) or saved.get('protocol') != 2 or not isinstance(binding, dict)
             or saved.get('vps_id') != binding.get('id')
             or saved.get('connection_ref') != binding.get('connection_ref')
-            or saved.get('resource_id') != binding.get('resource_id')):
+            or saved.get('resource_id') != binding.get('resource_id')
+            or not saved.get('host_alias') or saved.get('host_alias') != binding.get('host_alias')
+            or not saved.get('target_fingerprint') or saved.get('target_fingerprint') != binding.get('target_fingerprint')):
         raise DevError('VPS_TRANSPORT_MISSING', 'A verified workspace VPS reference is required', 403)
     target = settings['targets'].get(saved['connection_ref'])
     if target is None:
         raise DevError('SSH_TARGET_NOT_CONFIGURED', 'This connection reference is not configured on the saved Runner', 403)
+    from agent.ssh_discovery import approved_alias
+    actual = approved_alias(config, saved['host_alias'])
+    if actual['connection_ref'] != saved['connection_ref'] or actual['target_fingerprint'] != saved['target_fingerprint']:
+        raise DevError('SSH_TARGET_CHANGED', 'Runner SSH configuration changed; refresh and review the VPS resource', 409)
     return target
 
 
@@ -92,15 +100,8 @@ def remote_script(args, command):
 
 
 def target_fingerprint(config, project):
-    # Also fence edits to the explicitly selected file; the default OpenSSH file
-    # can change independently, so never use connection pooling across opens.
-    target = target_config(config, project)
-    path = Path(target['config_file']) if target['config_file'] else Path.home() / '.ssh/config'
-    try:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        digest = None
-    return hashlib.sha256(json.dumps([target, digest], sort_keys=True).encode()).hexdigest()
+    from agent.ssh_discovery import target_identity
+    return target_identity(target_config(config, project))
 
 
 def ssh_error(result):

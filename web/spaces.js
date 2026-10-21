@@ -252,7 +252,7 @@ window.CodePierSpaces = (() => {
           .map((x) =>
             row(
               x.name,
-              `${esc(x.host)} · ${esc({ top_level: '顶层 VPS', project_only: '仅 Project 类别', both: '顶层与 Project 类别' }[x.display_mode])}<br>${x.projects.map((p) => esc(p.alias)).join(' · ')}${x.runner_name ? '<br>Runner：' + esc(x.runner_name) + ' / ' + esc(x.connection_ref) : ''}`,
+              `${esc(x.host_alias)} · ${esc({ top_level: '顶层 VPS', project_only: '仅 Project 类别', both: '顶层与 Project 类别' }[x.display_mode])}<br>${x.projects.map((p) => esc(p.alias)).join(' · ')}${x.runner_name ? '<br>Runner：' + esc(x.runner_name) + ' / ' + esc(x.host_alias) : ''}`,
               (editable ? button('vps', '配置', x.id) + button('remove-vps', '移除', x.id) : '') +
                 (x.can_execute ? button('vps-command', '运行命令', x.id) : ''),
             ),
@@ -1504,63 +1504,155 @@ window.CodePierSpaces = (() => {
   }
 
   async function vpsInventoryEditor(old = null) {
+    const current = viewIntent();
+    const devices = (await api('/api/devices')).devices.filter(
+      (device) => device.can_manage && !device.builtin,
+    );
+    if (!current()) return;
+    const listId = 'ssh-hosts-' + uid();
     form(
       old ? '编辑 VPS 资源' : '新增 VPS 资源',
       field('name', '名称', old?.name, 'required maxlength="100"') +
-        field('host', '地址（仅显示资料）', old?.host, 'maxlength="253"') +
-        field('provider', '提供商', old?.provider, 'maxlength="120"') +
-        field('region', '区域', old?.region, 'maxlength="120"') +
-        field('system', '系统', old?.system, 'maxlength="160"') +
-        textArea('notes', '说明', old?.notes || '', 'maxlength="2000"') +
-        check('enabled', '启用', old ? !!old.enabled : true) +
-        notice(
-          'SSH 凭据保留在 Runner。将整台 VPS 分配到工作空间后，选择 Runner 与 SSH connection reference。',
-        ),
-      (f, key) =>
-        save(
-          '/api/vps' + (old ? '/' + enc(old.id) : ''),
-          change(
-            old,
-            Object.fromEntries(
-              ['name', 'host', 'provider', 'region', 'system', 'notes']
-                .map((k) => [k, f.elements[k].value])
-                .concat([['enabled', f.elements.enabled.checked]]),
-            ),
-            key,
-          ),
-          !!old,
-        ),
-    );
-  }
-  async function vpsEditor(space, old = null) {
-    const [inventory, devices, projects] = await Promise.all([
-      api('/api/vps'),
-      api('/api/devices'),
-      api(root(space.id) + '/projects'),
-    ]);
-    form(
-      '工作空间 VPS',
-      field('name', '显示名称', old?.name, 'required maxlength="100"') +
-        select(
-          'resource_id',
-          'VPS 资源',
-          options(inventory.vps),
-          old?.resource_id,
-          old ? 'disabled' : 'required',
+        field(
+          'host_alias',
+          'SSH Alias',
+          old?.host_alias,
+          `required maxlength="253" pattern="[A-Za-z0-9_][A-Za-z0-9_.-]{0,252}" list="${esc(listId)}" autocomplete="off"`,
         ) +
+        `<datalist id="${esc(listId)}"></datalist>` +
         select(
           'runner_device_id',
-          '发起 SSH 的 Runner（独立技术依赖）',
-          options(devices.devices),
+          '通过哪个 Runner 连接',
+          [
+            ['', '请选择 Runner'],
+            ...devices.map((device) => [
+              device.id,
+              device.name + (device.online ? '' : '（离线）'),
+            ]),
+          ],
           old?.runner_device_id,
           'required',
         ) +
-        field(
-          'connection_ref',
-          'Runner 本机 SSH target reference',
-          old?.connection_ref,
-          'required pattern="[A-Za-z0-9_-]{1,100}"',
-        ) +
+        textArea('description', '说明（可选）', old?.description || '', 'maxlength="2000"') +
+        '<button type="button" class="btn small" data-vps-refresh-hosts>刷新 SSH Host</button><p data-vps-host-status role="status"></p>' +
+        (old
+          ? `<details><summary>自动获取的信息</summary>${pretty({ runner: old.runner_name, host_alias: old.host_alias, status: old.status, metadata: old.metadata, last_probe: old.last_probe })}</details>`
+          : '') +
+        notice(
+          '仅登记 Runner 所有者已经明确批准的 SSH Alias。密钥、SSH Agent 与 ProxyJump 保留在 Runner；扫描不会连接远端。系统信息仅来自单独确认的连接测试。',
+        ),
+      async (f, key) => {
+        const selected = devices.find((device) => device.id === f.elements.runner_device_id.value);
+        if (!selected) throw new Error('请选择可以管理的外部 Runner');
+        const discovery = await CodePierRunnerSettings.hosts(selected);
+        const host = discovery.hosts?.find(
+          (item) => item.host_alias === f.elements.host_alias.value,
+        );
+        if (
+          discovery.stale ||
+          !discovery.ssh_enabled ||
+          !host?.owner_approved ||
+          host.status !== 'configured'
+        )
+          throw new Error(
+            '这个 Alias 尚未在所选 Runner 上明确授权或不可用；请先在设备的 Runner 设置中处理。',
+          );
+        return save(
+          '/api/vps' + (old ? '/' + enc(old.id) : ''),
+          change(
+            old,
+            {
+              name: f.elements.name.value,
+              host_alias: f.elements.host_alias.value,
+              runner_device_id: selected.id,
+              description: f.elements.description.value,
+              enabled: old ? !!old.enabled : true,
+            },
+            key,
+          ),
+          !!old,
+        );
+      },
+      (f, d) => {
+        let generation = 0;
+        const refresh = async () => {
+          const token = ++generation,
+            id = f.elements.runner_device_id.value;
+          const status = $('[data-vps-host-status]', d),
+            list = $('datalist', d);
+          list.replaceChildren();
+          const selected = devices.find((device) => device.id === id);
+          if (!selected) {
+            status.textContent = '先选择 Runner，再选择或输入 SSH Alias。';
+            return;
+          }
+          status.textContent = '正在扫描 Runner SSH 配置…';
+          try {
+            const discovery = await CodePierRunnerSettings.hosts(selected);
+            if (!d.isConnected || token !== generation || id !== f.elements.runner_device_id.value)
+              return;
+            list.innerHTML = (discovery.hosts || [])
+              .map(
+                (host) =>
+                  `<option value="${esc(host.host_alias)}">${esc(host.status)} · ${host.owner_approved ? '已授权' : '仅发现'}</option>`,
+              )
+              .join('');
+            status.textContent =
+              (discovery.stale
+                ? '离线 / 过期缓存，不能据此新增授权。'
+                : discovery.ssh_enabled
+                  ? '只可登记已授权且状态为 configured 的 Alias。'
+                  : 'Runner 尚未开启 SSH。') +
+              ' ' +
+              (discovery.warnings || []).join(' · ');
+          } catch (error) {
+            if (d.isConnected && token === generation) status.textContent = error.message;
+          }
+        };
+        f.elements.runner_device_id.onchange = () => {
+          f.elements.host_alias.value = '';
+          void refresh();
+        };
+        $('[data-vps-refresh-hosts]', d).onclick = () => void refresh();
+        void refresh();
+      },
+    );
+  }
+  async function vpsEditor(space, old = null, selectedResource = null) {
+    const current = viewIntent();
+    const [inventory, projects] = await Promise.all([
+      api('/api/vps'),
+      api(root(space.id) + '/projects'),
+    ]);
+    if (!current()) return;
+    if (!old && !selectedResource) {
+      const available = inventory.vps.filter((resource) => resource.enabled);
+      const dialog = modal(
+        '选择要加入工作空间的 VPS',
+        '<p>先选择已经登记的 VPS 资源。工作空间只管理显示名称、显示位置和说明，不重复配置 SSH 连接。</p>' +
+          `<div data-vps-choices>${available.map((resource) => `<button type="button" class="btn" data-vps-resource="${esc(resource.id)}"><strong>${esc(resource.name)}</strong><br>${esc(resource.host_alias)} · ${esc(resource.runner_name)}<br>${esc(resource.status)}</button>`).join('') || '<p>没有可用资源。请先在 Resources → VPS 登记 Runner / SSH Alias。</p>'}</div>`,
+        '<button class="btn ghost" data-action="close-modal">取消</button>',
+        true,
+      );
+      $$('[data-vps-resource]', dialog).forEach(
+        (button) =>
+          (button.onclick = () => {
+            const resource = available.find((item) => item.id === button.dataset.vpsResource);
+            if (resource) void vpsEditor(space, null, resource);
+          }),
+      );
+      return;
+    }
+    const resource = inventory.vps.find(
+      (item) => item.id === (selectedResource?.id || old?.resource_id),
+    );
+    if (!resource) throw new Error('原 VPS 资源不可管理或已经不可用；不会替换为其他资源。');
+    form(
+      '工作空间 VPS · ' + resource.name,
+      notice(
+        '已选资源：' + resource.name + ' · ' + resource.host_alias + ' · ' + resource.runner_name,
+      ) +
+        field('name', '显示名称', old?.name || resource.name, 'required maxlength="100"') +
         select(
           'display_mode',
           'VPS 显示位置',
@@ -1576,12 +1668,12 @@ window.CodePierSpaces = (() => {
           'projects',
           '在哪些 Project 的 VPS 类别显示',
           options(projects.projects, 'alias'),
-          old?.projects?.map((x) => (typeof x === 'string' ? x : x.id)) || [],
+          old?.projects?.map((item) => (typeof item === 'string' ? item : item.id)) || [],
         ) +
         '</div>' +
-        check('enabled', '启用', old ? !!old.enabled : true) +
+        textArea('description', '说明（可选）', old?.description || '', 'maxlength="2000"') +
         notice(
-          '这是同一台完整 VPS 的显示分类，不是 Project 目录沙箱。不需要本机 Project folder 才能 SSH。',
+          '这是同一台完整 VPS 的显示分类，不是 Project 目录沙箱。连接身份由资源管理；不需要本机 Project folder。',
         ),
       (f, key) =>
         save(
@@ -1589,13 +1681,12 @@ window.CodePierSpaces = (() => {
           change(
             old,
             {
+              resource_id: resource.id,
               name: f.elements.name.value,
-              resource_id: f.elements.resource_id.value,
-              runner_device_id: f.elements.runner_device_id.value,
-              connection_ref: f.elements.connection_ref.value,
               display_mode: f.elements.display_mode.value,
               projects: f.elements.display_mode.value === 'top_level' ? [] : values(f, 'projects'),
-              enabled: f.elements.enabled.checked,
+              description: f.elements.description.value,
+              enabled: old ? !!old.enabled : true,
             },
             key,
           ),
@@ -1609,6 +1700,53 @@ window.CodePierSpaces = (() => {
         update();
       },
     );
+  }
+
+  async function toggleVPSResource(resource) {
+    if (
+      !confirm(
+        (resource.enabled ? '停用' : '启用') +
+          ' VPS 资源 ' +
+          resource.name +
+          '？已执行的远端任务不会自动停止。',
+      )
+    )
+      return;
+    if (!resource.enabled) await CodePierRunnerSettings.hosts({ id: resource.runner_device_id });
+    await save(
+      '/api/vps/' + enc(resource.id),
+      change(
+        resource,
+        {
+          name: resource.name,
+          runner_device_id: resource.runner_device_id,
+          host_alias: resource.host_alias,
+          description: resource.description,
+          enabled: !resource.enabled,
+        },
+        newKey(),
+      ),
+      true,
+    );
+    await renderPage(false);
+  }
+  async function probeVPSResource(resource) {
+    if (
+      !confirm(
+        '明确连接 ' +
+          resource.host_alias +
+          ' 并读取系统信息？将使用 Runner 本机 SSH 配置和主机密钥策略。',
+      )
+    )
+      return;
+    const device = { id: resource.runner_device_id };
+    const discovery = await CodePierRunnerSettings.hosts(device);
+    const host = discovery.hosts?.find((item) => item.host_alias === resource.host_alias);
+    if (discovery.stale || !host?.owner_approved)
+      throw new Error('Runner 不在线或 SSH Alias 未获本机授权');
+    const result = await CodePierRunnerSettings.probe(device, host);
+    toast(result.ready ? 'SSH 连接测试成功' : 'SSH 连接测试未成功：' + result.error, !result.ready);
+    await renderPage(false);
   }
   async function commandVPS(vps, projectId = '') {
     form(
@@ -1655,9 +1793,14 @@ window.CodePierSpaces = (() => {
               ? `<code>${esc(x.abstract_base)}</code><br>文件默认：${esc(x.default_fs_device_id)} · Shell 默认：${esc(x.default_shell_device_id)}`
               : kind === 'folders'
                 ? `<code>${esc(x.device_path)}</code> · ${esc(x.device_id)}`
-                : esc(x.host),
+                : `${esc(x.host_alias)} · ${esc(x.runner_name)} · ${esc(x.status)}${x.discovery_stale ? ' · 发现状态已过期' : ''}<br>${esc(x.description)}`,
             button('inventory-edit', '编辑', x.id) +
-              (kind === 'storage' ? button('mappings', '设备路径映射', x.id) : '') +
+              (kind === 'storage'
+                ? button('mappings', '设备路径映射', x.id)
+                : kind === 'vps'
+                  ? button('inventory-vps-toggle', x.enabled ? '停用' : '启用', x.id) +
+                    button('inventory-vps-probe', '测试连接', x.id)
+                  : '') +
               button('inventory-remove', '移除', x.id),
           ),
         )
@@ -1762,6 +1905,10 @@ window.CodePierSpaces = (() => {
                   : captured.kind === 'folders'
                     ? folderInventoryEditor(captured.inventory.find((x) => x.id === id))
                     : vpsInventoryEditor(captured.inventory.find((x) => x.id === id));
+              case 'inventory-vps-toggle':
+                return toggleVPSResource(captured.inventory.find((x) => x.id === id));
+              case 'inventory-vps-probe':
+                return probeVPSResource(captured.inventory.find((x) => x.id === id));
               case 'mappings':
                 return mappings(captured.inventory.find((x) => x.id === id));
               case 'inventory-remove':

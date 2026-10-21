@@ -6,6 +6,7 @@ import uuid
 from dataclasses import replace
 
 import pytest
+from tests.vps_fixtures import observed_runner
 from agent.runner import Agent
 from agent.core_files import CoreFiles
 from agent.resource_queue import Claim, ResourceQueue
@@ -252,9 +253,9 @@ async def test_facades_enforce_action_scopes_and_process_waits_are_parallel(runt
 @pytest.mark.asyncio
 async def test_saved_vps_target_keeps_credentials_private_and_binding_pinned(runtime):
     instance, principal = runtime
-    resource = instance.vps.save(VPSInput(name='Test', host='vps.example.invalid', idempotency_key='fixture-vps-resource'), principal)
-    connection = instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', runner_device_id='dev',
-        connection_ref='production', display_mode='top_level', idempotency_key='fixture-vps-binding'), principal)
+    with observed_runner(instance, 'dev'):
+        resource = instance.vps.save(VPSInput(name='Test', runner_device_id='dev', host_alias='production', idempotency_key='fixture-vps-resource'), principal)
+    connection = instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', display_mode='top_level', idempotency_key='fixture-vps-binding'), principal)
     args = {'target': connection['target'], 'command': 'true', 'yield_seconds': 0, 'idempotency_key': 'saved-connection'}
     receipt = await instance.invoke('exec', args, principal)
     row = instance.store.one('SELECT * FROM operations WHERE id=?', (receipt['operation_id'],))
@@ -264,13 +265,14 @@ async def test_saved_vps_target_keeps_credentials_private_and_binding_pinned(run
     assert 'password' not in json.dumps(request_data) + row['args_summary']
     transport = instance.vps.transport(request_data, None)
     assert transport['tool'] == 'exec'
-    assert transport['project']['_ssh_target'] == {'vps_id': connection['id'], 'resource_id': resource['id'], 'connection_ref': 'production'}
+    target = transport['project']['_ssh_target']
+    assert target['protocol'] == 2 and target['vps_id'] == connection['id'] and target['resource_id'] == resource['id']
+    assert target['connection_ref'] == 'production' and target['host_alias'] == 'production' and len(target['target_fingerprint']) == 64
     assert transport['args'] == request_data['args']
     retry = await instance.invoke('exec', args, principal)
     assert retry['operation_id'] == receipt['operation_id']
     saved=instance.vps.get(connection['id'],principal)
-    instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', runner_device_id='dev',
-        connection_ref='production', enabled=False, expected_version=saved['version'], idempotency_key='disable-vps-binding'), principal, connection['id'])
+    instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', enabled=False, expected_version=saved['version'], idempotency_key='disable-vps-binding'), principal, connection['id'])
     assert instance.permission_error(row, principal=principal)
     with pytest.raises(DevError):
         instance.vps.transport(request_data, None)

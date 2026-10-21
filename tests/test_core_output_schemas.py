@@ -4,6 +4,7 @@ import json
 import time
 
 import pytest
+from tests.vps_fixtures import observed_runner
 from jsonschema import Draft202012Validator, ValidationError
 
 from shared.contracts import OUTPUT_SCHEMAS, tool_definitions
@@ -32,7 +33,7 @@ SAMPLES = {
     'process': {'operations': [{'operation_id': OP, 'state': 'succeeded', 'pending': False,
                 'result': {'ok': True, 'data': {'exit_code': 0, 'output': 'done'}},
                 'error': None, 'output_seq': 2}], 'media_truncated': False},
-    'vps': {'vps': [{'id': OP, 'name': 'Test', 'host': 'example.invalid',
+    'vps': {'vps': [{'id': OP, 'name': 'Test', 'host_alias': 'example',
             'target': 'vps:' + OP, 'enabled': True, 'projects': [], 'display_mode': 'top_level',
             'actions': ['read'], 'can_execute': False, 'online': False}],
             'total': 1, 'next_offset': None},
@@ -200,10 +201,10 @@ async def test_runtime_local_lists_match_advertised_output(runtime):
     instance, principal = runtime
     validate('workspace', await instance.invoke('workspace', {}, principal))
     validate('process', await instance.invoke('process', {}, principal))
-    resource = instance.vps.save(VPSInput(name='Typed', host='example.invalid',
-        idempotency_key='typed-vps-resource'), principal)
-    instance.vps.bind(VPSBindingSave(name='Typed', resource_id=resource['id'], runner_device_id='dev',
-        connection_ref='production', display_mode='both', projects=['proj'],
+    with observed_runner(instance, 'dev'):
+        resource = instance.vps.save(VPSInput(name='Typed', runner_device_id='dev', host_alias='production',
+            idempotency_key='typed-vps-resource'), principal)
+    instance.vps.bind(VPSBindingSave(name='Typed', resource_id=resource['id'], display_mode='both', projects=['proj'],
         idempotency_key='typed-vps-binding'), principal)
     validate('vps', await instance.invoke('vps', {}, principal))
 

@@ -36,14 +36,21 @@ class WorkspaceStack:
         self.hubdir = self.directory/'hub'
         seed = WorkspaceFixture(self.hubdir)
         secret = 'integration-device-secret-' + uuid.uuid4().hex
+        self.ssh_config = self.directory/'ssh_config'
+        self.ssh_config.write_text('Host fixture fixture-extra\n  HostName fixture.invalid\n')
+        from agent.ssh import validate_ssh
+        from agent.ssh_discovery import approved_alias
+        ssh_settings = validate_ssh({'enabled':True, 'targets':{alias:{'host_alias':alias,'config_file':str(self.ssh_config)} for alias in ('fixture','fixture-extra')}})
+        target = approved_alias({'ssh':ssh_settings}, 'fixture')
         with seed.store.transaction():
             seed.store.db.execute('UPDATE storage_mappings SET path=?', (str(self.root),))
             seed.store.db.execute("UPDATE storage_pools SET default_fs_device_id='a'")
             seed.store.db.execute("UPDATE devices SET secret=? WHERE id='a'", (seed.store.encrypt(secret),))
-            seed.store.db.execute('''INSERT INTO vps_connections(id,name,name_key,host,owner_user_id,created,updated)
-                VALUES(?,?,?,?,?,?,?)''', ('server', 'Saved test SSH server', 'saved test ssh server', 'fixture.invalid', 'alice', time.time(), time.time()))
-            seed.store.db.execute('''INSERT INTO space_vps(id,space_id,resource_id,name,name_key,runner_device_id,connection_ref,display_mode)
-                VALUES(?,?,?,?,?,?,?,'top_level')''', ('a'*32, 'alice', 'server', 'Test server', 'test server', 'a', 'fixture'))
+            seed.store.db.execute("""INSERT INTO vps_connections(id,name,name_key,runner_device_id,host_alias,connection_ref,target_fingerprint,owner_user_id,created,updated)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""", ('server', 'Saved test SSH server', 'saved test ssh server', 'a', 'fixture',
+                    'fixture', target['target_fingerprint'], 'alice', time.time(), time.time()))
+            seed.store.db.execute("""INSERT INTO space_vps(id,space_id,resource_id,name,name_key,display_mode)
+                VALUES(?,?,?,?,?,'top_level')""", ('a'*32, 'alice', 'server', 'Test server', 'test server'))
         self.profile_policy = {'project_rules': [{'projects': ['project'], 'actions': ['read','write','execute']}],
                                'vps_rules': [{'vps': ['a'*32], 'actions': ['read','execute']}]}
         connection, _ = seed.connect(self.profile_policy)
@@ -80,7 +87,7 @@ class WorkspaceStack:
             'state_dir':str(self.directory/'agent-state'),
             'allowed_roots':[{'path':str(self.root), 'writable':True, 'allow_tasks':True}],
             'shell':{'enabled':True, 'projects':['*'], 'env':{'PATH':str(self.bin)+os.pathsep+os.environ['PATH']}},
-            'ssh':{'enabled':True, 'targets':{'fixture':{'host_alias':'fixture'}}}, 'sessions':{'enabled':True}}
+            'ssh':ssh_settings, 'sessions':{'enabled':True}}
         atomic_json(self.config_path, self.config)
         self.start_agent()
 

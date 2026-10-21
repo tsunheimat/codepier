@@ -100,7 +100,7 @@ Task 绑定原 operation、Space、用户和确切创建 grant，每次查询/�
 {"name":"exec","arguments":{"project":"Imago","command":"npm test","resources":[{"kind":"path","name":"src","mode":"read"},{"kind":"path","name":".cache","mode":"write"},{"kind":"service","name":"test-database","mode":"write"}],"idempotency_key":"test-intent-001"}}
 ```
 
-相同路径的读取可共享，写入与重叠读取/写入互斥；服务按名称协调。相对本机路径基于命令 `cwd` 解析，VPS 资源按 SSH 主机与端口隔离。远程相对路径因无法预先确认登录目录，按服务器根目录保守协调。等待者按发生冲突的顺序进入，不影响不相关路径。
+相同路径的读取可共享，写入与重叠读取/写入互斥；服务按名称协调。相对本机路径基于命令 `cwd` 解析，VPS 资源按已保存的资源身份与目标指纹隔离，而不是调用者提供的主机或端口。远程相对路径因无法预先确认登录目录，按服务器根目录保守协调。等待者按发生冲突的顺序进入，不影响不相关路径。
 
 已配置任务沿用本机任务的工作目录、环境和超时；任务调用的相对资源名称以项目根目录为基准，可用绝对路径明确声明任务子目录中的资源。
 

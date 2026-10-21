@@ -30,6 +30,8 @@ from hub.call_log import operation_summary
 from hub.artifacts import ArtifactService
 from hub.native_cli import NativeService
 from shared.agent_lifecycle import DEVICE_ACTIONS, public_management
+from shared.runner_settings import SETTINGS_TOOL
+from hub.runner_settings import require_settings_access
 from shared.contracts import TOOLS, PROCESS_TOOLS, MUTATING, OPERATION_WAIT_SECONDS, OPERATION_OUTPUT_LIMIT
 from shared.computer_contracts import COMPUTER_TOOLS
 from shared.computer_media import scrub_expired, purge_database
@@ -749,7 +751,11 @@ class Runtime:
             # Resolve alias casing before identifying an unkeyed metadata query.
             args = {**args, "project": project["alias"]}
         principal = refresh_profile_principal(self.store, principal)
-        if name in DEVICE_ACTIONS:
+        if name == SETTINGS_TOOL:
+            from shared.runner_settings import RunnerSettingsRequest
+            args = RunnerSettingsRequest.model_validate(args).model_dump()
+            require_settings_access(self, principal, project['device_id'])
+        elif name in DEVICE_ACTIONS:
             if principal.grant_id:
                 raise DevError('INSUFFICIENT_SCOPE', 'MCP 不允许设备生命周期操作', 403)
             iam.require_device(self.store, principal, project['device_id'], manage=True)
@@ -813,8 +819,8 @@ class Runtime:
                     self.integrations.guard(name, args, project, principal)
                 if name in (COMPUTER_TOOLS - {"computer_session_close"}) | {"browser_open", "browser_snapshot", "browser_action"} and not self.online(project["device_id"]):
                     raise DevError("COMPUTER_OFFLINE", "设备不在线，不排队保存延迟桌面操作；恢复后重新观察", 409, admitted=False)
-                if name in DEVICE_ACTIONS and not self.online(project["device_id"]):
-                    raise DevError("DEVICE_OFFLINE", "设备当前离线；生命周期操作未排队", 409)
+                if name in DEVICE_ACTIONS | {SETTINGS_TOOL} and not self.online(project["device_id"]):
+                    raise DevError("DEVICE_OFFLINE", "设备当前离线；设置操作未排队" if name == SETTINGS_TOOL else "设备当前离线；生命周期操作未排队", 409)
                 device = self.store.one("SELECT enabled FROM devices WHERE id=?", (project["device_id"],))
                 if not device or not device["enabled"]:
                     raise DevError("DEVICE_DISABLED", "设备已停用；请先在面板启用", 409)
@@ -906,7 +912,9 @@ class Runtime:
                     return 'The durable account/workspace identity does not match its operation'
                 caller=iam.live_principal(self.store,Principal(op['actor'],context['user_id'],{'read'},[],
                     space_id=context['space_id'],user_epoch=context.get('user_epoch'),identity_id=context.get('identity_id')))
-            if op['tool'] in DEVICE_ACTIONS:
+            if op['tool'] == SETTINGS_TOOL:
+                require_settings_access(self, caller, op['device_id'])
+            elif op['tool'] in DEVICE_ACTIONS:
                 iam.require_device(self.store,caller,op['device_id'],manage=True)
                 require_external_device(self.store,op['device_id'])
             elif snapshot.get('_validation_context'):
@@ -1031,7 +1039,7 @@ class Runtime:
                         not isinstance(request.get("args"), dict) or
                         not isinstance(request.get("project"), dict) or
                         not isinstance(request["project"].get("root"), str) or
-                        op["tool"] not in TOOLS and op["tool"] != "system_validate" and op["tool"] not in DEVICE_ACTIONS):
+                        op["tool"] not in TOOLS and op["tool"] not in {"system_validate", SETTINGS_TOOL} and op["tool"] not in DEVICE_ACTIONS):
                     raise ValueError("Invalid durable request")
             except Exception:
                 self.complete(op, {"ok": False, "error": {"code": "RECOVERY_DATA_INVALID", "message": "持久请求无法解密，请检查 Hub 数据库与 master.key 是否配套"}})
@@ -1171,6 +1179,8 @@ class Runtime:
             data = dict(result["data"])
             data["command_ok"] = type(data["exit_code"]) is int and data["exit_code"] == 0 and not data.get("timed_out") and not data.get("cancelled") and not data.get("remote_execution_uncertain")
             result = {**result, "data": data}
+        from hub.runner_settings import remember as remember_settings
+        remember_settings(self, op, result)
         self.integrations.complete(op, result)
         self.execution_sessions.completed(op,result)
         if op.get('route_context') and result.get('ok'):
@@ -1186,7 +1196,7 @@ class Runtime:
         data = result.get("data") or {}
         error = result.get("error") or {}
         state = "succeeded" if result["ok"] else "failed"
-        if error.get("code") in {"INTERRUPTED", "JOURNAL_CHANGED", "RECOVERY_DATA_INVALID", "INVALID_AGENT_RESULT", "DURABILITY_UNCONFIRMED", "COMPUTER_ACTION_UNCERTAIN", "BROWSER_ACTION_UNCERTAIN"}:
+        if error.get("code") in {"INTERRUPTED", "JOURNAL_CHANGED", "RECOVERY_DATA_INVALID", "INVALID_AGENT_RESULT", "DURABILITY_UNCONFIRMED", "CONFIG_WRITE_UNCERTAIN", "COMPUTER_ACTION_UNCERTAIN", "BROWSER_ACTION_UNCERTAIN"}:
             state = "needs_review"
         elif error.get("code") == "CANCELLED" or data.get("cancelled"):
             state = "cancelled"

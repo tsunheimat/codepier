@@ -177,7 +177,7 @@ def target_fingerprint(view):
 
 
 def vps_fingerprint(row):
-    return fingerprint({k:row[k] for k in ('id','resource_id','runner_device_id','connection_ref')})
+    return fingerprint({k:row[k] for k in ('id','resource_id','runner_device_id','connection_ref','host_alias','target_fingerprint','target_version')})
 
 
 def consent_targets(store, space_id, policy):
@@ -192,7 +192,8 @@ def consent_targets(store, space_id, policy):
         except DevError:
             result['projects'][identifier]={}  # Unavailable sources grant no inferred target.
     for identifier in {i for rule in policy.vps_rules for i in rule.vps}:
-        row=store.one('SELECT * FROM space_vps WHERE id=? AND space_id=?',(identifier,space_id))
+        row=store.one('''SELECT v.*,r.runner_device_id,r.connection_ref,r.host_alias,r.target_fingerprint,r.target_version
+            FROM space_vps v JOIN vps_connections r ON r.id=v.resource_id WHERE v.id=? AND v.space_id=?''',(identifier,space_id))
         if row:
             result['vps'][identifier]=vps_fingerprint(row)
     return result

@@ -61,6 +61,11 @@ def argument_summary(args: dict) -> str:
 def operation_summary(args: dict) -> dict:
     """Persist counts alongside the existing privacy-preserving summary."""
     from shared.util import safe_summary
+    if 'patch' in args and args.get('operation') in {'preview', 'apply'}:
+        # Settings may contain arbitrary service-specific credentials. Only names
+        # and revisions belong in Hub audit/call-log arguments, never values.
+        return {'operation': args['operation'], 'fields': sorted(args['patch']),
+                'expected_revision': args.get('expected_revision', ''), '_log': {'version': 1}}
     result = safe_summary(args)
     meta = {"version": 1}
     if isinstance(args.get("command"), str):

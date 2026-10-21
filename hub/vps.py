@@ -5,7 +5,6 @@ roots, credential selectors or extra grants. Both entries reference one binding.
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import sqlite3
 import time
@@ -29,21 +28,11 @@ def name_key(value):
     return label_key(value)[1]
 
 
-def canonical_host(value):
-    value=value.strip()
-    try:
-        return str(ipaddress.ip_address(value))
-    except ValueError:
-        return value.rstrip('.').lower()
-
-
 class VPSInput(WorkspaceModel):
     name: str=Field(min_length=1,max_length=100)
-    host: str=Field(default='',max_length=253,description='Optional display metadata; not an SSH credential or transport selector.')
-    provider: str=Field(default='',max_length=120)
-    region: str=Field(default='',max_length=120)
-    system: str=Field(default='',max_length=160)
-    notes: str=Field(default='',max_length=2000)
+    runner_device_id: str=Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
+    host_alias: str=Field(pattern=r'^[A-Za-z0-9_][A-Za-z0-9_.-]{0,252}$')
+    description: str=Field(default='',max_length=2000)
     enabled: bool=True
     expected_version: int=Field(default=0,ge=0)
     idempotency_key: str=Field(min_length=8,max_length=128)
@@ -59,9 +48,10 @@ class VPSService:
         self.runtime,self.store=runtime,runtime.store
 
     def row(self,identifier,space_id):
-        return self.store.one('''SELECT v.*,r.host,r.provider,r.region,r.system,r.notes,r.enabled AS resource_enabled,
-            d.name AS runner_name FROM space_vps v JOIN vps_connections r ON r.id=v.resource_id
-            JOIN devices d ON d.id=v.runner_device_id WHERE v.id=? AND v.space_id=?''',(identifier,space_id))
+        return self.store.one('''SELECT v.*,r.runner_device_id,r.host_alias,r.connection_ref,r.target_fingerprint,
+            r.target_version,r.metadata,r.enabled AS resource_enabled,d.name AS runner_name
+            FROM space_vps v JOIN vps_connections r ON r.id=v.resource_id
+            JOIN devices d ON d.id=r.runner_device_id WHERE v.id=? AND v.space_id=?''',(identifier,space_id))
 
     def actions(self,identifier,principal):
         principal=iam.live_principal(self.store,principal)
@@ -89,7 +79,8 @@ class VPSService:
             return False
 
     def public(self,row,principal,*,management=False):
-        result={k:row[k] for k in ('id','name','host','provider','region','system','notes','display_mode','version')}
+        result={k:row[k] for k in ('id','name','host_alias','description','display_mode','version')}
+        result['metadata']=json.loads(row['metadata'])
         result.update(target='vps:'+row['id'],enabled=bool(row['enabled'] and row['resource_enabled']),
                       actions=sorted(self.actions(row['id'],principal)),can_execute=self.can_execute(row,principal),
                       online=self.runtime.online(row['runner_device_id']))
@@ -105,7 +96,7 @@ class VPSService:
         result['projects']=projects
         if management:
             result.update(resource_id=row['resource_id'],runner_device_id=row['runner_device_id'],
-                          runner_name=row['runner_name'],connection_ref=row['connection_ref'])
+                          runner_name=row['runner_name'])
         return result
 
     def get(self,identifier,principal):
@@ -131,50 +122,99 @@ class VPSService:
             row=self.row(item['id'],principal.space_id)
             if 'read' not in self.actions(row['id'],principal):
                 continue
-            if query and not any(query in str(row[k]).casefold() for k in ('name','host','provider','region')):
+            if query and not any(query in str(row[k]).casefold() for k in ('name','host_alias','description')):
                 continue
             values.append(row)
         offset,limit=args.get('offset',0),args.get('limit',50)
         return {'vps':[self.public(r,principal) for r in values[offset:offset+limit]],'total':len(values),
                 'next_offset':offset+limit if offset+limit<len(values) else None}
 
+    def inventory_public(self,row):
+        result={key:row[key] for key in ('id','name','runner_device_id','host_alias','description','enabled','version','created','updated')}
+        device=self.store.one('SELECT name,enabled FROM devices WHERE id=?',(row['runner_device_id'],))
+        result.update(runner_name=device['name'] if device else '',online=self.runtime.online(row['runner_device_id']),
+                      metadata=json.loads(row['metadata']))
+        result['status']='disabled' if not row['enabled'] or not device or not device['enabled'] else 'configured'
+        from hub.runner_settings import cache_key
+        scan=self.store.one('SELECT value FROM meta WHERE key=?',(cache_key(row['runner_device_id'],'discover'),))
+        observation=json.loads(scan['value']) if scan else {}
+        result['discovery_stale']=not result['online'] or time.time()-observation.get('observed_at',0)>300
+        if not result['discovery_stale'] and result['status']!='disabled':
+            host=next((host for host in observation.get('hosts',[]) if host.get('host_alias')==row['host_alias']),{})
+            if (not observation.get('ssh_enabled') or not host.get('owner_approved')
+                    or host.get('target_fingerprint')!=row['target_fingerprint']):
+                result['status']='unavailable'
+        if not result['online'] and result['status']!='disabled':
+            result['status']='offline'
+        probe=self.store.one('SELECT value FROM meta WHERE key=?',(cache_key(row['runner_device_id'],'probe:'+row['host_alias']),))
+        observed=json.loads(probe['value']) if probe else {}
+        if observed.get('target_fingerprint')==row['target_fingerprint']:
+            result['last_probe']={key:observed.get(key) for key in ('tested','ready','error','observed_at','metadata')}
+            if observed.get('ready') and result['status']=='configured' and time.time()-observed.get('observed_at',0)<=300:
+                result['status']='ready'
+        return result
+
     def save(self,body,principal,identifier=None):
+        from hub.runner_settings import approved_host,cache_key
         def authorize_replay(current,receipt):
             owned_resource(self.store,current,'vps_connections',receipt['id'])
         def write(current):
             old=owned_resource(self.store,current,'vps_connections',identifier) if identifier else None
             checked_version(old,body.expected_version)
+            owned_resource(self.store,current,'devices',body.runner_device_id)
+            if body.enabled:
+                inventory_device(self.store,body.runner_device_id)
             selected=identifier or uuid.uuid4().hex
             name,key=label_key(body.name)
-            now=time.time()
-            values=(name,key,canonical_host(body.host),body.provider,body.region,body.system,body.notes,int(body.enabled),now)
-            if old:
-                self.store.db.execute('UPDATE vps_connections SET name=?,name_key=?,host=?,provider=?,region=?,system=?,notes=?,enabled=?,updated=?,version=version+1 WHERE id=?',(*values,selected))
+            # Disabling is always possible, even if the Runner is offline. An
+            # unchanged target's display-only edits do not refresh its identity.
+            same=old and (old['runner_device_id'],old['host_alias'])==(body.runner_device_id,body.host_alias)
+            if same and not body.enabled:
+                host={key:old[key] for key in ('connection_ref','target_fingerprint')}
             else:
-                self.store.db.execute('INSERT INTO vps_connections(name,name_key,host,provider,region,system,notes,enabled,updated,id,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(*values,selected,current.user_id,now))
+                host=approved_host(self.runtime,current,body.runner_device_id,body.host_alias)
+            identity=(body.runner_device_id,body.host_alias,host['connection_ref'],host['target_fingerprint'])
+            changed=bool(old and identity!=tuple(old[key] for key in ('runner_device_id','host_alias','connection_ref','target_fingerprint')))
+            metadata=old['metadata'] if old and not changed else '{}'
+            probe=self.store.one('SELECT value FROM meta WHERE key=?',(cache_key(body.runner_device_id,'probe:'+body.host_alias),))
+            observed=json.loads(probe['value']) if probe else {}
+            if observed.get('ready') and observed.get('target_fingerprint')==host['target_fingerprint']:
+                metadata=json.dumps({**observed.get('metadata',{}),'observed_at':observed.get('observed_at')})
+            now=time.time()
+            values=(name,key,*identity,body.description,metadata,int(body.enabled),now)
+            try:
+                if old:
+                    self.store.db.execute('UPDATE vps_connections SET name=?,name_key=?,runner_device_id=?,host_alias=?,connection_ref=?,target_fingerprint=?,description=?,metadata=?,enabled=?,updated=?,version=version+1,target_version=target_version+? WHERE id=?',(*values,int(changed),selected))
+                else:
+                    self.store.db.execute('INSERT INTO vps_connections(name,name_key,runner_device_id,host_alias,connection_ref,target_fingerprint,description,metadata,enabled,updated,id,owner_user_id,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(*values,selected,current.user_id,now))
+            except sqlite3.IntegrityError as exc:
+                raise DevError('VPS_RESOURCE_CONFLICT','This Runner / SSH Alias is already registered as a resource',409) from exc
             self.runtime.workspace_resources.changed(current,selected)
-            return self.store.one('SELECT * FROM vps_connections WHERE id=?',(selected,))
+            return self.inventory_public(self.store.one('SELECT * FROM vps_connections WHERE id=?',(selected,)))
         return mutate(self.store,principal,'vps.inventory.save:'+(identifier or 'new'),body.idempotency_key,body.model_dump(),write,
                       authorize_replay=authorize_replay)
 
     def bind(self,body,principal,identifier=None):
+        def inventory_relationship(current):
+            owner=replace(current,space_id=None)
+            resource=owned_resource(self.store,owner,'vps_connections',body.resource_id)
+            # Resolve the dependency from the resource, never from Space input.
+            # A receipt must not preserve authority after Runner ownership moves.
+            owned_resource(self.store,owner,'devices',resource['runner_device_id'])
+            return resource
         def authorize_replay(current,receipt):
             iam.require_space_capability(self.store,current,'resources')
-            owned_resource(self.store,replace(current,space_id=None),'vps_connections',body.resource_id)
-            owned_resource(self.store,replace(current,space_id=None),'devices',body.runner_device_id)
+            inventory_relationship(current)
             if not self.row(receipt['id'],current.space_id):
                 raise DevError('VPS_NOT_FOUND','Workspace VPS binding not found',404)
             for project_id in body.projects:
                 iam.project_in_space(self.store,current,project_id)
         def write(current):
             iam.require_space_capability(self.store,current,'resources')
-            owned_resource(self.store,replace(current,space_id=None),'vps_connections',body.resource_id)
-            owned_resource(self.store,replace(current,space_id=None),'devices',body.runner_device_id)
-            device=inventory_device(self.store,body.runner_device_id)
-            info=json.loads(device['info'])
-            refs=info.get('ssh_targets')
-            if refs is not None and body.connection_ref not in refs:
-                raise DevError('SSH_REFERENCE_NOT_AVAILABLE','Choose an SSH reference advertised by the selected Runner',409)
+            resource=inventory_relationship(current)
+            inventory_device(self.store,resource['runner_device_id'])
+            if not resource['enabled']:
+                raise DevError('VPS_DISABLED','Enable the inventory VPS resource before importing it',409)
             old=self.row(identifier,current.space_id) if identifier else None
             if identifier and not old:
                 raise DevError('VPS_NOT_FOUND','Workspace VPS binding not found',404)
@@ -185,12 +225,12 @@ class VPSService:
                 iam.project_in_space(self.store,current,project_id)
             selected=identifier or uuid.uuid4().hex
             name,key=label_key(body.name)
-            values=(name,key,body.runner_device_id,body.connection_ref,body.display_mode,int(body.enabled))
+            values=(name,key,body.description,body.display_mode,int(body.enabled))
             try:
                 if old:
-                    self.store.db.execute('UPDATE space_vps SET name=?,name_key=?,runner_device_id=?,connection_ref=?,display_mode=?,enabled=?,version=version+1 WHERE id=?',(*values,selected))
+                    self.store.db.execute('UPDATE space_vps SET name=?,name_key=?,description=?,display_mode=?,enabled=?,version=version+1 WHERE id=?',(*values,selected))
                 else:
-                    self.store.db.execute('INSERT INTO space_vps(name,name_key,runner_device_id,connection_ref,display_mode,enabled,id,space_id,resource_id) VALUES(?,?,?,?,?,?,?,?,?)',(*values,selected,current.space_id,body.resource_id))
+                    self.store.db.execute('INSERT INTO space_vps(name,name_key,description,display_mode,enabled,id,space_id,resource_id) VALUES(?,?,?,?,?,?,?,?)',(*values,selected,current.space_id,body.resource_id))
                 existing={r['project_id']:r['binding_id'] for r in self.store.all('SELECT project_id,binding_id FROM vps_projects WHERE vps_id=?',(selected,))}
                 self.store.db.execute('DELETE FROM vps_projects WHERE vps_id=?',(selected,))
                 for project_id in body.projects:
@@ -205,7 +245,7 @@ class VPSService:
     def execution_project(self,args,principal):
         target=args.get('target','')
         if not target.startswith('vps:') or args.get('execution_device_id'):
-            raise DevError('VPS_TARGET_REQUIRED','Choose the exact saved VPS target; its Runner is configured by the workspace')
+            raise DevError('VPS_TARGET_REQUIRED','Choose the exact saved VPS target; its Runner is fixed by the saved resource')
         identifier=target[4:]
         principal=self.require(identifier,principal,'execute')
         row=self.row(identifier,principal.space_id)
@@ -218,7 +258,9 @@ class VPSService:
                                   (identifier,project['id'],principal.space_id)):
                 raise DevError('VPS_PROJECT_CONTEXT_INVALID','The optional project does not contain this VPS entry',403)
         context={'id':identifier,'resource_id':row['resource_id'],'runner_device_id':row['runner_device_id'],
-                 'connection_ref':row['connection_ref'],'fingerprint':vps_fingerprint(row),'space_id':principal.space_id}
+                 'connection_ref':row['connection_ref'],'host_alias':row['host_alias'],
+                 'target_fingerprint':row['target_fingerprint'],'target_version':row['target_version'],
+                 'fingerprint':vps_fingerprint(row),'space_id':principal.space_id}
         return {'id':project['id'] if project else None,'alias':project['alias'] if project else 'vps:'+identifier,
                 'space_id':principal.space_id,'root':'','mode':'write','allow_tasks':True,
                 'device_id':row['runner_device_id'],'device_name':row['runner_name'],'device_enabled':1,
@@ -234,6 +276,9 @@ class VPSService:
     def _authorized_row(self,request,project_id):
         ref=request.get('vps_ref') or request['project'].get('_vps_context') or {}
         row=self.row(ref.get('id'),ref.get('space_id'))
+        if row and self.runtime.online(row['runner_device_id']):
+            from shared.tool_protocol import require_compatible
+            require_compatible(getattr(self.runtime.connections.get(row['runner_device_id']), 'tool_protocol', None), 'runner_settings')
         if not row or not row['enabled'] or not row['resource_enabled'] or vps_fingerprint(row)!=ref.get('fingerprint'):
             raise DevError('VPS_CONFIGURATION_CHANGED','The original VPS connection changed; no replacement connection was selected',409)
         inventory_device(self.store,row['runner_device_id'])
@@ -257,7 +302,9 @@ class VPSService:
         # No password, arbitrary Host argument or private key crosses this boundary.
         # The Runner resolves this reviewed connection reference in its own config.
         return {**request,'project':{**request['project'],'_ssh_target':{
-            'vps_id':row['id'],'resource_id':row['resource_id'],'connection_ref':row['connection_ref']}}}
+            'protocol':2,'vps_id':row['id'],'resource_id':row['resource_id'],
+            'connection_ref':row['connection_ref'],'host_alias':row['host_alias'],
+            'target_fingerprint':row['target_fingerprint']}}}
 
 
 def make_vps_router(auth,runtime):
@@ -266,7 +313,7 @@ def make_vps_router(auth,runtime):
     @router.get('/api/vps')
     @database_endpoint(store)
     def inventory(request: Request):
-        return {'vps':runtime.workspace_resources.inventory(auth.panel(request),'vps_connections')}
+        return {'vps':[service.inventory_public(row) for row in runtime.workspace_resources.inventory(auth.panel(request),'vps_connections')]}
 
     @router.post('/api/vps',status_code=201)
     @database_endpoint(store)

@@ -166,8 +166,8 @@ async def test_real_pty_read_write_resize_and_cleanup(tmp_path):
 def test_ssh_uses_saved_alias_and_no_local_project_root(tmp_path, monkeypatch):
     agent, _ = setup(tmp_path)
     monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **k: '/usr/bin/ssh')
-    project = {'id': None, 'root': '', '_vps_context': {'id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'},
-               '_ssh_target': {'vps_id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'}}
+    from tests.vps_fixtures import ssh_project
+    project = ssh_project(agent.config, resource='resource')
     spec = SSHBackend(agent).plan(project, {'command': 'printf ok', 'cwd': '/srv/a folder', 'env': {'X': "a'b"}, 'timeout_seconds': 30})
     assert spec.remote and spec.cwd == tmp_path
     assert spec.argv[-2] == 'production' and 'BatchMode=yes' in spec.argv
@@ -190,9 +190,8 @@ def test_ssh_session_uses_saved_shell_without_client_discovery(tmp_path, monkeyp
     agent, _ = setup(tmp_path)
     agent.config['ssh']['targets']['prod']['shell'] = shell
     monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **k: '/usr/bin/ssh')
-    project = {'id': None, 'root': '',
-        '_vps_context': {'id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'},
-        '_ssh_target': {'vps_id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'}}
+    from tests.vps_fixtures import ssh_project
+    project = ssh_project(agent.config, resource='resource')
     request = args('open', target='vps:' + 'a'*32)
     spec = SSHBackend(agent).plan(project, request, session=True)
     assert spec.shell == shell
@@ -203,9 +202,8 @@ def test_ssh_session_open_does_not_consume_a_command_timeout(tmp_path, monkeypat
     agent, _ = setup(tmp_path)
     agent.config['ssh']['max_timeout_seconds'] = 30
     monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **k: '/usr/bin/ssh')
-    project = {'id': None, 'root': '',
-        '_vps_context': {'id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'},
-        '_ssh_target': {'vps_id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'}}
+    from tests.vps_fixtures import ssh_project
+    project = ssh_project(agent.config, resource='resource')
     spec = SSHBackend(agent).plan(project, args('open', target='vps:' + 'a'*32), session=True)
     assert spec.remote
     # One-shot command timeouts still obey the Runner's configured ceiling.
@@ -218,9 +216,8 @@ def test_ssh_session_explicit_shell_cannot_override_saved_target(tmp_path, monke
     agent, _ = setup(tmp_path)
     agent.config['ssh']['targets']['prod']['shell'] = 'bash'
     monkeypatch.setattr('agent.ssh.shutil.which', lambda *a, **k: '/usr/bin/ssh')
-    project = {'id': None, 'root': '',
-        '_vps_context': {'id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'},
-        '_ssh_target': {'vps_id': 'a'*32, 'resource_id': 'resource', 'connection_ref': 'prod'}}
+    from tests.vps_fixtures import ssh_project
+    project = ssh_project(agent.config, resource='resource')
     with pytest.raises(DevError) as failure:
         SSHBackend(agent).plan(project, args('open', target='vps:' + 'a'*32, shell='zsh'), session=True)
     assert failure.value.code == 'SSH_SHELL_MISMATCH'
@@ -286,8 +283,8 @@ async def test_ssh_client_termination_cannot_certify_remote_completion(tmp_path,
     agent,_=setup(tmp_path)
     monkeypatch.setattr('agent.ssh.shutil.which',lambda *a,**kw:'/usr/bin/ssh')
     agent.run_process=AsyncMock(return_value={'exit_code':code,'output':'','cancelled':False,'timed_out':False})
-    project={'id':None,'root':'','_vps_context':{'id':'a'*32,'resource_id':'resource','connection_ref':'prod'},
-        '_ssh_target':{'vps_id':'a'*32,'resource_id':'resource','connection_ref':'prod'}}
+    from tests.vps_fixtures import ssh_project
+    project = ssh_project(agent.config, resource='resource')
     result=await ProcessSupervisor(agent).run('b'*32,project,{'command':'true','timeout_seconds':10})
     assert result['remote_execution_uncertain'] is uncertain
     assert result['outcome_uncertain'] is uncertain

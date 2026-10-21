@@ -32,8 +32,9 @@ def test_inventory_create_edit_escapes_text_and_fits_viewport(workspace_server, 
     form = page.locator('#workspace-form')
     name = '<img src=x onerror=window.injected=true>'
     form.locator('[name="name"]').fill(name)
-    form.locator('[name="host"]').fill('fixture.invalid')
-    form.locator('[name="notes"]').fill('Display metadata only')
+    form.locator('[name="runner_device_id"]').select_option('a')
+    form.locator('[name="host_alias"]').fill('fixture-extra')
+    form.locator('[name="description"]').fill('Display metadata only')
     expect(form.locator('[name="password"], [name="private_key"]')).to_have_count(0)
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
     page.get_by_role('button', name='保存', exact=True).click()
@@ -43,11 +44,11 @@ def test_inventory_create_edit_escapes_text_and_fits_viewport(workspace_server, 
     expect(page.locator('#workspace-inventory img')).to_have_count(0)
     saved = next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['name']==name)
     page.locator('[data-ws-action="inventory-edit"][data-id="'+saved['id']+'"]').click()
-    form.locator('[name="notes"]').fill('Edited metadata')
+    form.locator('[name="description"]').fill('Edited metadata')
     page.get_by_role('button', name='保存', exact=True).click()
     expect(form).to_have_count(0, timeout=15000)
     current = next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['id']==saved['id'])
-    assert current['version'] == saved['version']+1 and current['notes'] == 'Edited metadata'
+    assert current['version'] == saved['version']+1 and current['description'] == 'Edited metadata'
     assert errors == []
 
 
@@ -57,18 +58,19 @@ def test_inventory_stale_save_keeps_draft_and_does_not_overwrite(workspace_serve
     original = server.must(server.client.get('/api/vps'))['vps'][0]
     page.locator('[data-ws-action="inventory-edit"][data-id="'+original['id']+'"]').click()
     form = page.locator('#workspace-form')
-    form.locator('[name="notes"]').fill('Local unsaved draft')
+    form.locator('[name="description"]').fill('Local unsaved draft')
+    server.finish(server.must(server.client.get('/api/devices/a/ssh-hosts')))
     server.must(server.client.put('/api/vps/'+original['id'], json=input_body(
-        name=original['name'], notes='Saved by another view', expected_version=original['version'])))
+        name=original['name'], description='Saved by another view', expected_version=original['version'])))
     with page.expect_response(lambda response: response.request.method == 'PUT' and
                               response.url.endswith('/api/vps/'+original['id'])) as save:
         page.get_by_role('button', name='保存', exact=True).click()
     assert save.value.status == 409
     expect(form.locator('[data-ws-status]')).to_have_text(save.value.json()['error']['message'], timeout=15000)
     expect(form).to_be_visible()
-    expect(form.locator('[name="notes"]')).to_have_value('Local unsaved draft')
+    expect(form.locator('[name="description"]')).to_have_value('Local unsaved draft')
     current = next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['id']==original['id'])
-    assert current['notes'] == 'Saved by another view'
+    assert current['description'] == 'Saved by another view'
     assert errors == []
 
 
@@ -77,7 +79,7 @@ def test_workspace_binding_identity_and_project_display_are_explicit(workspace_s
     page = open_workspace(context, server, 'spaces/alice/vps')
     page.locator('[data-ws-action="vps"][data-id="'+'a'*32+'"]').click()
     form = page.locator('#workspace-form')
-    expect(form.locator('[name="resource_id"]')).to_be_disabled()
+    expect(form.locator('[name="resource_id"], [name="runner_device_id"], [name="connection_ref"]')).to_have_count(0)
     expect(form.locator('[data-vps-projects]')).to_be_hidden()
     form.locator('[name="display_mode"]').select_option('both')
     expect(form.locator('[data-vps-projects]')).to_be_visible()
@@ -140,7 +142,7 @@ def test_explicit_workspace_navigation_does_not_reopen_an_inventory_draft(worksp
     page = open_inventory(context, server)
     page.locator('[data-ws-action="inventory-edit"]').first.click()
     form = page.locator('#workspace-form')
-    form.locator('[name="notes"]').fill('In-memory unsaved draft')
+    form.locator('[name="description"]').fill('In-memory unsaved draft')
     prompts=[]
     def keep_draft(dialog):
         prompts.append(dialog.message)
@@ -149,12 +151,12 @@ def test_explicit_workspace_navigation_does_not_reopen_an_inventory_draft(worksp
     page.evaluate('navigate("spaces/alice/vps")')
     assert len(prompts)==1 and '未保存' in prompts[0]
     expect(form).to_be_visible()
-    expect(form.locator('[name="notes"]')).to_have_value('In-memory unsaved draft')
+    expect(form.locator('[name="description"]')).to_have_value('In-memory unsaved draft')
     expect(page).to_have_url(re.compile(r'#resources/vps$'))
     page.once('dialog',lambda dialog:dialog.accept())
     page.evaluate('navigate("spaces/alice/vps")')
     expect(page).to_have_url(re.compile(r'#spaces/alice/vps$'), timeout=15000)
     expect(form).to_have_count(0)
     expect(page.locator('#workspace-page h2')).to_have_text('VPS')
-    assert all(v['notes'] != 'In-memory unsaved draft' for v in server.must(server.client.get('/api/vps'))['vps'])
+    assert all(v['description'] != 'In-memory unsaved draft' for v in server.must(server.client.get('/api/vps'))['vps'])
     assert errors == []

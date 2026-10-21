@@ -168,10 +168,12 @@ async def exercise(directory,ssh_config):
     try:
         for alias in ('direct','via-agent','via-jump'):
             binding=uuid.uuid4().hex
+            from agent.ssh_discovery import approved_alias
+            selected=approved_alias(agent.config,alias)
             project={'id':None,'root':'','device_id':'isolated-openssh','mode':'write','allow_tasks':True,
                 '_integration_owner':'grant:isolated',
-                '_vps_context':{'id':binding,'resource_id':binding,'connection_ref':alias},
-                '_ssh_target':{'vps_id':binding,'resource_id':binding,'connection_ref':alias}}
+                '_vps_context':{'id':binding,'resource_id':binding,**selected},
+                '_ssh_target':{'protocol':2,'vps_id':binding,'resource_id':binding,**selected}}
             target='vps:'+binding
             counter=remote/(alias+'.count')
             invocation={'target':target,'command':'printf x >> '+shlex.quote(str(counter))+'; printf openssh-ok','timeout_seconds':10}

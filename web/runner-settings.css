@@ -1,0 +1,57 @@
+.runner-setting-group {
+  margin: 12px 0;
+  border: 1px solid var(--line, #ddd);
+  border-radius: 10px;
+  padding: 12px;
+}
+.runner-setting-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.runner-setting-group > summary small {
+  display: block;
+  font-weight: 400;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.runner-setting-object,
+.runner-setting-array {
+  min-width: 0;
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--line, #ddd);
+  border-radius: 8px;
+}
+.runner-setting-item,
+.runner-setting-entry {
+  margin-bottom: 12px;
+  min-width: 0;
+}
+[data-rs-fields] {
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+[data-runner-settings] pre,
+[data-rs-receipt] {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+[data-rs-json] {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: monospace;
+}
+[data-runner-settings] .field {
+  margin: 10px 0;
+}
+[data-vps-choices] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+[data-vps-choices] button {
+  text-align: left;
+  white-space: normal;
+  padding: 16px;
+}

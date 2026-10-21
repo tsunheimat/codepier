@@ -1518,7 +1518,7 @@ async function deviceDetail(id) {
       : '';
   const dialog = modal(
     '管理节点 · ' + d.name,
-    `<div class="field"><label>节点名称</label><input id="device-rename" value="${esc(d.name)}" maxlength="80"></div><dl class="kv device-kv"><dt>节点编号</dt><dd><code>${esc(d.id)}</code></dd><dt>连接状态</dt><dd>${d.enabled ? onlineBadge(d.online) : '<span class="badge failed">已停用</span>'}</dd><dt>最近连接</dt><dd>${esc(timeText(d.last_seen))}</dd><dt>平台 / 主机</dt><dd>${esc(d.info.platform || '等待上线')} · ${esc(d.info.hostname || '—')}</dd><dt>项目映射</dt><dd>${d.project_count} 个</dd></dl>${agentLifecycleSummary(d)}<section class="node-manage-section"><div class="node-section-head"><div><h3>Agent 生命周期</h3><p>${d.builtin ? '由 Hub 部署统一管理；停用、启用或轮换连接密钥仍可在此操作。' : '更新先校验完整新运行时，面板记录结果后才切换；节点有任务执行时不会强行更新或重启。'}</p></div></div><div class="actions">${agentLifecycleButtons(d, false)}</div></section>${builtinRootsHTML(d)}<section class="node-manage-section"><h3>开发工具配置</h3><p class="form-note">按项目连接语言服务与后台浏览器。只进入配置引导，不自动安装、授权或重启。</p><div class="actions">${
+    `<div class="field"><label>节点名称</label><input id="device-rename" value="${esc(d.name)}" maxlength="80"></div><dl class="kv device-kv"><dt>节点编号</dt><dd><code>${esc(d.id)}</code></dd><dt>连接状态</dt><dd>${d.enabled ? onlineBadge(d.online) : '<span class="badge failed">已停用</span>'}</dd><dt>最近连接</dt><dd>${esc(timeText(d.last_seen))}</dd><dt>平台 / 主机</dt><dd>${esc(d.info.platform || '等待上线')} · ${esc(d.info.hostname || '—')}</dd><dt>项目映射</dt><dd>${d.project_count} 个</dd></dl>${agentLifecycleSummary(d)}<section class="node-manage-section"><div class="node-section-head"><div><h3>Agent 生命周期</h3><p>${d.builtin ? '由 Hub 部署统一管理；停用、启用或轮换连接密钥仍可在此操作。' : '更新先校验完整新运行时，面板记录结果后才切换；节点有任务执行时不会强行更新或重启。'}</p></div></div><div class="actions">${agentLifecycleButtons(d, false)}</div></section>${builtinRootsHTML(d)}${!d.builtin && d.can_manage ? '<section class="node-manage-section"><h3>Runner 设置</h3><p>查看全部本机配置、SSH Host 授权与就绪状态。远程修改须由 Runner 所有者在本机明确授权。</p><button class="btn" id="open-runner-settings">Runner 设置</button></section>' : ''}<section class="node-manage-section"><h3>开发工具配置</h3><p class="form-note">按项目连接语言服务与后台浏览器。只进入配置引导，不自动安装、授权或重启。</p><div class="actions">${
       S.projects
         .filter((p) => p.device_id === d.id)
         .map(
@@ -1529,7 +1529,7 @@ async function deviceDetail(id) {
       (d.builtin
         ? '<p class="form-note">先挂载项目目录，再由具备节点管理权限的实例管理员授权，最后映射项目；不会自动创建项目映射。目录授权仅开放文件访问，不开启开发工具执行能力。</p>'
         : `<button class="btn ghost small" data-action="add-project" data-device="${esc(d.id)}">先添加项目映射</button>`)
-    }</div></section><details class="device-raw"><summary>本机声明与能力</summary><div class="code-box"><pre>${esc(json(d.info))}</pre></div></details><p class="form-note">${d.builtin ? '内置节点通过私有本地进程管道连接 Hub，不使用 WebSocket；远程 Agent 的 WebSocket 连接不变。连接配置由 Hub 自动维护，无需下载配对文件或手动编辑生成配置。' : '更换 IP / 端口：在目标电脑运行 <code>python -m agent configure --hub http://新IP:新端口</code>。面板不能越过本机配置增加授权目录。'}</p><section class="danger-zone"><div><h3>节点与凭据</h3><p>${d.builtin ? '停用会停止内置 Agent，重新启用后自动连接。移除会停止内置 Agent 并持久保留删除决定，Hub 重启后不会自动重建此节点；不会删除项目文件。' : '卸载只清理目标电脑上的 Agent；“移除面板记录”只删除 Hub 中的节点身份。两者都不会删除项目文件。'}</p></div><div class="actions">${uninstall}<button class="btn small" id="toggle-device">${d.enabled ? '停用节点' : '启用节点'}</button><button class="btn small" id="rotate-device">轮换连接密钥</button><button class="btn danger small" id="delete-device">${d.builtin ? '移除内置节点' : '仅移除面板记录'}</button></div></section>`,
+    }</div></section><details class="device-raw"><summary>本机声明与能力</summary><div class="code-box"><pre>${esc(json(d.info))}</pre></div></details><p class="form-note">${d.builtin ? '内置节点通过私有本地进程管道连接 Hub，不使用 WebSocket；远程 Agent 的 WebSocket 连接不变。连接配置由 Hub 自动维护，无需下载配对文件或手动编辑生成配置。' : '更换 IP / 端口：在目标电脑运行 <code>python -m agent configure --hub http://新IP:新端口</code>。Runner 所有者可在本机明确授权远程设置；未授权时面板仅提供预览与本机补丁。'}</p><section class="danger-zone"><div><h3>节点与凭据</h3><p>${d.builtin ? '停用会停止内置 Agent，重新启用后自动连接。移除会停止内置 Agent 并持久保留删除决定，Hub 重启后不会自动重建此节点；不会删除项目文件。' : '卸载只清理目标电脑上的 Agent；“移除面板记录”只删除 Hub 中的节点身份。两者都不会删除项目文件。'}</p></div><div class="actions">${uninstall}<button class="btn small" id="toggle-device">${d.enabled ? '停用节点' : '启用节点'}</button><button class="btn small" id="rotate-device">轮换连接密钥</button><button class="btn danger small" id="delete-device">${d.builtin ? '移除内置节点' : '仅移除面板记录'}</button></div></section>`,
     buttons('rename-device', '保存名称'),
     true,
   );
@@ -1588,6 +1588,8 @@ async function deviceDetail(id) {
       await renderPage();
     });
   };
+  if ($('#open-runner-settings', dialog))
+    $('#open-runner-settings', dialog).onclick = () => CodePierRunnerSettings.open(d);
   await setupBuiltinRoots(dialog, d);
 }
 async function projectModal(id = null) {

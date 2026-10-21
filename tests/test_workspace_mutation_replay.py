@@ -5,7 +5,17 @@ import uuid
 
 import pytest
 
-from tests.test_workspace_http import web  # noqa: F401
+from tests.test_workspace_http import web as base_web  # noqa: F401
+from tests.vps_fixtures import seed_discovery
+
+
+@pytest.fixture
+def web(base_web, monkeypatch):
+    client, app = base_web
+    seed_discovery(app.state.runtime)
+    original = app.state.runtime.online
+    monkeypatch.setattr(app.state.runtime, "online", lambda device: device == "a" or original(device))
+    return client, app
 
 
 def pool_body():
@@ -81,15 +91,14 @@ def mutation_request(client, case):
         prefix = '/api/projects/project' if case == 'project_execution' else '/api/spaces/alice'
         return 'PUT', prefix+'/execution', {**body, 'settings': {}, 'expected_version': 0}
     if case.startswith('vps_'):
-        inventory = {**body, 'name': 'Receipt VPS', 'host': 'fixture.invalid'}
+        inventory = {**body, 'name': 'Receipt VPS', 'runner_device_id': 'a', 'host_alias': 'fixture'}
         if case == 'vps_create':
             return 'POST', '/api/vps', inventory
         resource = saved(client.post('/api/vps', json=inventory))
         if case == 'vps_update':
             return 'PUT', '/api/vps/'+resource['id'], {
                 **inventory, 'name': 'Updated VPS', 'expected_version': resource['version'], 'idempotency_key': uuid.uuid4().hex}
-        binding = {**body, 'resource_id': resource['id'], 'name': 'Receipt binding', 'runner_device_id': 'a',
-                   'connection_ref': 'fixture', 'display_mode': 'both', 'projects': ['project']}
+        binding = {**body, 'resource_id': resource['id'], 'name': 'Receipt binding', 'display_mode': 'both', 'projects': ['project']}
         if case == 'vps_bind_create':
             return 'POST', '/api/spaces/alice/vps', binding
         first = saved(client.post('/api/spaces/alice/vps', json=binding))
@@ -308,3 +317,15 @@ def test_independently_authorized_account_cannot_recover_another_accounts_receip
     assert response.status_code == 409, response.text
     assert response.json()['error']['code'] == 'VERSION_CHANGED'
     assert durable_snapshot(store) == before
+
+
+def test_new_space_binding_derives_runner_authority_from_resource_after_transfer(web):
+    client,app=web
+    store=app.state.store
+    store.execute("UPDATE iam_users SET instance_admin=0 WHERE user_id='alice'")
+    method,path,body=mutation_request(client,'vps_bind_create')
+    store.execute("UPDATE devices SET owner_user_id='bob' WHERE id='a'")
+    before=durable_snapshot(store)
+    result=client.request(method,path,json=body)
+    assert result.status_code==404 and result.json()['error']['code']=='INVENTORY_RESOURCE_NOT_FOUND'
+    assert durable_snapshot(store)==before
