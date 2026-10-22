@@ -117,6 +117,21 @@ def test_hub_refuses_forged_new_vps_marker_without_auto_reset(retired):
         assert db.execute('SELECT count(*) FROM space_vps').fetchone()[0] == 1
 
 
+
+@pytest.mark.parametrize('alter', [
+    'ALTER TABLE vps_connections ADD COLUMN host_alias TEXT',
+    'ALTER TABLE vps_connections ADD COLUMN target_version INTEGER',
+])
+def test_hub_does_not_automatically_erase_mixed_vps_schema(retired, alter):
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        db.execute(alter)
+    with pytest.raises(RuntimeError, match='VPS_CUTOFF_REQUIRED'):
+        create_app(str(retired))
+    assert not list(retired.glob('vps-cutoff-*.sqlite3'))
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        assert db.execute('SELECT count(*) FROM vps_connections').fetchone()[0] == 1
+
+
 def test_hub_auto_cutoff_failure_rolls_back_and_stays_offline(retired):
     with sqlite3.connect(retired/'hub.sqlite3') as db:
         db.execute("UPDATE access_profiles SET policy='broken'")
