@@ -38,6 +38,7 @@ from hub.artifacts import make_artifact_router
 from hub.agent_install import make_agent_install_router
 from hub.native_cli import make_native_router
 from hub.vps import make_vps_router
+from hub.vps_cutoff import automatic_cutoff
 from hub.panel_update import make_panel_update_router
 from hub.integrations import CallTimingMiddleware
 from hub.mcp_request_audit import MCPRequestAuditMiddleware
@@ -56,6 +57,16 @@ def create_app(data_dir: str | None = None):
     instance_lock = InstanceLock(directory / ".hub.lock")
     store = None
     try:
+        # Hub already owns the single-instance lock. Old workspace-2 VPS data
+        # is deliberately discarded and rebuilt once; unrelated data survives.
+        # No manual CLI step, feature flag, or legacy execution path is needed.
+        cutoff = automatic_cutoff(directory)
+        if cutoff is not None and cutoff['changed']:
+            import logging
+            logging.getLogger(__name__).warning(
+                'Automatic VPS-only cutoff: discarded %d resources and %d bindings; '
+                'private SQLite backup: %s. Remote processes were not stopped.',
+                cutoff['vps_resources'], cutoff['space_bindings'], cutoff['backup'])
         store = Store(directory)
         runtime, auth = Runtime(store), Auth(store, policy=config.auth_policy)
         runtime.gateway = Gateway(store)
