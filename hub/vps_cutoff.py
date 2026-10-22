@@ -191,8 +191,13 @@ def automatic_cutoff(directory):
         if vps_marker:
             return None  # Current version or unknown/mixed version: validate, do not erase.
         columns = {row[1] for row in db.execute('PRAGMA table_info(space_vps)')}
+        resources = {row[1] for row in db.execute('PRAGMA table_info(vps_connections)')}
         if not {'runner_device_id', 'connection_ref'} <= columns:
-            return None  # Not the known old VPS layout.
+            return None  # Not the known old Space-owned layout.
+        if not {'host', 'provider', 'region', 'system', 'notes'} <= resources:
+            return None  # Do not discard an unknown or partly rebuilt resource table.
+        if {'runner_device_id', 'host_alias', 'target_fingerprint', 'target_version'} & resources:
+            return None  # No automatic reset of a mixed old/new schema.
     return cutoff(directory, apply=True, _hub_lock_held=True, _automatic=True)
 
 def main():
