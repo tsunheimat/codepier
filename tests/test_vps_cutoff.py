@@ -7,6 +7,8 @@ import sqlite3
 
 import pytest
 
+from fastapi.testclient import TestClient
+from hub.app import create_app
 from hub.store import Store
 from hub.vps_cutoff import cutoff
 from hub.workspace_schema import VPS_SCHEMA_VERSION
@@ -52,12 +54,77 @@ def retired(tmp_path):
     return directory
 
 
-def test_startup_refuses_old_vps_schema_without_mutating_it(retired):
+def test_direct_store_requires_hub_managed_cutoff_for_old_vps(retired):
     before = (retired/'hub.sqlite3').read_bytes()
     with pytest.raises(RuntimeError, match='VPS_CUTOFF_REQUIRED'):
         Store(retired)
     assert (retired/'hub.sqlite3').read_bytes() == before
 
+
+
+def test_hub_startup_automatically_resets_only_old_vps_without_env_or_flags(retired):
+    """Actual Hub factory, not an explicit maintenance CLI or fake migration."""
+    key_before = (retired/'master.key').read_bytes()
+    project_file = retired.parent/'local-project.txt'
+    project_file.write_text('must survive')
+    assert not list(retired.glob('vps-cutoff-*.sqlite3'))
+    with TestClient(create_app(str(retired))) as client:
+        assert client.get('/healthz').status_code == 200
+        store = client.app.state.store
+        for table in ('vps_connections', 'space_vps', 'vps_projects'):
+            assert store.all('SELECT * FROM '+table) == []
+        assert len(store.all('SELECT * FROM projects')) == 2
+        assert len(store.all('SELECT * FROM devices')) == 3
+        assert len(store.all('SELECT * FROM storage_mappings')) == 3
+        assert [s['id'] for s in store.all('SELECT * FROM execution_sessions')] == ['local-session']
+        assert [r['request_key'] for r in store.all('SELECT * FROM workspace_requests')] == ['keep-request']
+        policy = json.loads(store.one('SELECT policy FROM access_profiles')['policy'])
+        assert policy['vps_rules'] == []
+        assert policy['project_rules'] == [{'projects':['project'], 'actions':['read']}]
+        assert store.one("SELECT value FROM meta WHERE key='vps_schema'")['value'] == VPS_SCHEMA_VERSION
+    backups = list(retired.glob('vps-cutoff-*.sqlite3'))
+    assert len(backups) == 1
+    assert (retired/'master.key').read_bytes() == key_before
+    assert project_file.read_text() == 'must survive'
+    with sqlite3.connect(backups[0]) as old:
+        assert old.execute('SELECT count(*) FROM vps_connections').fetchone()[0] == 1
+        assert old.execute('SELECT count(*) FROM space_vps').fetchone()[0] == 1
+        assert old.execute('SELECT count(*) FROM projects').fetchone()[0] == 2
+    # Restart on the same database does not repeat the reset or create backups.
+    with TestClient(create_app(str(retired))) as client:
+        assert client.get('/healthz').status_code == 200
+    assert list(retired.glob('vps-cutoff-*.sqlite3')) == backups
+
+
+@pytest.mark.parametrize('marker', ['workspace-1', '9'])
+def test_hub_never_automatically_resets_unrecognized_workspace_schema(retired, marker):
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        db.execute("UPDATE meta SET value=? WHERE key='schema'", (marker,))
+    with pytest.raises(RuntimeError, match='WORKSPACE_DATABASE_REQUIRED'):
+        create_app(str(retired))
+    assert not list(retired.glob('vps-cutoff-*.sqlite3'))
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        assert db.execute('SELECT count(*) FROM space_vps').fetchone()[0] == 1
+
+
+def test_hub_refuses_forged_new_vps_marker_without_auto_reset(retired):
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        db.execute("INSERT INTO meta VALUES('vps_schema',?)", (VPS_SCHEMA_VERSION,))
+    with pytest.raises(RuntimeError, match='VPS_CUTOFF_REQUIRED'):
+        create_app(str(retired))
+    assert not list(retired.glob('vps-cutoff-*.sqlite3'))
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        assert db.execute('SELECT count(*) FROM space_vps').fetchone()[0] == 1
+
+
+def test_hub_auto_cutoff_failure_rolls_back_and_stays_offline(retired):
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        db.execute("UPDATE access_profiles SET policy='broken'")
+    with pytest.raises(RuntimeError, match='Malformed stored JSON'):
+        create_app(str(retired))
+    with sqlite3.connect(retired/'hub.sqlite3') as db:
+        assert db.execute('SELECT count(*) FROM space_vps').fetchone()[0] == 1
+        assert db.execute("SELECT value FROM meta WHERE key='vps_schema'").fetchone() is None
 
 def test_preview_is_not_a_migration_or_deletion(retired):
     before = (retired/'hub.sqlite3').read_bytes()
