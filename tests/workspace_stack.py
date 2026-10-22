@@ -153,6 +153,30 @@ class WorkspaceStack:
             return (out.get('result') or {}).get('data') or out.get('result') or out
         return wait_for(result, timeout=25)
 
+    def runner_read(self, route, *, timeout=25):
+        """Wait only for a fresh settings/discovery observation after reconnect.
+
+        A successful GET may explicitly return stale cache (or no cached hosts).
+        Observe again only in that case. Failed HTTP requests, transport errors
+        and fresh-but-unexpected data remain failures for the caller; mutations
+        are never retried. Accepted reads retain their original operation ID.
+        """
+        if route not in {'settings', 'ssh-hosts'}:
+            raise ValueError('Only Runner settings and SSH discovery reads are supported')
+        end = time.monotonic() + timeout
+        last = 'unobserved'
+        while time.monotonic() < end:
+            for label, process in (('Hub', self.hub), ('Runner', self.agent)):
+                code = process.poll()
+                if code is not None:
+                    raise AssertionError(f'Fixture {label} exited with code {code}; inspect its preserved log')
+            value = self.finish(self.must(self.client.get('/api/devices/a/' + route)))
+            if not value.get('stale'):
+                return value
+            last = value.get('status', 'stale')
+            time.sleep(.1)
+        raise AssertionError(f'Fresh Runner {route} observation timed out after {timeout}s; last status: {last}')
+
     def execute(self, tool, **arguments):
         arguments.setdefault('idempotency_key', uuid.uuid4().hex)
         return self.finish(self.mcp(tool, arguments))

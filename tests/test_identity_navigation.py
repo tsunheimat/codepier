@@ -21,14 +21,20 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
     app, browsers, provider, row, _ = oidc
     context = chat_browser_pool(engine).new_context(viewport={'width': width, 'height': height})
     page = context.new_page()
-    errors, requests, responses = [], [], []
+    errors, requests, responses, failed_refreshes = [], [], [], []
     page.on('pageerror', lambda error: errors.append(str(error)))
+    page.on('requestfailed', lambda request: failed_refreshes.append(request.failure)
+            if urlsplit(request.url).path == '/api/iam/oidc/providers' else None)
     page.add_init_script('''window.EventSource = class extends EventTarget {
       constructor(url) { super(); this.url=url; this.readyState=1; }
       close() { this.readyState=2; }
     };''')
 
     client_lock = threading.Lock()
+    hold_refresh = threading.Event()
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    refresh_expired = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
@@ -41,6 +47,12 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
             # Serialize the adapter's cookie jar; only real browser Cookie
             # headers select the user. Every API/static response is from Hub.
             with client_lock:
+                # One real post-reconcile response is held after its headers.
+                # The body and authorization still come from the production Hub.
+                gated = (self.command == 'GET' and path == '/api/iam/oidc/providers'
+                         and hold_refresh.is_set())
+                if gated:
+                    hold_refresh.clear()
                 client = browsers['owner'].client
                 client.cookies.clear()
                 response = client.request(self.command, origin + self.path,
@@ -52,6 +64,11 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
                     self.send_header(name, value)
             self.send_header('Content-Length', str(len(response.content)))
             self.end_headers()
+            if gated:
+                self.wfile.flush()
+                refresh_started.set()
+                if not release_refresh.wait(10):
+                    refresh_expired.set()
             try: self.wfile.write(response.content)
             except (BrokenPipeError, ConnectionResetError): pass
 
@@ -160,6 +177,7 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
             # The old result must not open an administrative dialog in My Account.
             page.evaluate('''() => {
               const fetchHTTP = window.fetch.bind(window);
+              window.restoreIdentityCheckFetch = () => { window.fetch = fetchHTTP; };
               window.fetch = async (...args) => {
                 const response = await fetchHTTP(...args);
                 if (new URL(response.url).pathname.endsWith('/check'))
@@ -174,7 +192,11 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
             page.wait_for_function('() => typeof releaseIdentityCheck === "function"')
             navigate('identity')
             expect(page.locator('[data-identity-tab=account]')).to_have_attribute('aria-pressed', 'true')
-            page.evaluate('async () => { releaseIdentityCheck(); await identityCheckFinished; }')
+            page.evaluate('''async () => {
+              releaseIdentityCheck();
+              await identityCheckFinished;
+              restoreIdentityCheckFetch();
+            }''')
             expect(page.locator('.modal')).to_have_count(0)
             navigate('identity/sso')
             expect(page.locator('[data-identity-tab=sso]')).to_have_attribute('aria-pressed', 'true')
@@ -189,14 +211,38 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
             expect(page.locator('.toast').filter(has_text='已保存')).to_be_visible()
             expect(page).to_have_url(origin + '/#identity/sso')
             assert app.state.store.one('SELECT group_name,space_id FROM group_mappings') == {'group_name': 'developers', 'space_id': 'team'}
+            # The sync toast acknowledges the mutation, not the following list
+            # refresh. Observe the original click promise (never invoke it twice)
+            # before a full-document navigation can cancel that pending GET.
+            page.evaluate('''() => {
+              const button = document.querySelector('[data-iam=sync]');
+              const click = button.onclick;
+              window.identitySyncSettled = false;
+              button.onclick = (...args) => (window.identitySyncFinished =
+                click(...args).finally(() => { window.identitySyncSettled = true; }));
+            }''')
             before_sync=requests.count(('POST','/api/iam/oidc/reconcile'))
-            with page.expect_response('**/api/iam/oidc/reconcile') as sync:
-                page.locator('[data-iam=sync]').click()
+            hold_refresh.set()
+            with page.expect_response(origin + '/api/iam/oidc/providers') as refreshed:
+                with page.expect_response('**/api/iam/oidc/reconcile') as sync:
+                    page.locator('[data-iam=sync]').click()
             assert sync.value.status==200
             expect(page.locator('.toast').filter(has_text='权限同步已完成')).to_be_visible()
+            assert refresh_started.wait(5), 'Refresh headers were not delivered'
+            assert refreshed.value.status == 200
+            # Headers and a success toast are deliberately available while the
+            # response body is still held. Neither is sufficient readiness.
+            assert not page.evaluate('identitySyncSettled')
+            release_refresh.set()
+            page.evaluate('() => identitySyncFinished')
+            refreshed.value.finished()
+            assert not refresh_expired.is_set(), 'Refresh gate expired before explicit release'
+            assert refreshed.value.request.failure is None
             assert requests.count(('POST','/api/iam/oidc/reconcile'))==before_sync+1
+            expect(page.locator('[data-iam-provider]')).to_be_visible()
             page.goto(origin + '/#identity/sso')
             expect(page.locator('[data-identity-tab=sso]')).to_have_attribute('aria-pressed', 'true')
+            expect(page.locator('[data-iam-provider]')).to_be_visible()
             expect(page).to_have_url(origin + '/#identity/sso')
 
         navigate('identity')
@@ -225,10 +271,12 @@ def test_account_tabs_direct_access_and_sso_actions(oidc, chat_browser_pool, tmp
         session_rows = page.evaluate("async () => (await api('/api/iam/sessions')).sessions")
         assert all(app.state.store.one('SELECT user_id FROM sessions WHERE id_hash=?', (s['id'],))['user_id'] == user for s in session_rows)
         assert not errors, errors
+        assert not failed_refreshes, failed_refreshes
         (tmp_path / 'requests.json').write_text(json.dumps(requests, indent=2))
     except Exception:
         (tmp_path / 'failure-http.json').write_text(json.dumps(responses, indent=2))
         raise
     finally:
+        release_refresh.set()
         context.close()
         server.shutdown(); server.server_close(); thread.join(timeout=5)
