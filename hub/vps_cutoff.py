@@ -1,20 +1,20 @@
-"""Offline, destructive VPS-only cutoff. There is no runtime legacy adapter.
+"""Destructive VPS-only schema cutoff; no runtime legacy adapter.
 
-Stop the Hub and explicitly resolve/stop old remote processes first. The tool
-backs up SQLite, deletes old VPS registrations/bindings/receipts and their scoped
-authorizations, then creates empty resource-owned VPS tables. It never connects
-to a Runner or SSH server, deletes remote files, rotates keys, or migrates a VPS.
+On Hub startup, the one-instance lock allows an automatic, backed-up reset of
+recognizable old VPS tables. The offline CLI still supports preview/confirmation.
+Neither path stops remote processes, changes SSH credentials or migrates a VPS.
 """
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
 import sqlite3
 import time
 
-from hub.workspace_schema import SCHEMA, SCHEMA_VERSION, VPS_SCHEMA_VERSION
+from hub.workspace_schema import SCHEMA, SCHEMA_VERSION, VPS_SCHEMA_VERSION, RETIRED_TABLES, RETIRED_COLUMNS
 from shared.instance_lock import InstanceLock
 
 
@@ -53,7 +53,7 @@ def remove_vps_policy(value):
     return value
 
 
-def cutoff(directory, *, apply=False, confirmed_stopped=False):
+def cutoff(directory, *, apply=False, confirmed_stopped=False, _hub_lock_held=False, _automatic=False):
     directory = Path(directory).expanduser().resolve(strict=True)
     path = directory / 'hub.sqlite3'
     if path.is_symlink() or not path.is_file():
@@ -61,7 +61,10 @@ def cutoff(directory, *, apply=False, confirmed_stopped=False):
     lock_path = directory / '.hub.lock'
     if lock_path.is_symlink():
         raise RuntimeError('Hub instance lock must not be a symbolic link')
-    with InstanceLock(lock_path), sqlite3.connect(path, timeout=5) as db:
+    # The Hub owns .hub.lock before calling this at startup. The offline CLI
+    # acquires the same lock itself. Never attempt to lock the same file twice.
+    lock = nullcontext() if _hub_lock_held else InstanceLock(lock_path)
+    with lock, sqlite3.connect(path, timeout=5) as db:
         db.row_factory = sqlite3.Row
         marker = db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
         if not marker or marker[0] != SCHEMA_VERSION:
@@ -93,7 +96,7 @@ def cutoff(directory, *, apply=False, confirmed_stopped=False):
                   'project_files_deleted': False, 'schema': VPS_SCHEMA_VERSION}
         if not apply:
             return {**result, 'status': 'preview', 'confirmation_required': True}
-        if not confirmed_stopped:
+        if not (confirmed_stopped or _automatic):
             raise RuntimeError('Explicit confirmation that old VPS processes have been resolved/stopped is required')
         # sqlite3.backup produces a consistent snapshot including WAL pages.
         backup = directory / ('vps-cutoff-' + time.strftime('%Y%m%d-%H%M%S') + '-' + str(time.time_ns()) + '.sqlite3')
@@ -154,6 +157,48 @@ def cutoff(directory, *, apply=False, confirmed_stopped=False):
         return {**result, 'changed': True, 'status': 'cutoff_complete', 'backup': str(backup),
                 'note': 'Use the original matching master.key with the backup. Re-register VPS resources; no old target is converted.'}
 
+
+
+def automatic_cutoff(directory):
+    """Hard-reset only the *known old* VPS layout while Hub owns .hub.lock.
+
+    Fresh DBs, non-workspace-2 DBs and the current model are left to normal
+    initialization. An unknown/mixed/future layout is never guessed or erased.
+    A valid workspace-2 database with the old Space-owned VPS layout gets a
+    private SQLite backup followed by the same transactional cleanup as the
+    offline cutoff. No opt-in environment variable or manual confirmation.
+    """
+    directory = Path(directory).expanduser().resolve()
+    path = directory / 'hub.sqlite3'
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError('Hub database must be an existing, non-symlink file')
+    with sqlite3.connect(path, timeout=5) as db:
+        tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        if 'meta' not in tables:
+            return None  # The normal workspace-model check will reject it.
+        marker = db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+        if not marker or marker[0] != SCHEMA_VERSION:
+            return None  # Never modify another workspace schema.
+        if tables & RETIRED_TABLES:
+            return None
+        for table, retired in RETIRED_COLUMNS.items():
+            if table in tables and retired & {row[1] for row in db.execute(f'PRAGMA table_info({table})')}:
+                return None
+        vps_marker = db.execute("SELECT value FROM meta WHERE key='vps_schema'").fetchone()
+        if vps_marker:
+            return None  # Current version or unknown/mixed version: validate, do not erase.
+        columns = {row[1] for row in db.execute('PRAGMA table_info(space_vps)')}
+        resources = {row[1] for row in db.execute('PRAGMA table_info(vps_connections)')}
+        if not {'runner_device_id', 'connection_ref'} <= columns:
+            return None  # Not the known old Space-owned layout.
+        if not {'host', 'provider', 'region', 'system', 'notes'} <= resources:
+            return None  # Do not discard an unknown or partly rebuilt resource table.
+        if {'runner_device_id', 'host_alias', 'target_fingerprint', 'target_version'} & resources:
+            return None  # No automatic reset of a mixed old/new schema.
+    return cutoff(directory, apply=True, _hub_lock_held=True, _automatic=True)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

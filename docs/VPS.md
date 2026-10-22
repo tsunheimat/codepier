@@ -62,29 +62,29 @@ session; original status/read/cleanup operations do not recreate it.
 ## VPS-only hard cutoff (no legacy runtime)
 
 The resource-owned model is `vps_schema=resource-owned-1` within `workspace-2`.
-An existing workspace-2 database with old VPS tables fails startup with
-`VPS_CUTOFF_REQUIRED`. Startup does not delete or modify that database, and no
-runtime migration or old-field adapter exists. Earlier workspace schemas still
-require their separate workspace cutoff; this command is not a general migrator.
+On **Hub startup**, if the existing workspace-2 database has the recognized old
+Space-owned VPS layout with no VPS schema marker, CodePier **automatically cuts
+over**: it saves a private consistent SQLite backup, deletes old VPS resources,
+Space bindings, Project classifications, VPS sessions, VPS-linked operations and
+receipts, and old VPS permission/consent data, then creates empty resource-owned
+VPS tables and writes the new schema version. The change is idempotent on every
+subsequent restart and requires **no environment variable or manual CLI command**.
 
-Stop the Hub, resolve/stop old remote jobs and sessions explicitly, and preview:
+Unrecognized/future/mixed VPS layouts, or old workspace schemas other than
+`workspace-2`, still fail closed without deletion. The automatic reset does not
+connect to remote hosts or stop their processes. Old remote jobs may remain
+running independently: inspect and stop them on the Runner/host as needed. They
+will not be reattached to a newly registered VPS or silently replayed.
+
+For optional **offline preview before deploying**, stop the existing Hub first:
 
 ```sh
 python -m hub.vps_cutoff --data-dir /path/to/hub-data
 ```
 
-After reviewing counts and confirming the remote-process state, apply:
-
-```sh
-python -m hub.vps_cutoff --data-dir /path/to/hub-data \
-  --drop-vps --confirm-remote-processes-stopped
-```
-
-The command acquires the normal Hub instance lock, refuses a running Hub, creates
-a private consistent SQLite backup, and resets VPS resources, Space bindings,
-Project classifications, VPS sessions, associated operation receipts and old VPS
-policy/consent entries. It creates **empty new VPS tables**. It does not convert
-any target, keep old IDs usable, or reconstitute old grants.
+The standalone command also supports an explicit offline reset, but is no longer
+required for normal deployment. It retains its confirmation requirement and Hub
+lock to protect operators doing manual maintenance.
 
 Users, devices, projects, folders, storage mappings, unrelated operations/sessions,
 non-VPS policy rules, master key and actual project/remote files remain intact.
