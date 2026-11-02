@@ -169,7 +169,7 @@ def test_real_runner_settings_default_denial_owner_opt_in_cas_and_no_session_int
         # A display-only edit is independent of the Space's immutable target.
         resource = server.must(client.get('/api/vps'))['vps'][0]
         saved = server.must(client.put('/api/vps/'+resource['id'], json={
-            'name':resource['name'], 'runner_device_id':'a','host_alias':'fixture','description':'verified metadata flow',
+            'name':resource['name'], 'description':'verified metadata flow',
             'expected_version':resource['version'],'idempotency_key':uuid.uuid4().hex}))
         assert saved['description']=='verified metadata flow'
 

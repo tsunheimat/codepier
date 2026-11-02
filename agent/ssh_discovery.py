@@ -133,8 +133,8 @@ def scan_files(config_file=None, *, home=None, system=None):
             'config_fingerprint': fingerprint, 'files_scanned': len(visited), 'bytes_scanned': total}
 
 
-def target_identity(target):
-    inventory = scan_files(target.get('config_file'))
+def target_identity(target, inventory=None):
+    inventory = inventory if inventory is not None else scan_files(target.get('config_file'))
     if not inventory['complete']:
         raise DevError('SSH_CONFIG_INCOMPLETE', 'SSH configuration cannot be completely fingerprinted without executing dynamic rules; use a bounded static Include configuration', 409)
     # This fingerprints every static Include, not just the top-level file.
@@ -142,7 +142,7 @@ def target_identity(target):
                                     sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-def approved_alias(config, host_alias):
+def approved_alias(config, host_alias, *, inventories=None):
     if not ALIAS.fullmatch(host_alias):
         raise DevError('SSH_ALIAS_INVALID', 'Choose one literal SSH alias')
     matches = [(ref, target) for ref, target in config.get('ssh', {}).get('targets', {}).items()
@@ -154,18 +154,22 @@ def approved_alias(config, host_alias):
     reference, target = matches[0]
     if target.get('config_file') and not Path(target['config_file']).expanduser().is_file():
         raise DevError('SSH_CONFIG_UNAVAILABLE', 'The approved custom SSH configuration is unavailable on the Runner', 409)
-    return {'connection_ref': reference, 'host_alias': host_alias, 'target_fingerprint': target_identity(target)}
+    return {'connection_ref': reference, 'host_alias': host_alias, 'target_fingerprint': target_identity(target, inventories.get(target.get('config_file')) if inventories is not None else None)}
 
 
 def discover(config):
+    ssh = config.get('ssh', {})
+    revision = hashlib.sha256(json.dumps(ssh, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    envelope = {'inventory_protocol': 1, 'configuration_revision': revision}
     if config.get('builtin_root_policy'):
-        return {'hosts': [], 'warnings': ['builtin_roots_only'], 'ssh_enabled': False, 'tested': False}
+        return {**envelope, 'hosts': [], 'warnings': ['builtin_roots_only'], 'ssh_enabled': False, 'tested': False}
     ssh = config.get('ssh', {})
     files = [None, *ssh.get('config_files', [])]
     files.extend(t.get('config_file') for t in ssh.get('targets', {}).values())
-    hosts, warnings = {}, set()
+    hosts, warnings, inventories = {}, set(), {}
     for file in dict.fromkeys(files):
         scan = scan_files(file)
+        inventories[file] = scan
         warnings.update(scan['warnings'])
         for alias in scan['aliases']:
             item = hosts.setdefault(alias, {'host_alias': alias, 'discovered': True, 'owner_approved': False,
@@ -175,9 +179,12 @@ def discover(config):
         alias = target['host_alias']
         item = hosts.setdefault(alias, {'host_alias': alias, 'discovered': False, 'tested': False})
         try:
-            item.update(approved_alias(config, alias), owner_approved=True,
+            item.update(approved_alias(config, alias, inventories=inventories), owner_approved=True,
                         status='configured' if ssh.get('enabled') else 'disabled')
         except DevError as exc:
             item.update(owner_approved=False, status='unavailable', error=exc.code)
-    return {'hosts': sorted(hosts.values(), key=lambda item: item['host_alias']),
+    approved_names = {target['host_alias'] for target in ssh.get('targets', {}).values()}
+    selected = [item for item in hosts.values() if item['host_alias'] in approved_names]
+    selected += sorted((item for item in hosts.values() if item['host_alias'] not in approved_names), key=lambda item: item['host_alias'])[:500]
+    return {**envelope, 'hosts': sorted(selected, key=lambda item: item['host_alias']),
             'warnings': sorted(warnings), 'ssh_enabled': ssh.get('enabled') is True, 'tested': False}

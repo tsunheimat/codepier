@@ -25,15 +25,16 @@ def open_inventory(context, server, width=1440):
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_inventory_create_edit_escapes_text_and_fits_viewport(workspace_server, workspace_browser, width):
+def test_auto_inventory_metadata_edit_escapes_text_and_fits_viewport(workspace_server, workspace_browser, width):
     server, (context, errors) = workspace_server, workspace_browser
     page = open_inventory(context, server, width)
-    page.locator('[data-ws-action="inventory-new"]').click()
+    expect(page.locator('[data-ws-action="inventory-new"]')).to_have_count(0)
+    resource=next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['host_alias']=='fixture-extra')
+    page.locator('[data-ws-action="inventory-edit"][data-id="'+resource['id']+'"]').click()
     form = page.locator('#workspace-form')
     name = '<img src=x onerror=window.injected=true>'
     form.locator('[name="name"]').fill(name)
-    form.locator('[name="runner_device_id"]').select_option('a')
-    form.locator('[name="host_alias"]').fill('fixture-extra')
+    expect(form.locator('[name="runner_device_id"],[name="host_alias"]')).to_have_count(0)
     form.locator('[name="description"]').fill('Display metadata only')
     expect(form.locator('[name="password"], [name="private_key"]')).to_have_count(0)
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
@@ -59,7 +60,6 @@ def test_inventory_stale_save_keeps_draft_and_does_not_overwrite(workspace_serve
     page.locator('[data-ws-action="inventory-edit"][data-id="'+original['id']+'"]').click()
     form = page.locator('#workspace-form')
     form.locator('[name="description"]').fill('Local unsaved draft')
-    server.finish(server.must(server.client.get('/api/devices/a/ssh-hosts')))
     server.must(server.client.put('/api/vps/'+original['id'], json=input_body(
         name=original['name'], description='Saved by another view', expected_version=original['version'])))
     with page.expect_response(lambda response: response.request.method == 'PUT' and
@@ -77,15 +77,14 @@ def test_inventory_stale_save_keeps_draft_and_does_not_overwrite(workspace_serve
 def test_workspace_binding_identity_and_project_display_are_explicit(workspace_server, workspace_browser):
     server, (context, errors) = workspace_server, workspace_browser
     page = open_workspace(context, server, 'spaces/alice/vps')
-    page.locator('[data-ws-action="vps"][data-id="'+'a'*32+'"]').click()
-    form = page.locator('#workspace-form')
+    form = page.locator('[data-selection-row="server"]')
     expect(form.locator('[name="resource_id"], [name="runner_device_id"], [name="connection_ref"]')).to_have_count(0)
-    expect(form.locator('[data-vps-projects]')).to_be_hidden()
-    form.locator('[name="display_mode"]').select_option('both')
-    expect(form.locator('[data-vps-projects]')).to_be_visible()
-    form.locator('[name="projects"][value="project"]').check()
-    page.get_by_role('button', name='保存', exact=True).click()
-    expect(form).to_have_count(0, timeout=15000)
+    expect(form.locator('[data-selection-projects]')).to_be_hidden()
+    form.locator('[data-selection-mode]').select_option('both')
+    expect(form.locator('[data-selection-projects]')).to_be_visible()
+    form.locator('[data-selection-project][value="project"]').check()
+    page.locator('[data-selection-save]').click()
+    expect(page.locator('[data-selection-status]')).to_have_text('没有未保存的修改',timeout=15000)
     top = server.mcp('vps')['vps']
     scoped = server.mcp('vps', {'project': 'codepier'})['vps']
     assert top[0]['target'] == scoped[0]['target'] == 'vps:'+'a'*32

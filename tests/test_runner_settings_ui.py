@@ -57,25 +57,21 @@ def test_ssh_discovery_shows_owner_approval_without_testing_connection(workspace
     assert errors==[]
 
 
-def test_space_add_selects_resource_before_presentation_only_editor(workspace_server,workspace_browser):
-    import uuid
+def test_space_selects_parent_vps_inline_without_discovery_or_per_row_dialog(workspace_server,workspace_browser):
     server,(context,errors)=workspace_server,workspace_browser
-    server.finish(server.must(server.client.get('/api/devices/a/ssh-hosts')))
-    resource=server.must(server.client.post('/api/vps',json={'name':'Second host','runner_device_id':'a',
-        'host_alias':'fixture-extra','description':'A resource-owned target','idempotency_key':uuid.uuid4().hex}))
-    page=context.new_page();page.goto(server.url+'/#spaces/alice/vps')
-    page.locator('[data-ws-action="new-vps"]').click()
-    expect(page.locator('[data-vps-choices]')).to_be_visible()
+    resource=next(r for r in server.must(server.client.get('/api/vps'))['vps'] if r['host_alias']=='fixture-extra')
+    page=context.new_page();scans=[]
+    page.on('request',lambda r:scans.append(r.url) if '/ssh-hosts' in r.url else None)
+    page.goto(server.url+'/#spaces/alice/vps')
+    row=page.locator('[data-selection-row="'+resource['id']+'"]')
+    expect(row).to_be_visible()
     expect(page.locator('#workspace-form')).to_have_count(0)
-    page.locator('[data-vps-resource="'+resource['id']+'"]').click()
-    form=page.locator('#workspace-form')
-    expect(form).to_be_visible()
-    expect(form.locator('[name="runner_device_id"], [name="connection_ref"], [name="resource_id"], [name="host_alias"]')).to_have_count(0)
-    form.locator('[name="name"]').fill('Space presentation')
-    form.locator('[name="description"]').fill('Space-only note')
-    page.get_by_role('button',name='保存',exact=True).click()
-    expect(form).to_have_count(0,timeout=15000)
-    result=server.must(server.client.get('/api/spaces/alice/vps'))['vps']
-    binding=next(item for item in result if item['resource_id']==resource['id'])
+    row.locator('[data-selection-check]').check()
+    row.locator('[data-selection-alias]').fill('Space presentation')
+    row.locator('[data-selection-description]').fill('Space-only note')
+    expect(row.locator('[name="runner_device_id"],[name="connection_ref"],[name="host_alias"]')).to_have_count(0)
+    page.locator('[data-selection-save]').click()
+    expect(page.locator('[data-selection-status]')).to_have_text('没有未保存的修改',timeout=15000)
+    binding=next(r for r in server.must(server.client.get('/api/spaces/alice/vps'))['vps'] if r['resource_id']==resource['id'])
     assert binding['name']=='Space presentation' and binding['description']=='Space-only note'
-    assert errors==[]
+    assert not scans and errors==[]

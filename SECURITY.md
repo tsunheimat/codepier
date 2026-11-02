@@ -1,6 +1,6 @@
 # Security policy
 
-当前发布分支为 **2.0.x**。The 2.0.0 workspace refactor is currently development
+当前发布分支为 **2.1.x**。The 2.0.0 workspace refactor is currently development
 source, not a published/supported production release. Report security issues
 privately to the repository maintainer; do not include credentials in public issues.
 

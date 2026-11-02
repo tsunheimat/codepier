@@ -305,13 +305,14 @@ def test_vps_display_form_and_mcp_share_one_resource(workspace_server, workspace
     server = workspace_server
     context, errors = workspace_browser
     page = open_workspace(context, server, 'spaces/alice/vps')
-    page.locator('[data-ws-action="vps"][data-id="'+'a'*32+'"]').click()
-    form = page.locator('#workspace-form')
-    form.locator('[name="display_mode"]').select_option(mode)
+    form = page.locator('[data-selection-row="server"]')
+    form.locator('[data-selection-alias]').fill('Updated display')
+    form.locator('[data-selection-mode]').select_option(mode)
     if mode != 'top_level':
-        form.locator('[name="projects"][value="project"]').check()
-    page.get_by_role('button', name='保存', exact=True).click()
-    expect(form).to_have_count(0, timeout=15000)
+        form.locator('[data-selection-project][value="project"]').check()
+    page.locator('[data-selection-save]').click()
+    expect(page.locator('[data-selection-save]')).to_be_disabled(timeout=15000)
+    expect(page.locator('[data-selection-status]')).to_have_text('没有未保存的修改')
     top = server.mcp('vps')['vps']
     scoped = server.mcp('vps', {'project': 'codepier'})['vps']
     assert bool(top) == (mode in {'top_level', 'both'})
@@ -365,6 +366,7 @@ def test_profile_manager_cannot_use_ui_to_expand_all_project_authority(workspace
     form=page.locator('#workspace-form')
     expect(page.get_by_role('button',name='保存',exact=True)).to_be_enabled()
     expect(form.locator('[name="all_projects"]')).to_be_disabled()
+    expect(form.locator('[name="all_vps"]')).to_be_disabled()
     form.locator('[name="label"]').fill('Scoped profile manager')
     form.locator('[data-policy-kind="projects"][data-resource="project"][value="read"]').check()
     with page.expect_response(lambda r:r.request.method=='POST' and r.url.endswith('/api/spaces/alice/profiles')) as response:

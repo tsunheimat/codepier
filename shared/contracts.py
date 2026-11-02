@@ -125,8 +125,8 @@ class ShellExec(Project):
         return self
 
 class VPSList(Args):
-    project: str = Field(default='', max_length=100, description='Optional authorized project alias/ID; empty searches all projects visible to this caller.')
-    query: str = Field(default='', max_length=253, description='Filter by VPS name, IP/hostname, provider or region. Never returns credentials.')
+    project: str = Field(default='', max_length=100, description='Optional authorized project alias/ID for display grouping; empty lists top-level workspace VPS resources.')
+    query: str = Field(default='', max_length=253, description='Filter persisted VPS resources by display name, SSH alias or description. No SSH scan or credentials.')
     offset: int = Field(default=0, ge=0, le=100000)
     limit: int = Field(default=50, ge=1, le=200)
 

@@ -1327,6 +1327,8 @@ class Runtime:
         with self.store.lock, self.store.db:
             self.store.execute("UPDATE devices SET info=?,last_seen=? WHERE id=?", (json.dumps(info, ensure_ascii=False), time.time(), device_id))
             self.store.execute("UPDATE operations SET next_attempt=0 WHERE device_id=? AND state IN ('queued','running','reconnecting','cancelling')", (device_id,))
+            from hub.vps_inventory import observe
+            observe(self, device_id, getattr(connection, "ssh_inventory", None))
             self.store.audit("device:" + device["name"], "device.connected", device_id)
             self.publish("device", {"id": device_id, "online": True})
             self.wake_delivery()
@@ -1392,6 +1394,12 @@ class Runtime:
             info["native_protocol"] = connection.native_protocol
             info["native_chat_protocol"] = connection.native_chat_protocol
             info["tool_protocol"] = connection.tool_protocol.public(catalog_digest())
+            connection.ssh_inventory = hello.get("ssh_inventory")
+            if connection.ssh_inventory is not None:
+                from hub.vps_inventory import validate_inventory
+                validate_inventory(connection.ssh_inventory)
+            info["ssh_inventory_revision"] = (connection.ssh_inventory or {}).get("configuration_revision")
+            info["ssh_inventory_seen_at"] = time.time()
             build = hello.get("build")
             if isinstance(build, dict) and len(json.dumps(build)) <= 12000:
                 info["build"] = build

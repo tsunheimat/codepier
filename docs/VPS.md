@@ -1,110 +1,135 @@
-# Resource-owned VPS and saved OpenSSH targets
+# Runner-derived VPS resources — 2.1 cutoff
 
-A VPS resource owns one canonical **Runner + SSH Alias** target. A Space imports
-that resource and supplies presentation only; it never stores a second Runner or
-connection reference. Whole-VPS execution needs no fictitious local Project or
-folder. Optional Project associations classify the same complete VPS, not a
-Project-directory sandbox.
+The resource chain is **Runner SSH approval → VPS Resource → Space selection →
+member/Profile/Connection**. Only Devices manage SSH configuration and discovery.
+A Space consumes the persisted VPS inventory; it neither re-enters a Runner/SSH
+alias nor refreshes an SSH configuration already owned by its parent.
 
-## Create and use a VPS
+## Configure once, then select
 
-1. In the device's **Runner settings**, enable SSH and explicitly approve the
-   required literal alias. Credentials and OpenSSH configuration stay on that
-   Runner. Read [Runner settings](RUNNER_SETTINGS.md) for local owner approval.
-2. In **Resources → VPS**, enter only name, SSH Alias, connecting Runner, and an
-   optional description. The alias field supports typing and discovered options.
-   Refresh queries that selected Runner; only a recent, uniquely owner-approved
-   alias can be saved. Identity/version metadata are generated, not form fields.
-3. In a Space, choose the existing VPS card first, then set its display name,
-   display position, optional description, and optional Project categories.
+In **Resources → Devices → Full management → Runner settings**, enable SSH and
+approve the exact aliases the Runner may use. Existing SSH keys, `ssh-agent`,
+`known_hosts`, ProxyJump and OpenSSH configuration remain on that Runner. Remote
+settings writes still require the Runner owner's local opt-in; see
+[Runner settings](RUNNER_SETTINGS.md).
 
-Display positions are `top_level`, `project_only`, or `both`. They do not create
-additional connections or change the SSH target. Resource enable/disable and
-explicit connection testing are separate actions. Metadata comes from a real
-probe, never from a user-entered provider/region guess. Offline or stale discovery
-is labeled as such and cannot create a new authority.
+When a current Runner connects or reloads its configuration, its authenticated
+inventory report automatically creates one VPS Resource per approved alias. The
+initial resource name is the alias itself. Discovery alone does not authorize a
+host and does not create a resource for an unapproved candidate. Different
+Runners may use the same alias and produce separate resources.
 
-The Runner is a technical dependency of the saved resource. Importing or using a
-VPS does not require a separate Space Device allocation, nor does it grant local
-Runner/project access. Resource ownership, Space/profile VPS actions, fixed/live
-connection consent and Runner-local SSH approval remain separate controls.
+**Resources → VPS** shows these derived resources. Rename them, edit descriptions
+or disable them here; later reports preserve those choices. There is no manual
+VPS registration form or `POST /api/vps`. Technical identity cannot be edited here:
+change SSH configuration in Devices. To remove a derived resource permanently,
+first revoke its alias on the Runner and remove any workspace bindings. Disabling
+or removing a database resource never deletes remote files or stops remote jobs.
 
-## Target identity and execution
+## Workspace list editor
 
-Resources store an internal target reference, target fingerprint and monotonic
-target version. Fingerprints cover the approved settings and every statically
-included SSH config file. The public API and MCP list expose the alias and
-observed metadata, not credentials or a caller-selectable connection reference.
-Old Space-binding Runner/reference fields and old host/provider/region/system/
-notes resource inputs are rejected, not translated.
+Open **Space → VPS**. Each parent resource is one row with a selection checkbox,
+workspace display alias, optional description and display position. Positions are
+`top_level`, `project_only` or `both`; the latter two require Projects from this
+same Space. Filter rows, select several and **save once**. Project categories are
+presentation, not a remote-directory sandbox. The workspace alias is not the SSH
+Host alias and does not change the connection target.
 
-Local and SSH one-shot execution share `ProcessSupervisor`. Native OpenSSH
-handles authentication, keys, SSH Agent, ProxyJump, host-key checking and remote
-shell setup. Persistent-shell and PTY sessions have distinct original session
-IDs, immutable target envelopes, command/input receipts and recovery semantics.
-There is no password cache, sshpass transport or fallback to a different Runner.
-An old Runner lacking the resource-owned settings/transport capability cannot
-receive a new VPS target.
+**Space → Devices** uses the same inline selection pattern with a workspace alias.
+Device allocation remains independent of Folder/Storage Pool source mappings; it
+does not grant project-free local Shell access or change a Project's execution
+node. A VPS's Runner is a technical dependency, not a separate Device allocation
+that must be repeated in the Space.
 
-A queued operation cannot silently follow a changed resource, alias, Runner or
-SSH file. The Hub checks the saved resource identity and the Runner checks its
-current local target fingerprint before execution. Display-only edits preserve
-the identity. Retargeting increments its target version, including an ABA change
-back to the same alias; fixed-consent connections must be reviewed again.
+Batch saves are atomic, revision-checked and idempotent. Invalid rows roll back
+the complete save. A concurrent editor cannot overwrite a newer selection. An
+uncertain save is not automatically retried; reload the saved list to reconcile.
+Deselected bindings are disabled while original session/receipt identities remain
+available for authorized recovery. Explicit removal is still restricted when
+session records reference a binding.
 
-Existing accepted work is never replayed against a replacement target. Inspect
-the original operation/session receipt after timeout, disconnect or cancellation.
-Stopping a local SSH client is not proof that every remote effect stopped.
-Sessions do not recover cwd/environment by silently opening another shell after
-Runner restart. Changed local SSH configuration fences new input to an old
-session; original status/read/cleanup operations do not recreate it.
+## Selection means Shell permission
 
-## VPS-only hard cutoff (no legacy runtime)
+VPS policy has no separate `read` / `execute` actions. A rule is either:
 
-The resource-owned model is `vps_schema=resource-owned-1` within `workspace-2`.
-On **Hub startup**, if the existing workspace-2 database has the recognized old
-Space-owned VPS layout with no VPS schema marker, CodePier **automatically cuts
-over**: it saves a private consistent SQLite backup, deletes old VPS resources,
-Space bindings, Project classifications, VPS sessions, VPS-linked operations and
-receipts, and old VPS permission/consent data, then creates empty resource-owned
-VPS tables and writes the new schema version. The change is idempotent on every
-subsequent restart and requires **no environment variable or manual CLI command**.
-
-Unrecognized/future/mixed VPS layouts, or old workspace schemas other than
-`workspace-2`, still fail closed without deletion. The automatic reset does not
-connect to remote hosts or stop their processes. Old remote jobs may remain
-running independently: inspect and stop them on the Runner/host as needed. They
-will not be reattached to a newly registered VPS or silently replayed.
-
-For optional **offline preview before deploying**, stop the existing Hub first:
-
-```sh
-python -m hub.vps_cutoff --data-dir /path/to/hub-data
+```json
+{"vps": ["workspace-vps-id"]}
 ```
 
-The standalone command also supports an explicit offline reset, but is no longer
-required for normal deployment. It retains its confirmation requirement and Hub
-lock to protect operators doing manual maintenance.
+or the explicit future-resource choice:
 
-Users, devices, projects, folders, storage mappings, unrelated operations/sessions,
-non-VPS policy rules, master key and actual project/remote files remain intact.
-The tool neither connects to SSH nor claims to stop remote processes. The backup
-is an operator recovery artifact, not a legacy execution mode; retain its matching
-`master.key` and protect both. To roll back a failed deployment, stop the Hub and
-restore the complete original backup with the matching old application version,
-not individual old VPS rows into the new schema.
+```json
+{"all_vps": true}
+```
 
-Upgrade Runners, restart the Hub on the new model, then register reviewed VPS
-resources again and import them into Spaces. Re-create only the intended VPS
-permissions/consent. Old operation/session IDs are not valid targets to replay.
+The Profile editor offers **全部当前及未来 VPS（仅此工作空间）**. It saves a selector,
+not a list of today's IDs. When all applicable policy ceilings select all VPS,
+future VPS assigned to that Space are available through the same Connection.
+Explicitly selected VPS still remain a finite set. Empty selection grants none.
 
-## Acceptance
+This all/future VPS choice is explicitly preserved even in a fixed Connection;
+it is not permission for future Projects or arbitrary Profile changes. Finite
+fixed selections retain original target fingerprints. Every operation still
+intersects current member rights, current Profile and the Connection's consent,
+and checks the Space, parent resource, Runner identity and local SSH approval.
+A Profile cannot reach another Space, authorize an unapproved host, enable SSH,
+or bypass a disabled resource. Only workspace administrators may author future
+resource selectors; delegated Profile managers cannot expand their member rights.
 
-`python scripts/check_openssh_execution.py --output <fresh-report.json>` exercises
-a disposable loopback OpenSSH lab: direct keys, SSH Agent, ProxyJump, one-shot
-receipts, persistent cwd/environment, PTY input/resize, timeout/disconnect and
-cancellation without replay. Its fixtures do not certify a production VPS fleet.
-The application test suite additionally covers owner authorization, revision
-conflicts, discovery safety, cutoff preservation, resource identity changes and
-real Chromium/WebKit forms. Native Windows/macOS behavior requires those CI jobs;
-Linux test results alone do not claim native-platform verification.
+MCP discovery exposes `shell_access`, `can_execute`, and parent status, not the
+retired VPS action list. `target="vps:<space-vps-id>"`, one-shot `exec`, persistent
+Shell and PTY retain their original targets and no-replay semantics.
+
+## Parent status, not lower-layer scanning
+
+Resources and Spaces show the recorded upstream status: configured, disabled,
+withdrawn, unavailable/unverified, or Runner offline. An offline resource can be
+selected without pretending it is connected. Merely opening a Space, saving a
+selection, renaming a resource or re-enabling a resource does not invoke SSH
+scan/probe. The old five-minute discovery gate is removed from those actions.
+
+Use **Devices → Runner settings → SSH Host discovery / explicit Test connection**
+to inspect or refresh the actual SSH configuration. Static discovery never runs
+`Match exec`, ProxyCommand, DNS or a connection. An explicit test invokes native
+OpenSSH and records bounded metadata and diagnostics. Space/Resource views inherit
+that observation; they do not rerun it. `configured` means configuration is
+available, not proof of connectivity; a successful test remains a timestamped
+observation, not a continuous health guarantee.
+
+A revoked alias becomes withdrawn rather than silently disappearing or changing
+IDs. SSH configuration/target changes advance the target identity and fence old
+queued or session input. Original status/output/cleanup requests do not recreate
+or replay work. Stopping a local SSH client does not prove remote effects stopped.
+
+## Automatic startup data cutoff
+
+Current marker: `vps_schema=runner-inventory-2` inside `workspace-2`.
+**No new environment variable or operator migration command is required.**
+
+For the known `resource-owned-1` layout, startup converts stored data in one
+transaction: it adds upstream observations and Device aliases, removes VPS action
+classifications, and preserves resource IDs, custom names, Space bindings and
+non-VPS data. Former VPS rules that included `execute` become whole-VPS selections.
+Former read-only VPS rules are dropped, never silently elevated to Shell. Review
+and explicitly select those VPS again when Shell access is intended.
+
+For unchanged Profiles that explicitly selected all VPS and whose current active
+member policy also allows all VPS, the cutoff repairs the old accidentally
+expanded fixed snapshot into an all/future selector. A changed Profile, narrower
+member policy or explicitly finite selector does not acquire a wildcard. Original
+Connection identity remains unchanged. The first identical current Runner report
+marks an existing resource configured without inventing a new target version.
+
+The earlier known Space-owned VPS layout with no marker receives the existing
+backed-up, VPS-only destructive reset automatically. Its old VPS identities and
+related policy/receipts are discarded; current Runner reports then repopulate
+resources. Other workspace schemas and unknown/mixed/future versions are not
+guessed or erased. A malformed policy or failed foreign-key check rolls back the
+transaction instead of leaving a partially converted schema.
+
+Users, devices, projects, storage, unrelated operation/session records, the master
+key and actual local/remote files are preserved. No legacy API, policy adapter or
+runtime fallback is retained. Update both Hub and external Runners to this build;
+an old Runner without inventory reporting is shown as requiring an update, not
+silently trusted. Back up the complete database and matching key before deployment.
+Source commits and successful tests do not deploy or reset a production database.

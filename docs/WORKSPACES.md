@@ -1,10 +1,16 @@
 # Workspace abstraction — fresh-start model
 
-This build uses a fresh `workspace-2` database. It does not convert, open with
-fallbacks, or delete the former database. Use a separate empty `HUB_DATA_DIR` and
-initialize new connections. Do not deploy this schema over an existing Hub
-data volume. Working folders, NFS exports and VPS files are not database state and
-are never deleted by choosing a new database.
+> VPS model update (2.1): Runner-approved SSH aliases automatically create global
+> VPS resources. Spaces use inline VPS/Device selection lists; VPS permissions are
+> Shell selections with an explicit all/future selector. Known workspace-2 VPS
+> layouts are converted/reset automatically at startup; the pre-workspace model
+> is still refused. The current VPS rules and cutoff are defined in [VPS](VPS.md).
+
+The application model is `workspace-2`. Pre-workspace schemas require a separate
+empty `HUB_DATA_DIR`; they are not opened with fallbacks or deleted. Existing
+workspace-2 databases use the automatic VPS-only 2.1 cutoff in [VPS](VPS.md), not a
+whole-database reset. Working folders, NFS exports and VPS files are independent
+of database schema transitions and are not deleted by them.
 
 ## Hard cutoff, not backward compatibility
 

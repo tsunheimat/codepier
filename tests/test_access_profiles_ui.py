@@ -211,7 +211,7 @@ def test_complex_profile_stays_in_json_and_preserves_unrelated_rules(profiles_pa
             {'projects': [stack.project['id']], 'actions': ['read', 'write', 'execute']},
         ],
         'source_rules': [{'sources': [stack.folder['id']], 'actions': ['read', 'projects.create']}],
-        'vps_rules': [{'all_vps': True, 'actions': ['read']}],
+        'vps_rules': [{'all_vps': True}],
     }, label='Mixed policy '+uuid.uuid4().hex)
     page.reload()
     page.locator('[data-ws-action="profile"][data-id="'+original['id']+'"]').click()
@@ -404,7 +404,7 @@ def test_mixed_policy_remains_json_and_cannot_be_silently_flattened(profiles_pag
     profile=stack.create_profile({'project_rules':[
         {'all_projects':True,'actions':['read'],'excluded_projects':[stack.project['id']]},
         {'projects':[stack.project['id']],'actions':['read','execute']}],
-        'vps_rules':[{'all_vps':True,'actions':['read']}]})
+        'vps_rules':[{'all_vps':True}]})
     form=open_profile_editor(page,stack,profile)
     expect(form.locator('[name="raw_policy"]')).to_be_checked()
     expect(form.locator('[data-policy-pairs]')).to_be_hidden()

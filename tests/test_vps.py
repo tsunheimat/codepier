@@ -18,17 +18,17 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from hub.runtime import Runtime
-from hub.vps import VPSBindingSave, VPSInput
+from hub.vps import VPSBindingSave, VPSMetadataInput
 from shared.util import DevError
 from tests.test_workspace_http import web as base_web  # noqa: F401
-from tests.vps_fixtures import observed_runner
+from tests.vps_fixtures import observed_runner, materialized_resource
 from tests.workspace_fixtures import WorkspaceFixture
 from tests.workspace_stack import workspace_stack
 from tests.support import wait_for
 
 
 def input_body(**changes):
-    return {'name': '测试 VPS', 'runner_device_id': 'a', 'host_alias': 'fixture', 'idempotency_key': uuid.uuid4().hex, **changes}
+    return {'name': '测试 VPS', 'idempotency_key': uuid.uuid4().hex, **changes}
 
 
 def binding_body(resource_id, **changes):
@@ -41,10 +41,17 @@ def must(response):
     return response.json()
 
 
-def issue(client, binding, actions=('read', 'execute'), *, live=False):
+def choose_resource(client, **values):
+    alias=values.pop('host_alias','fixture');device=values.pop('runner_device_id','a')
+    resource=next(r for r in must(client.get('/api/vps'))['vps'] if r['host_alias']==alias and r['runner_device_id']==device)
+    values.setdefault('expected_version',resource['version'])
+    return must(client.put('/api/vps/'+resource['id'],json=values))
+
+
+def issue(client, binding, *, live=False, selected=True):
     profile = must(client.post('/api/spaces/alice/profiles', json={
         'label': 'VPS '+uuid.uuid4().hex, 'idempotency_key': uuid.uuid4().hex,
-        'policy': {'vps_rules': [{'vps': [binding['id']], 'actions': list(actions)}]}}))
+        'policy': {'vps_rules': [{'vps': [binding['id']]}] if selected else []}}))
     connection = must(client.post('/api/spaces/alice/connections', json={
         'name': 'Fixture', 'profile_id': profile['id'], 'profile_version': profile['version'],
         'consent_mode': 'live' if live else 'fixed', 'confirm_live_profile': live,
@@ -70,7 +77,7 @@ def inventory(tmp_path):
     fixture = WorkspaceFixture(tmp_path/'data')
     runtime, owner = Runtime(fixture.store), fixture.principal
     with observed_runner(runtime):
-        resource = runtime.vps.save(VPSInput(**input_body()), replace(owner, space_id=None))
+        resource = materialized_resource(runtime)
     binding = runtime.vps.bind(VPSBindingSave(**binding_body(resource['id'])), owner)
     try:
         yield runtime, owner, resource, binding
@@ -81,7 +88,7 @@ def inventory(tmp_path):
 @pytest.mark.parametrize('field', ['password', 'private_key', 'username', 'port', 'execution_project_id', 'project_ids'])
 def test_inventory_rejects_removed_credential_and_project_route_inputs(field):
     with pytest.raises(ValidationError):
-        VPSInput(**input_body(**{field: 'not-a-credential'}))
+        VPSMetadataInput(**input_body(**{field: 'not-a-credential'}))
 
 
 @pytest.mark.parametrize('mode,projects', [('project_only', []), ('both', []), ('top_level', ['project']), ('arbitrary', [])])
@@ -90,33 +97,38 @@ def test_visibility_has_exactly_three_unambiguous_modes(mode, projects):
         VPSBindingSave(**binding_body('server', display_mode=mode, projects=projects))
 
 
-def test_http_inventory_idempotency_versions_csrf_and_bound_delete(web):
-    client, app = web
-    body = input_body()
-    first = must(client.post('/api/vps', json=body))
-    assert must(client.post('/api/vps', json=body))['id'] == first['id']
-    update = input_body(name='Edited', expected_version=first['version'])
-    saved = must(client.put('/api/vps/'+first['id'], json=update))
-    assert saved['version'] == first['version']+1
-    stale = client.put('/api/vps/'+first['id'], json=input_body(name='Stale', expected_version=first['version']))
-    assert stale.status_code == 409
-    assert client.post('/api/vps', json=input_body(), headers={'X-RD-CSRF': 'wrong'}).status_code == 403
-    assert client.post('/api/vps', json=input_body(), headers={'Origin': 'https://evil.invalid'}).status_code == 403
-    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
-    assert client.delete('/api/vps/'+first['id'], params={'expected_version': saved['version']}).status_code == 409
-    removed = must(client.delete('/api/spaces/alice/vps/'+binding['id'], params={'expected_version': binding['version']}))
-    assert removed['remote_server_deleted'] is False and removed['remote_processes_stopped'] is False
-    assert app.state.store.one('SELECT id FROM vps_connections WHERE id=?', (first['id'],))
-    assert must(client.delete('/api/vps/'+first['id'], params={'expected_version': saved['version']}))['remote_server_deleted'] is False
+def test_http_metadata_idempotency_versions_csrf_and_source_managed_delete(web):
+    client,app=web
+    first=materialized_resource(app.state.runtime)
+    update=input_body(name='Edited',expected_version=first['version'])
+    saved=must(client.put('/api/vps/'+first['id'],json=update))
+    assert must(client.put('/api/vps/'+first['id'],json=update))==saved
+    assert saved['version']==first['version']+1
+    stale=client.put('/api/vps/'+first['id'],json=input_body(expected_version=first['version']))
+    assert stale.status_code==409
+    assert client.put('/api/vps/'+first['id'],json=update,headers={'X-RD-CSRF':'wrong'}).status_code==403
+    assert client.put('/api/vps/'+first['id'],json=update,headers={'Origin':'https://evil.invalid'}).status_code==403
+    assert client.post('/api/vps',json=input_body()).status_code==405
+    binding=must(client.post('/api/spaces/alice/vps',json=binding_body(first['id'])))
+    assert client.delete('/api/vps/'+first['id'],params={'expected_version':saved['version']}).status_code==409
+    removed=must(client.delete('/api/spaces/alice/vps/'+binding['id'],params={'expected_version':binding['version']}))
+    assert not removed['remote_server_deleted'] and not removed['remote_processes_stopped']
+    from hub.vps_inventory import reconcile
+    from tests.test_vps_inventory_model import report
+    reconcile(app.state.runtime,'a',report())
+    withdrawn=materialized_resource(app.state.runtime)
+    assert not must(client.delete('/api/vps/'+first['id'],params={'expected_version':withdrawn['version']}))['remote_server_deleted']
 
 
 def test_inactive_launcher_cross_workspace_project_and_duplicate_resource_rejected_atomically(web):
     client, app = web
-    resource = must(client.post('/api/vps', json=input_body()))
+    resource = choose_resource(client, **input_body())
     store = app.state.store
     store.execute("UPDATE devices SET enabled=0 WHERE id='c'")
-    response = client.post('/api/vps', json=input_body(runner_device_id='c'))
-    assert response.status_code == 409 and response.json()['error']['code'] == 'SOURCE_DEVICE_UNAVAILABLE'
+    from hub.vps_inventory import reconcile
+    from tests.test_vps_inventory_model import report
+    with pytest.raises(DevError) as failure:reconcile(app.state.runtime,'c',report('unused'))
+    assert failure.value.code=='SOURCE_DEVICE_UNAVAILABLE'
     for changes, status, code in [
         (dict(display_mode='both', projects=['project', 'missing']), 404, 'PROJECT_NOT_FOUND'),
     ]:
@@ -133,40 +145,35 @@ def test_inactive_launcher_cross_workspace_project_and_duplicate_resource_reject
 
 def test_binding_identity_cannot_be_retargeted_to_another_inventory_vps(web):
     client, _ = web
-    first = must(client.post('/api/vps', json=input_body()))
-    second = must(client.post('/api/vps', json=input_body(name='Another', host_alias='other')))
+    first = choose_resource(client, **input_body())
+    second = choose_resource(client, **input_body(name='Another', host_alias='other'))
     binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
     response = client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(second['id'], expected_version=binding['version']))
     assert response.status_code == 409 and response.json()['error']['code'] == 'VPS_IDENTITY_IMMUTABLE'
 
 
-def test_resource_requires_fresh_unique_owner_approved_alias(web):
-    client, app = web
-    denied = client.post('/api/vps', json=input_body(host_alias='unapproved'))
-    assert denied.status_code == 409 and denied.json()['error']['code'] == 'SSH_ALIAS_NOT_APPROVED'
-    resource = must(client.post('/api/vps', json=input_body(host_alias='reviewed')))
-    binding = must(client.post('/api/spaces/alice/vps', json=binding_body(resource['id'])))
-    assert binding['host_alias'] == 'reviewed' and 'connection_ref' not in binding
-    for removed in ('runner_device_id', 'connection_ref'):
-        result = client.post('/api/spaces/alice/vps', json=binding_body(resource['id'], **{removed:'reviewed'}))
-        assert result.status_code == 422
+def test_parent_inventory_is_reusable_without_space_discovery_and_rejects_old_fields(web):
+    client,app=web
+    resource=choose_resource(client,**input_body(host_alias='reviewed'))
     from hub.runner_settings import cache_key
-    app.state.store.execute('DELETE FROM meta WHERE key=?', (cache_key('a','discover'),))
-    stale = client.post('/api/vps', json=input_body(host_alias='other'))
-    assert stale.status_code == 409 and stale.json()['error']['code'] == 'SSH_DISCOVERY_REQUIRED'
+    app.state.store.execute('DELETE FROM meta WHERE key=?',(cache_key('a','discover'),))
+    binding=must(client.post('/api/spaces/alice/vps',json=binding_body(resource['id'])))
+    assert binding['host_alias']=='reviewed' and 'connection_ref' not in binding
+    for removed in ('runner_device_id','connection_ref','host_alias'):
+        reply=client.post('/api/spaces/alice/vps',json=binding_body(resource['id'],**{removed:'reviewed'}))
+        assert reply.status_code==422
 
 
-def test_read_only_profile_cannot_execute_or_discover_ungranted_vps(web):
+def test_unassigned_profile_cannot_execute_or_discover_vps(web):
     client, app = web
-    first = must(client.post('/api/vps', json=input_body()))
+    first = choose_resource(client, **input_body())
     binding = must(client.post('/api/spaces/alice/vps', json=binding_body(first['id'])))
-    second = must(client.post('/api/vps', json=input_body(name='Other inventory', host_alias='other')))
+    second = choose_resource(client, **input_body(name='Other inventory', host_alias='other'))
     other = must(client.post('/api/spaces/alice/vps', json=binding_body(second['id'], name='Private other')))
-    _, connection = issue(client, binding, actions=('read',))
+    _, connection = issue(client, binding, selected=False)
     principal = token_principal(app, connection)
     result = app.state.runtime.vps.list({}, principal)
-    assert [v['id'] for v in result['vps']] == [binding['id']]
-    assert result['vps'][0]['can_execute'] is False
+    assert result['vps']==[]
     for identifier in (binding['id'], other['id']):
         with pytest.raises(DevError) as failure:
             app.state.runtime.vps.execution_project({'target': 'vps:'+identifier}, principal)
@@ -228,8 +235,7 @@ async def test_dispatched_revoked_request_only_probes_original_receipt(inventory
     elif change == 'disable':
         runtime.vps.bind(VPSBindingSave(**binding_body(resource['id'], expected_version=binding['version'], enabled=False)), owner, binding['id'])
     else:
-        with observed_runner(runtime):
-            runtime.vps.save(VPSInput(**input_body(host_alias='reviewed', expected_version=resource['version'])), owner, resource['id'])
+        runtime.store.execute("UPDATE vps_connections SET connection_ref='replacement-target',target_version=target_version+1 WHERE id=?",(resource['id'],))
     packets = []
     class Connection:
         journal_id = 'fixture-journal'
@@ -296,7 +302,7 @@ def test_offline_queue_connection_revocation_prevents_execution(tmp_path):
 @pytest.mark.parametrize('live', [False, True])
 def test_display_metadata_does_not_change_consent_but_connection_changes_do(web, live):
     client, app = web
-    resource = must(client.post('/api/vps', json=input_body()))
+    resource = choose_resource(client, **input_body())
     binding = must(client.post('/api/spaces/alice/vps', json=binding_body(resource['id'])))
     _, connection = issue(client, binding, live=live)
     principal = token_principal(app, connection)
@@ -308,8 +314,7 @@ def test_display_metadata_does_not_change_consent_but_connection_changes_do(web,
     must(client.put('/api/spaces/alice/vps/'+binding['id'], json=binding_body(resource['id'],
         name='New binding label', display_mode='both', projects=['project'], expected_version=binding['version'])))
     assert runtime.vps.execution_project(target, principal)['_vps_context'] == original['_vps_context']
-    must(client.put('/api/vps/'+resource['id'], json=input_body(
-        host_alias='another-approved-target', expected_version=resource['version'])))
+    runtime.store.execute("UPDATE vps_connections SET connection_ref='another-approved-target',target_version=target_version+1 WHERE id=?",(resource['id'],))
     if live:
         assert runtime.vps.execution_project(target, principal)['_vps_context']['connection_ref'] == 'another-approved-target'
     else:
@@ -321,7 +326,7 @@ def test_display_metadata_does_not_change_consent_but_connection_changes_do(web,
 
 def test_same_connection_key_with_changed_input_is_not_a_second_creation(web):
     client, _ = web
-    resource = must(client.post('/api/vps', json=input_body()))
+    resource = choose_resource(client, **input_body())
     body = binding_body(resource['id'])
     first = must(client.post('/api/spaces/alice/vps', json=body))
     conflict = client.post('/api/spaces/alice/vps', json={**body, 'description': 'different'})

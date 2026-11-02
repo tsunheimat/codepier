@@ -4,7 +4,7 @@ import json
 import time
 
 import pytest
-from tests.vps_fixtures import observed_runner
+from tests.vps_fixtures import observed_runner, materialized_resource
 from jsonschema import Draft202012Validator, ValidationError
 
 from shared.contracts import OUTPUT_SCHEMAS, tool_definitions
@@ -12,7 +12,7 @@ from shared.core_contracts import CORE_TOOLS
 from hub.core_tools import help_result, result as core_result
 from tests.test_core_tools import agent, runtime, file_call
 from tests.fake_computer_provider import png
-from hub.vps import VPSInput, VPSBindingSave
+from hub.vps import VPSBindingSave
 
 OP = 'a' * 32
 SHA = 'b' * 64
@@ -35,7 +35,7 @@ SAMPLES = {
                 'error': None, 'output_seq': 2}], 'media_truncated': False},
     'vps': {'vps': [{'id': OP, 'name': 'Test', 'host_alias': 'example',
             'target': 'vps:' + OP, 'enabled': True, 'projects': [], 'display_mode': 'top_level',
-            'actions': ['read'], 'can_execute': False, 'online': False}],
+            'shell_access': True, 'can_execute': False, 'online': False}],
             'total': 1, 'next_offset': None},
     'browser': {'operation_id': OP, 'lease_id': OP, 'expires_at': 1.0, 'opened': True,
                 'focus_changed': False, 'next': {'tool': 'browser', 'arguments': {
@@ -98,7 +98,7 @@ def test_wrong_primary_field_types_are_rejected(name, field, value):
     ('process', lambda value: value['operations'][0]['result'].update(ok='true')),
     ('vps', lambda value: value['vps'][0].update(online='yes')),
     ('vps', lambda value: value['vps'][0].update(display_mode='legacy')),
-    ('vps', lambda value: value['vps'][0].update(actions=['manage-global'])),
+    ('vps', lambda value: value['vps'][0].update(shell_access='true')),
     ('vps', lambda value: value['vps'][0].update(can_execute='true')),
     ('edit', lambda value: value['files'][0].update(path=42)),
     ('workspace', lambda value: value['projects'][0].update(online='yes')),
@@ -202,8 +202,7 @@ async def test_runtime_local_lists_match_advertised_output(runtime):
     validate('workspace', await instance.invoke('workspace', {}, principal))
     validate('process', await instance.invoke('process', {}, principal))
     with observed_runner(instance, 'dev'):
-        resource = instance.vps.save(VPSInput(name='Typed', runner_device_id='dev', host_alias='production',
-            idempotency_key='typed-vps-resource'), principal)
+        resource = materialized_resource(instance, 'production', 'dev')
     instance.vps.bind(VPSBindingSave(name='Typed', resource_id=resource['id'], display_mode='both', projects=['proj'],
         idempotency_key='typed-vps-binding'), principal)
     validate('vps', await instance.invoke('vps', {}, principal))

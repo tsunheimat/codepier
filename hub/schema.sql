@@ -245,6 +245,7 @@ id TEXT PRIMARY KEY, name TEXT NOT NULL, secret TEXT NOT NULL, owner_user_id TEX
 
 CREATE TABLE space_devices (
 space_id TEXT NOT NULL REFERENCES spaces(id), device_id TEXT NOT NULL REFERENCES devices(id),
+ alias TEXT NOT NULL DEFAULT '',
  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)), version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
  PRIMARY KEY(space_id,device_id)
 );
@@ -329,6 +330,7 @@ CREATE TABLE vps_connections (
 id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL,
  runner_device_id TEXT NOT NULL REFERENCES devices(id), host_alias TEXT NOT NULL,
  connection_ref TEXT NOT NULL, target_fingerprint TEXT NOT NULL,
+ source_status TEXT NOT NULL DEFAULT 'unverified', source_error TEXT NOT NULL DEFAULT '', observed_at REAL,
  target_version INTEGER NOT NULL DEFAULT 1 CHECK(target_version>0),
  description TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}',
  owner_user_id TEXT NOT NULL REFERENCES users(id), enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),

@@ -1,5 +1,11 @@
 # Resources and workspace bindings
 
+> VPS model update (2.1): Runner-approved SSH aliases automatically create global
+> VPS resources. Spaces use inline VPS/Device selection lists; VPS permissions are
+> Shell selections with an explicit all/future selector. Known workspace-2 VPS
+> layouts are converted/reset automatically at startup; the pre-workspace model
+> is still refused. The current VPS rules and cutoff are defined in [VPS](VPS.md).
+
 Resources register technical inventory. Workspace bindings determine what is
 provided to members and Connections, including paths, permitted devices and VPS
 entry placement. Projects reference exactly one workspace source (Folder or Storage Pool); they cannot

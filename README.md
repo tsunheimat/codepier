@@ -1,6 +1,6 @@
 # CodePier · 码头
 
-[![Version](https://img.shields.io/badge/version-2.0.0-2563eb)](RELEASE.json)
+[![Version](https://img.shields.io/badge/version-2.1.0-2563eb)](RELEASE.json)
 
 CodePier is a self-hosted MCP bridge. ChatGPT and other clients work directly on
 explicitly authorized Projects, VPS resources and external MCP services. The Hub
@@ -9,10 +9,12 @@ launches local tools and opens SSH connections.
 
 ## Workspace abstraction — 2.0 hard cutoff
 
-**CodePier 2.0 uses a fresh-start model, not an in-place upgrade.** Initialize a
-separate empty `HUB_DATA_DIR` with the `workspace-2` schema and create new workspace
-bindings, Profiles and Connections. Older or mixed-model databases are refused,
-never converted or deleted. Do not point the new Hub at a previous data volume.
+**The workspace model rejects pre-workspace databases.** For that old model,
+initialize a separate empty `HUB_DATA_DIR` and create new workspace bindings,
+Profiles and Connections. Existing `workspace-2` installations instead receive
+the automatic, VPS-only 2.1 data cutoff described below; no new data directory or
+manual migration is required for that known upgrade. Unknown/mixed workspace
+models are refused rather than deleting the complete Hub database.
 Shared folders and VPS files are independent of Hub database state and remain
 untouched. A source merge does not deploy, publish a release, or replace a running
 Hub; deployment is a separate explicit operation.
@@ -30,7 +32,8 @@ workspace first, then its Profile. Token renewal preserves the Connection's
 identity; two connections sharing a Profile keep separate private histories.
 Profiles describe exact resource/action pairs and cannot expand member rights.
 
-VPS resources enter a workspace as whole resources. Display them at the top level,
+Approved Runner SSH aliases automatically become VPS resources. Spaces select
+them in one inline list as whole resources. Display them at the top level,
 under selected Projects, or both. SSH uses a saved Runner-local OpenSSH reference;
 it does not require a dummy Project. One-shot commands and original persistent
 sessions/PTYs use the same target model. Unsupported platforms and uncertain remote
@@ -73,9 +76,9 @@ provider acceptance require their own platform and deployment checks.
 
 ## Version metadata
 
-当前仓库的 `RELEASE.json` 标记为 **2.0.0 / development**。此分支未发布，也未部署。
+当前仓库的 `RELEASE.json` 标记为 **2.1.0 / development**。此分支未发布，也未部署。
 
-- **Version:** 2.0.0
+- **Version:** 2.1.0
 
 Source version metadata is not a published release, a passing full CI run, or a
 promise that an existing installation can be upgraded in place.
@@ -84,4 +87,6 @@ promise that an existing installation can be upgraded in place.
 
 完整 Runner 配置位于设备的「完整管理 → Runner 设置」。远程写入默认关闭，必须由 Runner 所有者在本机明确启用；未授权时仍可查看、预览和导出补丁。参见 [Runner 设置](docs/RUNNER_SETTINGS.md)。
 
-VPS 使用资源级 Runner / SSH Alias，工作空间仅管理显示信息。旧 VPS 数据不保留兼容路径；已有 `workspace-2` 数据库须停机执行明确的 VPS-only cutoff，重新登记 VPS，不需要删除其他项目或存储数据。升级前阅读 [VPS 与 cutoff 操作](docs/VPS.md)。
+VPS 由 Runner 已授权的 SSH Alias 自动建立，名称默认沿用 Alias；无需在资源页重复新增。Space 的 VPS / Devices 使用同页列表勾选及别名管理。VPS 选择即代表 Shell 权限，Profile 可明确选择全部当前及未来 VPS。SSH 发现与检查只在 Devices，其他层直接继承资源与状态。
+
+2.1 使用 `runner-inventory-2` VPS 模型：已知 `workspace-2` VPS 数据在启动时自动转换或按旧版本执行 VPS-only reset，不需要新 env 或手动迁移。旧只读 VPS 授权不会自动升级为 Shell；具体策略见 [VPS 与 cutoff](docs/VPS.md)。未知或其他旧 workspace 数据库仍拒绝使用，不会删除整个 Hub 数据。

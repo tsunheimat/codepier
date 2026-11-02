@@ -6,13 +6,13 @@ import uuid
 from dataclasses import replace
 
 import pytest
-from tests.vps_fixtures import observed_runner
+from tests.vps_fixtures import observed_runner, materialized_resource
 from agent.runner import Agent
 from agent.core_files import CoreFiles
 from agent.resource_queue import Claim, ResourceQueue
 from hub.runtime import Principal, Runtime
 from hub.store import Store
-from hub.vps import VPSInput, VPSBindingSave
+from hub.vps import VPSBindingSave
 from hub.core_tools import result as core_result
 from scripts.mcp_stdio_bridge import prepare_request
 from shared.contracts import TOOLS, tool_definitions
@@ -254,7 +254,7 @@ async def test_facades_enforce_action_scopes_and_process_waits_are_parallel(runt
 async def test_saved_vps_target_keeps_credentials_private_and_binding_pinned(runtime):
     instance, principal = runtime
     with observed_runner(instance, 'dev'):
-        resource = instance.vps.save(VPSInput(name='Test', runner_device_id='dev', host_alias='production', idempotency_key='fixture-vps-resource'), principal)
+        resource = materialized_resource(instance, 'production', 'dev')
     connection = instance.vps.bind(VPSBindingSave(resource_id=resource['id'], name='Test VPS', display_mode='top_level', idempotency_key='fixture-vps-binding'), principal)
     args = {'target': connection['target'], 'command': 'true', 'yield_seconds': 0, 'idempotency_key': 'saved-connection'}
     receipt = await instance.invoke('exec', args, principal)

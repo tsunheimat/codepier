@@ -107,15 +107,12 @@ class SourceRule(WorkspaceModel):
 
 
 class VPSRule(WorkspaceModel):
-    actions: list[Literal['read', 'execute']] = Field(min_length=1, max_length=2)
     vps: list[str] = Field(default_factory=list, max_length=500)
     all_vps: bool = False
 
     @model_validator(mode='after')
     def bounded(self):
         identifiers(self.vps)
-        if 'read' not in self.actions or len(set(self.actions)) != len(self.actions):
-            raise ValueError('VPS rules must include read and have distinct actions')
         if not self.vps and not self.all_vps:
             raise ValueError('Select workspace VPS bindings or explicitly include all of them')
         return self
@@ -261,7 +258,7 @@ class ProjectInput(WorkspaceModel):
 
 class VPSBindingInput(WorkspaceModel):
     resource_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
-    name: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=253)
     description: str = Field(default='', max_length=2000)
     display_mode: Literal['top_level', 'project_only', 'both'] = 'top_level'
     projects: list[str] = Field(default_factory=list, max_length=500)
