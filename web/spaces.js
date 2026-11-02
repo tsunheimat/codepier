@@ -1092,6 +1092,34 @@ window.CodePierSpaces = (() => {
           })),
     );
   }
+  function deactivateSource(space, old) {
+    const fields = Object.fromEntries(
+      [
+        'name',
+        'source_kind',
+        'folder_resource_id',
+        'pool_id',
+        'mapping_ids',
+        'subpath',
+        'mode',
+        'files',
+        'shell',
+      ].map((key) => [key, old[key]]),
+    );
+    return form(
+      '停用文件来源',
+      `<p>${esc(old.name)}</p>` +
+        notice(
+          '停用后，这个来源不再接受新的文件或命令请求。已运行的命令仍需查看原操作回执；停用不会确认远端进程已经停止。',
+        ),
+      (_form, key) =>
+        save(
+          root(space.id) + '/sources/' + enc(old.id),
+          change(old, { ...fields, allow_tasks: !!old.allow_tasks, enabled: false }, key),
+          true,
+        ),
+    );
+  }
   function policyEditorHTML(policy = {}, member = false) {
     return (
       (member
