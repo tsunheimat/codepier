@@ -38,7 +38,7 @@ def test_multiple_resources_and_concurrent_conversations_never_share_active_proj
         'resource_id':testing['resource_id'],'name':testing['name'],'display_mode':'both','projects':['project-team'],
         'expected_version':testing['version'],'idempotency_key':uuid.uuid4().hex}))
     policy={'project_rules':[{'actions':['read','write','execute'],'all_projects':True}],
-        'vps_rules':[{'actions':['read','execute'],'vps':[testing['id']]}]}
+        'vps_rules':[{'vps':[testing['id']]}]}
     set_member(b['owner'],'alice',policy)
     profile=make_profile(b['owner'],policy)
     g=make_connection(client,profile,live=True)

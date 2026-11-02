@@ -3,3 +3,6 @@ pip==26.2.1
 ruff==0.16.9
 pip-audit==2.10.1
 certifi==2026.10.19
+
+# Reviewed filelock lock-file race/ownership fixes, including GHSA-v4x8-3wr5-3wq8.
+filelock==4.2.1

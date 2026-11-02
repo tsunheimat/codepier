@@ -40,6 +40,13 @@ def device_rows(store, runtime, principal):
         row["can_manage"] = bool(principal.instance_admin or row.get('owner_user_id')==principal.user_id)
         row["can_configure_roots"] = bool(row["builtin"] and principal.instance_admin and row["can_manage"])
         row["info"] = info
+        if principal.space_id:
+            binding = store.one('SELECT alias,version FROM space_devices WHERE space_id=? AND device_id=?', (principal.space_id,row['id']))
+            if binding:
+                row['resource_name'] = row['name']
+                row['alias'] = binding['alias']
+                row['binding_version'] = binding['version']
+                row['name'] = binding['alias'] or row['name']
         row["online"] = runtime.online(row["id"])
         row["project_count"] = store.one("SELECT count(DISTINCT p.id) AS n FROM projects p JOIN space_sources f ON f.id=p.source_id LEFT JOIN folders r ON r.id=f.folder_resource_id LEFT JOIN space_source_mappings sm ON sm.source_id=f.id WHERE (r.device_id=? OR sm.device_id=?) AND (? IS NULL OR p.space_id=?)", (row["id"], row["id"], principal.space_id, principal.space_id))["n"]
         management = info.get("management") if isinstance(info.get("management"), dict) else {}

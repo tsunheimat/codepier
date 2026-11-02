@@ -159,8 +159,8 @@ def panel_access_snapshot(store, principal):
         for rule in policy.source_rules:
             result.update((space,'source:'+folder,action) for folder in rule.sources for action in rule.actions)
         for rule in policy.vps_rules:
-            result.update((space,'vps:'+vps,action) for vps in rule.vps for action in rule.actions)
-            if rule.all_vps:result.update((space,'vps:*',action) for action in rule.actions)
+            result.update((space,'vps:'+vps,'shell') for vps in rule.vps)
+            if rule.all_vps:result.add((space,'vps:*','shell'))
         for rule in policy.connector_rules:
             result.update((space,'mcp:'+rule.binding_id,tool) for tool in rule.tools)
         for rule in policy.plugin_rules:

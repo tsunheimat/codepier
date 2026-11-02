@@ -8,8 +8,8 @@ from hub.permissions import require_access
 from hub.runtime import Runtime
 from hub.workspace_api import PoolCreate, PoolSave, FolderSave, SourceSave, ProjectSave, DeviceBindingSave
 from hub.workspace_sources import source_views, select_view, resolve_shell
-from hub.vps import VPSBindingSave, VPSInput
-from tests.vps_fixtures import observed_runner
+from hub.vps import VPSBindingSave
+from tests.vps_fixtures import observed_runner, materialized_resource
 from shared.util import DevError
 from tests.workspace_fixtures import WorkspaceFixture
 
@@ -191,7 +191,7 @@ def test_vps_launcher_is_a_technical_dependency_not_a_device_grant(resources):
     ws,service,_=resources
     vps=service.runtime.vps
     with observed_runner(service.runtime):
-        inventory=vps.save(VPSInput(name='Server',runner_device_id='a',host_alias='production',idempotency_key=uuid.uuid4().hex),ws.principal)
+        inventory=materialized_resource(service.runtime, 'production')
     bound=vps.bind(VPSBindingSave(resource_id=inventory['id'],name='Server',idempotency_key=uuid.uuid4().hex),ws.principal)
     result=vps.execution_project({'target':'vps:'+bound['id']},ws.principal)
     assert result['device_id']=='a' and not ws.store.all('SELECT * FROM space_devices')

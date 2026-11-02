@@ -1,5 +1,14 @@
 # 2.0.0 — Workspace abstraction (development, unpublished)
 
+## 2.1.0 · development · 2026-11-02
+
+- Runner SSH approvals automatically materialize VPS resources with alias-derived default names; reconnect and settings reload update upstream status without overwriting custom names or disabled choices. Device management alone discovers/tests SSH; Resources and Spaces consume persisted parent inventory.
+- Space VPS/Devices use inline, revision-checked atomic selection lists with per-Space aliases and VPS display positions. Removed duplicate global VPS registration and resource-level SSH retargeting forms/API.
+- VPS permissions are indivisible Shell selections. Profiles can select all current/future Space VPS; fixed Connections preserve that explicit selector. Finite selections, member ceilings, cross-Space denial, original target receipts and no-replay behavior remain enforced.
+- Automatic known-version startup cutoff to `runner-inventory-2`; preserve compatible resource/binding identities and non-VPS state, drop old read-only VPS grants instead of promoting them, reject retired request shapes. No manual migration/env switch or runtime legacy adapter.
+- Source-only development change. No publication, production deployment or live database reset is implied.
+
+
 Breaking fresh workspace schema; direct members and Profiles replace Roles.
 Connection identities bind a workspace/Profile from creation, with two-step OAuth
 and no mutable current-space context. Peer Folder/Storage Pool inventory, one workspace source per Project,

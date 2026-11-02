@@ -60,9 +60,23 @@ def remember(runtime, op, result):
     if kind not in {'snapshot', 'discover', 'probe'}:
         return
     data = result['data']
+    if kind == 'discover' and data.get('inventory_protocol') == 1:
+        info_row = runtime.store.one('SELECT info FROM devices WHERE id=?', (op['device_id'],))
+        info = json.loads(info_row['info']) if info_row else {}
+        previous = runtime.store.one('SELECT value FROM meta WHERE key=?',
+                                     (cache_key(op['device_id'], 'discover'),))
+        previous = json.loads(previous['value']) if previous else {}
+        # A delayed observation must not undo either a newer authenticated
+        # hello or a newer explicit Device refresh completed out of order.
+        newest = max(info.get('ssh_inventory_seen_at', 0), previous.get('source_operation_created', 0))
+        if op.get('created', 0) < newest:
+            return
+        from hub.vps_inventory import observe
+        observe(runtime, op['device_id'], data)
     if len(json.dumps(data).encode()) > 2 * 1024 * 1024:
         return
-    data = {**data, 'observed_at': time.time(), 'source_operation_id': op['id']}
+    data = {**data, 'observed_at': time.time(), 'source_operation_id': op['id'],
+            'source_operation_created': op.get('created', 0)}
     if kind == 'probe':
         alias = data.get('host_alias')
         if not isinstance(alias, str) or len(alias) > 253:
@@ -71,26 +85,6 @@ def remember(runtime, op, result):
     runtime.store.execute('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                           (cache_key(op['device_id'], kind), json.dumps(data)))
     runtime.store.after_commit(lambda: runtime.publish('device', {'id': op['device_id']}))
-
-
-def approved_host(runtime, principal, device_id, alias):
-    """Resource creation consumes a recent explicit scan, never untrusted form metadata."""
-    require_settings_access(runtime, principal, device_id, online=True)
-    row = runtime.store.one('SELECT value FROM meta WHERE key=?', (cache_key(device_id, 'discover'),))
-    value = json.loads(row['value']) if row else {}
-    if time.time() - value.get('observed_at', 0) > 300:
-        raise DevError('SSH_DISCOVERY_REQUIRED', 'Refresh this Runner SSH inventory before saving a VPS resource', 409)
-    if value.get('ssh_enabled') is not True:
-        raise DevError('SSH_DISABLED', 'The selected Runner owner has not enabled SSH', 409)
-    matches = [host for host in value.get('hosts', []) if host.get('host_alias') == alias]
-    if len(matches) != 1 or matches[0].get('owner_approved') is not True or matches[0].get('status') != 'configured':
-        raise DevError('SSH_ALIAS_NOT_APPROVED', 'The exact alias must be uniquely approved in this Runner SSH settings', 409)
-    host = matches[0]
-    import re
-    if (not re.fullmatch('[A-Za-z0-9_-]{1,100}', host.get('connection_ref', ''))
-            or not re.fullmatch('[a-f0-9]{64}', host.get('target_fingerprint', ''))):
-        raise DevError('SSH_DISCOVERY_INVALID', 'Runner returned an invalid SSH target identity', 409)
-    return host
 
 
 def make_runner_settings_router(auth, runtime):

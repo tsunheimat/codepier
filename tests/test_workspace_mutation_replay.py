@@ -69,7 +69,7 @@ def test_project_shell_replay_after_management_revocation(web):
 
 
 CASES = ('pool', 'shell', 'device', 'project_execution', 'space_execution',
-         'vps_create', 'vps_update', 'vps_bind_create', 'vps_bind_update',
+         'vps_update', 'vps_bind_create', 'vps_bind_update',
          'profile_create', 'profile_update', 'space_create', 'space_update', 'member')
 
 
@@ -91,10 +91,8 @@ def mutation_request(client, case):
         prefix = '/api/projects/project' if case == 'project_execution' else '/api/spaces/alice'
         return 'PUT', prefix+'/execution', {**body, 'settings': {}, 'expected_version': 0}
     if case.startswith('vps_'):
-        inventory = {**body, 'name': 'Receipt VPS', 'runner_device_id': 'a', 'host_alias': 'fixture'}
-        if case == 'vps_create':
-            return 'POST', '/api/vps', inventory
-        resource = saved(client.post('/api/vps', json=inventory))
+        inventory = {**body, 'name': 'Receipt VPS'}
+        resource = next(r for r in saved(client.get('/api/vps'))['vps'] if r['host_alias']=='fixture')
         if case == 'vps_update':
             return 'PUT', '/api/vps/'+resource['id'], {
                 **inventory, 'name': 'Updated VPS', 'expected_version': resource['version'], 'idempotency_key': uuid.uuid4().hex}
@@ -176,14 +174,14 @@ def test_every_mutation_replay_requires_current_resource_authority(web, monkeypa
     first = saved(client.request(method, path, json=body))
     if case == 'pool':
         store.execute("UPDATE storage_pools SET owner_user_id='bob' WHERE id='pool'")
-    elif case in {'vps_create', 'vps_update'}:
+    elif case in {'vps_update'}:
         store.execute("UPDATE vps_connections SET owner_user_id='bob' WHERE id=?", (first['id'],))
     else:
         restrict_management(store, first['id'] if case == 'space_create' else 'alice')
     forbid_dispatch(monkeypatch, app)
     before = durable_snapshot(store)
     replay = client.request(method, path, json=body)
-    assert replay.status_code == (404 if case in {'pool', 'vps_create', 'vps_update'} else 403), replay.text
+    assert replay.status_code == (404 if case in {'pool', 'vps_update'} else 403), replay.text
     assert durable_snapshot(store) == before
 
 
@@ -202,7 +200,7 @@ def test_deleted_or_inactive_resource_cannot_disclose_old_receipt(web, monkeypat
         store.execute("DELETE FROM projects WHERE id='project'")
     elif case == 'device':
         store.execute("DELETE FROM space_devices WHERE space_id='alice' AND device_id='a'")
-    elif case in {'vps_create', 'vps_update'}:
+    elif case in {'vps_update'}:
         store.execute('DELETE FROM vps_connections WHERE id=?', (first['id'],))
     elif case.startswith('vps_bind_'):
         store.execute('DELETE FROM space_vps WHERE id=?', (first['id'],))

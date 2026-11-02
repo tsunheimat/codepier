@@ -2,3 +2,7 @@
 # Pin the bootstrap installer too, so fresh SDK environments pass the same audit.
 pip==26.2.1
 mcp==2.2.0
+
+# Avoid quadratic tracestate parsing in the independent SDK dependency graph.
+# GHSA-xcq7-p3pf-p88h; keep this test environment separate from production.
+opentelemetry-api==1.45.1

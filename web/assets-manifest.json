@@ -1,5 +1,5 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "algorithm": "sha256",
   "assets": {
     "access-profiles.css": {
@@ -11,8 +11,8 @@
       "bytes": 28999
     },
     "app.js": {
-      "sha256": "8d2370b83eeea1eef9f915d654519e73465a4df64d504b1bf94ed820d34d88a9",
-      "bytes": 121568
+      "sha256": "e19603fdfcfdadf9e5fff6426f46eb08d862fbc899f7160e962451ee685d5bba",
+      "bytes": 122467
     },
     "appearance.js": {
       "sha256": "94dbfb4e5f75d448073a115b310d4eedf900fc5446331ba485b30d07df480d11",
@@ -159,12 +159,12 @@
       "bytes": 6635
     },
     "spaces.css": {
-      "sha256": "ba9fd441182868e3a4b26628d63d79143fba096dffde9c7652ef34dbf286b841",
-      "bytes": 1980
+      "sha256": "0093ff0cedf738bcbb95f3c74f579de43a43fe87556ff6e7d7394811cf06794b",
+      "bytes": 3115
     },
     "spaces.js": {
-      "sha256": "dc6a3ad2c7fd9cb96db4f0a62305bcd269099afe9d5af7659e90938a29770eca",
-      "bytes": 89477
+      "sha256": "a3fa3ed41ca9c1c4c2e8e29ebdff1482353ef72d4d8f3ed1909321c68bdf2478",
+      "bytes": 82831
     },
     "styles.css": {
       "sha256": "0f509e15056bc28b2e3af7652d94c53d6f51635bcb9f0a0bdc288e3a486805f4",
@@ -186,10 +186,14 @@
       "sha256": "edba6625b5528938f368cd9255906cceeb0b0eb17f0b234237d5a21766567c92",
       "bytes": 4209
     },
+    "workspace-selections.js": {
+      "sha256": "d011c37197f4d6bc1510a04d15998b57390621c5b6cd19355e6f32ca3b72352b",
+      "bytes": 14125
+    },
     "workspace.css": {
       "sha256": "d1230e77d2e28f878fd0d24ca17c80cc63353032592d74015eb48aaaef499093",
       "bytes": 24897
     }
   },
-  "template_sha256": "9ba36d98910f4d5bb7456b2c97e41921d609fbf376a053c4365e6917903069f1"
+  "template_sha256": "e70f96bc3992b5d297a98d196585e85aeba2717d11e3b95a4887db4bd4cf2b30"
 }

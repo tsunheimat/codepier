@@ -49,7 +49,8 @@ def project_actions(policy, project_id):
 
 
 def vps_actions(policy, identifier):
-    return {a for rule in policy.vps_rules if rule.all_vps or identifier in rule.vps for a in rule.actions}
+    # VPS allocation is indivisible Shell access, not a read/execute matrix.
+    return {'read', 'execute'} if any(rule.all_vps or identifier in rule.vps for rule in policy.vps_rules) else set()
 
 
 def device_actions(policy, identifier):
@@ -75,7 +76,7 @@ def owner_policy():
     return AccessPolicy.model_validate({
         'manage': ['workspace', 'members', 'profiles', 'resources', 'connections', 'audit'],
         'project_rules': [{'all_projects': True, 'actions': sorted(CAPABILITIES)}],
-        'vps_rules': [{'all_vps': True, 'actions': ['read', 'execute']}],
+        'vps_rules': [{'all_vps': True}],
     })
 
 
@@ -100,7 +101,10 @@ def intersect_policies(store, space_id, *policies):
     projects = [ProjectRule(projects=[i], actions=sorted(a)) for i, a in actions('project', project_actions) if 'read' in a]
     devices = [DeviceRule(devices=[i], actions=sorted(a)) for i, a in actions('device', device_actions) if a]
     folders = [SourceRule(sources=[i], actions=sorted(a)) for i, a in actions('source', source_actions) if 'read' in a]
-    vps = [VPSRule(vps=[i], actions=sorted(a)) for i, a in actions('vps', vps_actions) if 'read' in a]
+    # Preserve an explicitly consented future-VPS selector through intersection.
+    # Every policy must grant it; a narrow member/connection still narrows it.
+    vps = ([VPSRule(all_vps=True)] if all(any(r.all_vps for r in p.vps_rules) for p in policies)
+           else [VPSRule(vps=[i]) for i, a in actions('vps', vps_actions) if a])
     connectors = [ConnectorRule(binding_id=i, tools=sorted(a)) for i, a in actions('connector', connector_tools) if a]
     plugins = policies[0].plugin_rules
     for policy in policies[1:]:
@@ -130,8 +134,8 @@ def connection_policy(store, grant):
     policies = [member_policy(store, grant['user_id'], grant['space_id']), _policy(profile)]
     if grant['consent_mode'] == 'fixed':
         snapshot = _policy({'policy': grant['resource_policy']})
-        if any(r.all_projects for r in snapshot.project_rules) or any(r.all_vps for r in snapshot.vps_rules):
-            raise DevError('INVALID_TOKEN', 'A fixed connection cannot contain future-resource selectors', 401)
+        if any(r.all_projects for r in snapshot.project_rules):
+            raise DevError('INVALID_TOKEN', 'A fixed connection cannot contain future-project selectors', 401)
         policies.append(snapshot)
     return intersect_policies(store, grant['space_id'], *policies)
 
@@ -214,6 +218,6 @@ def policy_capabilities(policy):
         scopes.update(rule.actions)
     for rule in policy.source_rules:
         scopes.update(rule.actions)
-    if any('execute' in r.actions for r in policy.vps_rules):
+    if policy.vps_rules:
         scopes.add('execute')
     return scopes

@@ -70,6 +70,8 @@ class ReleaseHold(WorkspaceModel):
 def make_workspace_router(auth, runtime):
     router,store=APIRouter(),runtime.store
     resources=runtime.workspace_resources
+    from hub.workspace_selections import make_selection_router
+    router.include_router(make_selection_router(auth, runtime))
 
     @router.get('/api/storage-pools')
     @database_endpoint(store)

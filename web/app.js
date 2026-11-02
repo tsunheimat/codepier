@@ -116,6 +116,7 @@ function sessionOwner(session) {
 function hasUnsavedChanges() {
   return (
     !!S.work.dirty ||
+    !!window.CodePierWorkspaceSelections?.hasUnsaved() ||
     (typeof ChatUI !== 'undefined' &&
       [...ChatUI.views.values()].some(
         (v) =>
@@ -129,6 +130,7 @@ function hasUnsavedChanges() {
   );
 }
 function discardLocalWork() {
+  window.CodePierWorkspaceSelections?.reset();
   if (typeof chatDetach === 'function') chatDetach(true);
   resetWork('');
   S.work.operation = null;
@@ -370,7 +372,25 @@ async function api(path, options = {}) {
       externalSignal?.removeEventListener('abort', abort);
     }
     if (externalSignal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
-    if (!currentRequest()) throw sessionChanged();
+    if (!currentRequest()) {
+      const error = sessionChanged();
+      // A successful mutation may itself trigger same-login reauthorization.
+      // Discard its private response as usual. Carry only an acknowledgement
+      // so a bound form can replace its draft with fresh authorized reads.
+      if (
+        res?.ok &&
+        body !== null &&
+        body !== undefined &&
+        !['GET', 'HEAD'].includes(method) &&
+        space === location.hash &&
+        session?.user_id &&
+        session.csrf &&
+        session.user_id === S.session?.user_id &&
+        session.csrf === S.session?.csrf
+      )
+        error.mutation_acknowledged = true;
+      throw error;
+    }
     if (res) {
       if (res.status === 401 && session && !['/api/login', '/api/session'].includes(path))
         await verifyPanelSession(session, discardOnAuthFailure);
@@ -935,6 +955,7 @@ function connectEvents() {
     // change project/device mappings; rebuilding them on every operation makes
     // ordinary navigation compete with the live audit stream.
     const dependencies = {
+      spaces: ['vps', 'device', 'project', 'iam'],
       resources: ['vps', 'device', 'project', 'iam'],
       access: ['iam', 'vps', 'project', 'device'],
       overview: ['operation', 'device', 'project'],
@@ -1051,6 +1072,8 @@ function canonicalPage(page) {
   return page;
 }
 async function navigate(page) {
+  if (window.CodePierWorkspaceSelections && !CodePierWorkspaceSelections.requestNavigation(page))
+    return;
   S.vpsIntent = (S.vpsIntent || 0) + 1;
   page = canonicalPage(page);
   if (!S.session || !$('#page') || !nav.some((x) => x[0] === page)) return;

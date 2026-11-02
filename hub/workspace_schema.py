@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 SCHEMA_VERSION = 'workspace-2'
-VPS_SCHEMA_VERSION = 'resource-owned-1'
+VPS_SCHEMA_VERSION = 'runner-inventory-2'
 SCHEMA = Path(__file__).with_name('schema.sql').read_text(encoding='utf-8')
 
 # These are rejection signatures, never migration inputs or supported tables.
@@ -27,8 +27,9 @@ def require_current_model(db, tables):
     retired_vps = {'runner_device_id', 'connection_ref'} & {row[1] for row in db.execute('PRAGMA table_info(space_vps)')}
     resource_columns = {row[1] for row in db.execute('PRAGMA table_info(vps_connections)')}
     invalid_resource = (bool({'host', 'provider', 'region', 'system', 'notes', 'execution_project_id'} & resource_columns)
-                        or not {'runner_device_id', 'host_alias', 'connection_ref', 'target_fingerprint', 'target_version'} <= resource_columns)
-    if retired_vps or invalid_resource or not vps_marker or vps_marker[0] != VPS_SCHEMA_VERSION:
+                        or not {'runner_device_id', 'host_alias', 'connection_ref', 'target_fingerprint', 'target_version', 'source_status', 'source_error', 'observed_at'} <= resource_columns)
+    invalid_devices = 'alias' not in {row[1] for row in db.execute('PRAGMA table_info(space_devices)')}
+    if retired_vps or invalid_resource or invalid_devices or not vps_marker or vps_marker[0] != VPS_SCHEMA_VERSION:
         raise RuntimeError('VPS_CUTOFF_REQUIRED: old VPS data is not supported. Stop the Hub, resolve old remote processes, '
                            'then run python -m hub.vps_cutoff --data-dir <HUB_DATA_DIR> to preview the VPS-only reset. '
                            'No existing data was changed. Project files and unrelated workspace data are preserved.')
@@ -50,6 +51,13 @@ def initialize(db):
             raise RuntimeError('WORKSPACE_DATABASE_REQUIRED: this build requires a new workspace database. '
                                'The existing database was not migrated or deleted. Back it up with its key '
                                'and configure a separate empty HUB_DATA_DIR; project files are not affected.')
+        # Validate unrelated model boundaries before any destructive/shape cutoff.
+        if tables & RETIRED_TABLES or any(
+                table in tables and retired & {r[1] for r in db.execute(f'PRAGMA table_info({table})')}
+                for table, retired in RETIRED_COLUMNS.items()):
+            raise RuntimeError('WORKSPACE_DATABASE_REQUIRED: incompatible workspace model; database not changed')
+        from hub.vps_model_upgrade import upgrade
+        upgrade(db)
         require_current_model(db, tables)
         return
     statement = ''

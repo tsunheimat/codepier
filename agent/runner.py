@@ -236,7 +236,9 @@ class Agent:
         if not isinstance(challenge, dict) or challenge.get("type") != "challenge":
             raise ValueError("面板握手无效")
         channel = SecureChannel(config["secret"], challenge["challenge"], config["device_id"], "agent")
-        await socket.send(channel.pack({"type": "hello", "name": config.get("name", platform.node()),
+        from agent.ssh_discovery import discover
+        ssh_inventory = await asyncio.to_thread(discover, config)
+        await socket.send(channel.pack({"type": "hello", "ssh_inventory": ssh_inventory, "name": config.get("name", platform.node()),
                       "version": VERSION, "build": self.build.describe(), "platform": platform.system(), "hostname": platform.node(),
                       "python": platform.python_version(), "roots": config["allowed_roots"], "capabilities": list(TOOLS),
                       "shell_enabled": bool(config.get("shell", {}).get("enabled")), "workspace_protocol": 1,

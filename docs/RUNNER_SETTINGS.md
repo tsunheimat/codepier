@@ -97,7 +97,10 @@ The SSH section manages `enabled`, optional absolute `config_files` used for
 inventory, named `targets`, and `max_timeout_seconds`. A target explicitly
 approves one literal `host_alias`, its optional `config_file` (`ssh -F`), shell,
 host-key policy, connect timeout and keepalive settings. Adding an alias in the
-form generates the internal target key; VPS resource forms do not expose it.
+form generates its internal target key. After saving and Runner reload/reconnect,
+Hub automatically creates the corresponding VPS resource, named after the alias.
+No second Resource registration is necessary. Later inventory observations preserve
+custom names and disabled state; Space aliases are presentation only.
 
 Discovery reads the default user/system configuration and bounded static
 `Include` files, plus configured custom files. A custom `-F` inventory excludes
@@ -120,3 +123,12 @@ host-key bypass. That operation does execute the local OpenSSH connection rules;
 the owner must trust those rules. Only bounded parsed system/architecture
 metadata and a result classification are returned, never raw SSH diagnostics.
 Provider/region are not guessed. Readiness and test time remain visible separately.
+
+## Parent inventory and automatic resources
+
+Current Runners send a bounded, authenticated SSH inventory when they connect or
+reload configuration. Approved aliases materialize as VPS resources; merely
+discovered private hosts do not. Revocations and invalid configurations appear as
+upstream status and are inherited by Resources and Spaces. Only this Device page
+scans or explicitly tests SSH. Lower-layer lists, renames and Space selections
+reuse the persisted abstraction without a discovery-expiry gate. See [VPS](VPS.md).

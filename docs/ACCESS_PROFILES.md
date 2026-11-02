@@ -1,39 +1,58 @@
 # Workspace Profiles and Connection identities
 
-Profiles belong to one workspace and hold paired resource/action rules.
-A Connection requires that workspace and an enabled same-workspace Profile.
-Creating two Connections with the same Profile creates two distinct identities.
-Token renewal preserves the original Connection ID, not a new grant or shared
-Profile identity. `get_profile` returns the Connection ID.
+Profiles belong to one workspace. A Connection binds that workspace and an enabled
+same-workspace Profile immutably. Two Connections using the same Profile retain
+distinct identities and private receipts. Token renewal preserves the Connection
+ID. OAuth requires workspace selection, Profile selection and current-policy
+confirmation; changing workspace invalidates the previous selection.
 
-OAuth is workspace selection → Profile selection → current-policy confirmation.
-Changing the workspace invalidates the old selection. A create-Profile detour
-returns to pending authorization and never automatically grants consent.
-Fixed connections cannot expand beyond their original consent; live connections
-follow Profile changes only after explicit consent, within current member rights.
-No Role grants, account fallback or Profile-less credentials exist.
+Member policy is always an upper bound. A Profile cannot select resources outside
+its Space, grant local Runner capabilities or acquire administrative rights. No
+Role grants, account fallback or Profile-less credentials exist.
 
-See [Workspace setup and contracts](WORKSPACES.md) for the complete development model.
+## Projects: paired resource/action permissions
 
-## Visual policy editor
+In **Space → Profiles**, each Project has read/write/execute controls and a
+**read + write + execute** shortcut. The listed-Project shortcut affects only the
+currently listed Projects. Neither shortcut selects Computer Use or changes VPS
+permissions. Existing explicit Computer selections are retained.
 
-In Workspace → Profiles, create or edit a Profile without writing JSON for ordinary
-Project rules. Each Project has a **read + write + execute** shortcut; the separate
-listed-project shortcut applies those three actions only to the Projects currently
-shown. Neither shortcut selects `computer`, changes VPS permissions or grants
-workspace administration. Existing deliberate `computer` selections are retained.
+Workspace administrators may select **全部当前及未来 Projects（仅此工作空间）** and
+optional exclusions. The stored `all_projects` selector is not a display-list
+snapshot. Future Projects are usable only when the member permits them and the
+Connection explicitly consents to live Profile policy. Fixed Project consent
+still remains bounded to its original resources and target/mapping identities.
 
-Workspace administrators can select **全部当前及未来 Projects（仅此工作空间）**, choose
-its actions and optionally exclude individual Projects. This saves the real
-`all_projects` selector, not a snapshot of the visible Project IDs. An empty action
-selection is not an allow-all rule. Member permissions, source mappings and Runner
-restrictions remain enforced. Future Projects are available only where the member
-policy also allows them and the Connection explicitly consented to **live** policy;
-existing **fixed** Connections never silently expand.
+## VPS: selected means Shell
 
-Simple all-Project rules and exclusions reopen in the visual editor. Mixed rules,
-all-VPS selectors and references not represented in the current list remain in
-explicit JSON mode, preserving the original policy rather than flattening it into
-a broader grant. Switching modes retains the draft; unrelated source, Device,
-connector and plugin rules are preserved. This is not an unrestricted
-"inherit every member permission" mode.
+VPS rules have **no read/execute classification**. Select individual workspace VPS
+or **全部当前及未来 VPS（仅此工作空间）**. A selected VPS authorizes its SSH Shell,
+subject to enabled state, Runner-local approval and all other current policy
+ceilings. Empty selection grants none. Profiles never select global VPS inventory
+directly; the VPS must first be assigned to their Space.
+
+The explicit all/future VPS selector is preserved through policy intersection
+only when every applicable ceiling also permits all VPS. It also remains part of
+fixed Connection consent; it is not expanded into today's IDs. This deliberately
+fixes Connections failing to see newly assigned VPS despite an all-VPS Profile.
+Finite fixed selections remain finite and keep their original target fingerprints.
+A later Profile edit from finite to all does not broaden an existing fixed
+Connection without new consent. This VPS exception does not change fixed Project,
+connector or plugin rules.
+
+Only workspace administrators may author future-resource selectors. Delegated
+Profile managers cannot use the visual editor or raw JSON to exceed their own
+member policy. Revocation and suspended/expired membership still apply immediately.
+
+Simple all-Project and all-VPS selections reopen in the visual editor. Mixed
+Project rules or references not represented in the current list stay in explicit
+JSON mode rather than being flattened into broader rights. Unrelated Device,
+source, connector and plugin rules are preserved when editing either section.
+
+## Cutoff
+
+2.1 rejects old VPS `actions` inputs. Known stored policies are converted
+transactionally at Hub startup: execute-capable VPS rules become selections,
+read-only VPS rules are dropped rather than elevated. Unchanged all-VPS Profile
+consent is repaired only with an eligible current member ceiling. See
+[VPS data cutoff and resource model](VPS.md) for scope and restart behavior.

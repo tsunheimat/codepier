@@ -129,7 +129,7 @@ def cutoff(directory, *, apply=False, confirmed_stopped=False, _hub_lock_held=Fa
                 filtered = remove_vps_policy(value)
                 if filtered != value:
                     db.execute('UPDATE workspace_requests SET receipt=? WHERE rowid=?', (json.dumps(filtered), row['rowid']))
-            for table, column in [('memberships', 'policy'), ('access_profiles', 'policy'), ('grants', 'resource_policy')]:
+            for table, column in [('memberships', 'policy'), ('access_profiles', 'policy'), ('grants', 'resource_policy'), ('space_invites', 'policy'), ('group_mappings', 'policy')]:
                 for row in db.execute(f'SELECT rowid,{column} FROM {table}').fetchall():
                     value = object_value(row[column])
                     filtered = remove_vps_policy(value)
@@ -139,12 +139,15 @@ def cutoff(directory, *, apply=False, confirmed_stopped=False, _hub_lock_held=Fa
             for row in db.execute('SELECT id,target_snapshots FROM grants').fetchall():
                 value = object_value(row['target_snapshots'])
                 value['vps'] = {}
+                value['vps_all'] = False
                 db.execute('UPDATE grants SET target_snapshots=? WHERE id=?', (json.dumps(value), row['id']))
             for table in ('vps_projects', 'space_vps', 'vps_connections'):
                 db.execute('DROP TABLE ' + table)
             for statement in statements():
                 if statement.lstrip().startswith(('CREATE TABLE vps_connections (', 'CREATE TABLE space_vps (', 'CREATE TABLE vps_projects (')):
                     db.execute(statement)
+            if 'alias' not in {r[1] for r in db.execute('PRAGMA table_info(space_devices)')}:
+                db.execute("ALTER TABLE space_devices ADD COLUMN alias TEXT NOT NULL DEFAULT ''")
             db.execute("INSERT INTO meta(key,value) VALUES('vps_schema',?)", (VPS_SCHEMA_VERSION,))
             if db.execute('PRAGMA foreign_key_check').fetchall():
                 raise RuntimeError('VPS cutoff would break foreign-key relationships')

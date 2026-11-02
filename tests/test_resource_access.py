@@ -16,15 +16,13 @@ from tests.test_mcp_gateway import (gw, connector, account, publish, authorize,
 
 
 def resource(app, browser, name, *, device='device-team', alias=None):
-    alias = alias or name.lower().replace(' ', '-')
-    runtime = app.state.runtime
-    seed_discovery(runtime, device, (alias,))
-    previous = runtime.online
-    # Resource registration consumes an owner-approved observation. This unit
-    # fixture has no live socket and leaves execution queued, as before.
-    with patch.object(runtime, 'online', lambda identifier: identifier == device or previous(identifier)):
-        return must(browser.post('/api/vps', json={'name':name, 'runner_device_id':device,
-            'host_alias':alias, 'idempotency_key':uuid.uuid4().hex}))
+    alias=alias or name.lower().replace(' ','-')
+    runtime=app.state.runtime
+    aliases={r['host_alias'] for r in runtime.store.all('SELECT host_alias FROM vps_connections WHERE runner_device_id=?',(device,))}
+    seed_discovery(runtime,device,tuple(sorted(aliases | {alias})))
+    row=next(r for r in must(browser.get('/api/vps'))['vps'] if r['runner_device_id']==device and r['host_alias']==alias)
+    return must(browser.put('/api/vps/'+row['id'],json={'name':name,'expected_version':row['version'],
+                'idempotency_key':uuid.uuid4().hex}))
 
 
 def inventory(app, browser, *, space='team', device='device-team'):
@@ -67,9 +65,7 @@ def execute(browser, token, vps, *, project=None, key=None):
 def test_worker_action_pairs_authorize_testing_not_production_or_other_project(team, live):
     app,b=team;testing,production=inventory(app,b['owner']);another_project(app)
     policy={'project_rules':[{'actions':['read','write','execute'],'projects':['project-team']},
-        {'actions':['read'],'projects':['future']}],
-        'vps_rules':[{'actions':['read','execute'],'vps':[testing['id']]},
-                     {'actions':['read'],'vps':[production['id']]}]}
+        {'actions':['read'],'projects':['future']}], 'vps_rules':[{'vps':[testing['id']]}]}
     profile,created=access(b,policy,live=live)
     p=principal(app,created['token'])
     assert project_scopes(app.state.store,p,'future')=={'read'}
@@ -80,28 +76,26 @@ def test_worker_action_pairs_authorize_testing_not_production_or_other_project(t
     records=must(b['alice'].get('/api/spaces/team/connections'))['connections']
     record=next(row for row in records if row['id']==created['connection_id'])
     assert record['profile']['id']==profile['id']
-    assert {(tuple(row['vps']),tuple(sorted(row['actions'])))
-        for row in record['permissions']['vps_rules']}=={
-            ((testing['id'],),('execute','read')),((production['id'],),('read',))}
+    assert [r['vps'] for r in record['permissions']['vps_rules']]==[[testing['id']]]
+    assert all('actions' not in r for r in record['permissions']['vps_rules'])
     assert '"password"' not in json.dumps(record) and '"private_key"' not in json.dumps(record)
     operation=app.state.store.one('SELECT * FROM operations WHERE id=?',(receipt['operation_id'],))
     assert operation['project_id'] is None
     assert app.state.runtime.permission_error(operation) is None
-    update_profile(b['owner'],profile,{**policy,'vps_rules':[{'actions':['read'],'vps':[testing['id'],production['id']]}]})
+    update_profile(b['owner'],profile,{**policy,'vps_rules':[]})
     assert app.state.runtime.permission_error(operation)
     result_error(execute(b['alice'],created['token'],testing),'VPS_NOT_FOUND')
     assert b['owner'].get('/api/operations/'+receipt['operation_id']).status_code==403
 
-
 @pytest.mark.parametrize('live',[False,True])
 def test_fixed_snapshot_and_explicit_live_profile_future_consent(team, live):
     app,b=team;testing,production=inventory(app,b['owner'])
-    policy={**project_policy('read'),'vps_rules':[{'actions':['read'],'vps':[testing['id']]}]}
+    policy={**project_policy('read'),'vps_rules':[{'vps':[testing['id']]}]}
     profile,created=access(b,policy,live=live)
     before=app.state.store.one('SELECT * FROM grants WHERE id=?',(created['connection_id'],))
     another_project(app)
     expanded={'project_rules':[{'actions':['read','write','execute'],'all_projects':True}],
-        'vps_rules':[{'actions':['read','execute'],'vps':[testing['id'],production['id']]}]}
+        'vps_rules':[{'vps':[testing['id'],production['id']]}]}
     set_member(b['owner'],'alice',expanded)
     profile=update_profile(b['owner'],profile,expanded)
     context=data(call(b['alice'],created['token']))
@@ -150,7 +144,7 @@ def test_vps_transport_is_explicit_without_a_project_execution_route(team):
         'name':'No legacy transport','execution_project_id':'project-team',
         'display_mode':'top_level','idempotency_key':uuid.uuid4().hex})
     assert invalid.status_code==422
-    _,created=access(b,{'vps_rules':[{'vps':[testing['id']],'actions':['read','execute']}]})
+    _,created=access(b,{'vps_rules':[{'vps':[testing['id']]}]})
     receipt=data(execute(b['alice'],created['token'],testing))
     assert app.state.store.one('SELECT project_id FROM operations WHERE id=?',(receipt['operation_id'],))['project_id'] is None
     result_error(execute(b['alice'],created['token'],{'id':saved['id']}),'VPS_NOT_FOUND')
@@ -159,7 +153,7 @@ def test_vps_transport_is_explicit_without_a_project_execution_route(team):
 def test_resource_use_never_grants_inventory_or_authorization_administration(team):
     app,b=team;_,created=access(b,project_policy('read','write','execute'))
     owned=resource(app,b['owner'],'Owner inventory')
-    denied=b['alice'].put('/api/vps/'+owned['id'],json={'name':'Not Alice owned','runner_device_id':'device-team','host_alias':owned['host_alias'],
+    denied=b['alice'].put('/api/vps/'+owned['id'],json={'name':'Not Alice owned',
         'expected_version':owned['version'],'idempotency_key':uuid.uuid4().hex})
     assert denied.status_code==404 and denied.json()['error']['code']=='INVENTORY_RESOURCE_NOT_FOUND'
     app.state.store.execute('INSERT INTO devices(id,name,secret,owner_user_id,info,created) VALUES(?,?,?,?,?,?)',

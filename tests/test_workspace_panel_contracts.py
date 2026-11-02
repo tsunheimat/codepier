@@ -25,12 +25,13 @@ const context={console,URLSearchParams,encodeURIComponent,Promise,Map,Set,JSON,D
  esc:(x)=>String(x??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
  heading:(a,b,c='',d='')=>'<h1>'+a+'</h1><p>'+b+'</p><p>'+c+'</p>'+d,
  notice:(s)=>'<aside>'+s+'</aside>',empty:(s)=>'<p>'+s+'</p>',icon:()=>'',timeText:String,shortTime:String,onlineBadge:(online)=>online?'在线':'离线',
+ uid:()=> 'fixture-unique-key',
  CodePierIdentity:{admin:()=>true},CodePierAgentInstall:{},uiHelp:(title,body)=>body,
  $:()=>null,$$:()=>[],
  api:async(path)=>{if(!(path in payload.responses))throw Error('Unmatched explicit endpoint: '+path);return payload.responses[path];}
 };context.window=context;
 vm.createContext(context);
-for(const file of ['web/mcp-gateway.js','web/external-plugins.js','web/spaces.js'])
+for(const file of ['web/mcp-gateway.js','web/external-plugins.js','web/workspace-selections.js','web/spaces.js'])
  vm.runInContext(fs.readFileSync(file,'utf8'),context,{filename:file});
 (async()=>{
  const html=payload.route.startsWith('resources/')?
@@ -49,7 +50,7 @@ def test_workspace_templates_use_real_explicit_http_projection(web, route):
     client,_=web
     endpoints=['/api/settings','/api/spaces','/api/spaces/alice','/api/iam/me','/api/projects','/api/devices','/api/folders','/api/vps','/api/storage-pools',
         '/api/spaces/alice/mcp-gateway','/api/spaces/alice/external-integrations','/api/external-plugins']
-    endpoints += ['/api/spaces/alice/'+tab for tab in ['projects','sources','devices','vps','profiles','connections','members','invites']]
+    endpoints += ['/api/spaces/alice/'+tab for tab in ['projects','sources','devices','vps','profiles','connections','members','invites','vps-selection','device-selection']]
     responses={}
     for url in endpoints:
         response=client.get(url)
@@ -62,7 +63,10 @@ def test_workspace_templates_use_real_explicit_http_projection(web, route):
     result=subprocess.run([node,'-e',NODE_RENDER],input=json.dumps(payload),text=True,capture_output=True,cwd=ROOT,timeout=20)
     assert result.returncode==0,result.stderr
     assert '当前空间' not in result.stdout
-    assert 'data-ws-action' in result.stdout or 'Storage Pool' in result.stdout or 'MCP Gateway' in result.stdout
+    if route=='resources/vps':
+        assert '在 Devices 授权 SSH Alias' in result.stdout and 'data-vps-refresh-hosts' not in result.stdout
+        return
+    assert 'data-workspace-selection' in result.stdout or 'data-ws-action' in result.stdout or 'Storage Pool' in result.stdout or 'MCP Gateway' in result.stdout
 
 
 def test_panel_has_no_ambient_workspace_or_retired_access_scripts():

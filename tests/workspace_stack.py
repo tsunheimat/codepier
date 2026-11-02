@@ -51,8 +51,9 @@ class WorkspaceStack:
                     'fixture', target['target_fingerprint'], 'alice', time.time(), time.time()))
             seed.store.db.execute("""INSERT INTO space_vps(id,space_id,resource_id,name,name_key,display_mode)
                 VALUES(?,?,?,?,?,'top_level')""", ('a'*32, 'alice', 'server', 'Test server', 'test server'))
+        seed.store.execute("UPDATE vps_connections SET source_status='configured',observed_at=?", (time.time(),))
         self.profile_policy = {'project_rules': [{'projects': ['project'], 'actions': ['read','write','execute']}],
-                               'vps_rules': [{'vps': ['a'*32], 'actions': ['read','execute']}]}
+                               'vps_rules': [{'vps': ['a'*32]}]}
         connection, _ = seed.connect(self.profile_policy)
         self.pat = connection['token']
         self.grant_id = connection['grant_id']

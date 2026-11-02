@@ -181,7 +181,7 @@ def vps_fingerprint(row):
 
 
 def consent_targets(store, space_id, policy):
-    result={'projects':{},'vps':{}}
+    result={'projects':{},'vps':{},'vps_all':any(rule.all_vps for rule in policy.vps_rules)}
     for identifier in {i for rule in policy.project_rules for i in rule.projects}:
         project=store.one('SELECT * FROM projects WHERE id=? AND space_id=?',(identifier,space_id))
         if not project:
@@ -216,7 +216,8 @@ def require_vps_consent(store, principal, row):
         return
     from hub.permissions import principal_grant
     grant=principal_grant(store,principal)
-    if grant['consent_mode']=='fixed' and _json(grant['target_snapshots'],dict).get('vps',{}).get(row['id'])!=vps_fingerprint(row):
+    snapshot=_json(grant['target_snapshots'],dict)
+    if grant['consent_mode']=='fixed' and not snapshot.get('vps_all',False) and snapshot.get('vps',{}).get(row['id'])!=vps_fingerprint(row):
         raise DevError('CONNECTION_TARGET_CHANGED','The VPS connection is outside the fixed connection consent',403)
 
 

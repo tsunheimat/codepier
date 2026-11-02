@@ -13,7 +13,8 @@
   },
   "overrides": {
     "@modelcontextprotocol/client": "2.3.0",
-    "@modelcontextprotocol/core": "2.3.0"
+    "@modelcontextprotocol/core": "2.3.0",
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
