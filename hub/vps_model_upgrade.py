@@ -58,23 +58,29 @@ def upgrade(db):
         if 'alias' not in {r[1] for r in db.execute('PRAGMA table_info(space_devices)')}:
             db.execute("ALTER TABLE space_devices ADD COLUMN alias TEXT NOT NULL DEFAULT ''")
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        read_only_grants = set()
         for table, column in [('memberships', 'policy'), ('access_profiles', 'policy'),
                               ('grants', 'resource_policy'), ('space_invites', 'policy'), ('group_mappings', 'policy')]:
             if table not in tables:
                 continue
             for rowid, raw in db.execute(f'SELECT rowid,{column} FROM {table}').fetchall():
                 policy = convert_policy(raw)
+                if table == 'grants' and any(rule.get('actions') == ['read'] for rule in json.loads(raw).get('vps_rules', [])):
+                    read_only_grants.add(rowid)
                 db.execute(f'UPDATE {table} SET {column}=? WHERE rowid=?', (json.dumps(policy), rowid))
         # If the exact consented Profile is unchanged, preserve its explicit
         # all-VPS selection instead of the old accidentally enumerated snapshot.
         # Changed profiles/finite selections never acquire a new wildcard here.
-        for gid, uid, sid, pid, version, raw, snapshots in db.execute(
-                'SELECT id,user_id,space_id,profile_id,profile_version,resource_policy,target_snapshots FROM grants').fetchall():
+        for grant_rowid, gid, uid, sid, pid, version, raw, snapshots in db.execute(
+                'SELECT rowid,id,user_id,space_id,profile_id,profile_version,resource_policy,target_snapshots FROM grants').fetchall():
             policy, target = json.loads(raw), json.loads(snapshots)
             profile = db.execute('SELECT policy,version FROM access_profiles WHERE id=? AND space_id=?', (pid, sid)).fetchone()
             members = db.execute('SELECT policy FROM memberships WHERE space_id=? AND user_id=? AND active=1 AND (expires IS NULL OR expires>?)', (sid, uid, time.time())).fetchall()
             blocked = db.execute('SELECT 1 FROM membership_blocks WHERE space_id=? AND user_id=? AND blocked=1', (sid, uid)).fetchone()
-            if (profile and members and not blocked and profile[1] == version
+            # The original fixed consent can be narrower than today's member
+            # rights. Never reconstruct an all-Shell selector when any saved
+            # VPS rule was read-only, even if the Profile version is unchanged.
+            if (grant_rowid not in read_only_grants and profile and members and not blocked and profile[1] == version
                     and any(r.get('all_vps') for r in json.loads(profile[0]).get('vps_rules', []))
                     and any(r.get('all_vps') for member in members for r in json.loads(member[0]).get('vps_rules', []))):
                 policy['vps_rules'] = [{'all_vps': True}]

@@ -116,7 +116,9 @@ and explicitly select those VPS again when Shell access is intended.
 For unchanged Profiles that explicitly selected all VPS and whose current active
 member policy also allows all VPS, the cutoff repairs the old accidentally
 expanded fixed snapshot into an all/future selector. A changed Profile, narrower
-member policy or explicitly finite selector does not acquire a wildcard. Original
+member policy or explicitly finite selector does not acquire a wildcard. A fixed
+Connection with any former read-only VPS consent never acquires Shell from
+later membership expansion during this conversion. Original
 Connection identity remains unchanged. The first identical current Runner report
 marks an existing resource configured without inventing a new target version.
 

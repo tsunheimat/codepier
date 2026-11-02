@@ -111,3 +111,25 @@ def test_policy_cutoff_drops_read_only_not_silently_elevate():
 def test_malformed_old_permission_cannot_be_legitimized_by_field_removal(actions):
     with pytest.raises(RuntimeError):
         convert_policy(json.dumps({'vps_rules':[{'vps':['server'],'actions':actions}]}))
+
+
+@pytest.mark.parametrize('mixed', [False, True])
+def test_old_read_only_connection_never_acquires_shell_from_current_profile(previous, mixed):
+    directory,gid,_,binding=previous
+    # A valid historical state: the Profile allowed Shell, but member rights
+    # at consent time limited this fixed Connection to read. Later member
+    # expansion does not authorize converting that saved read grant to Shell.
+    rules=[{'vps':[binding['id']],'actions':['read']}]
+    if mixed:
+        rules.append({'vps':['other-original-target'],'actions':['read','execute']})
+    with sqlite3.connect(directory/'hub.sqlite3') as db:
+        db.execute('UPDATE grants SET resource_policy=? WHERE id=?',
+                   (json.dumps({'vps_rules':rules}),gid))
+    store=Store(directory)
+    try:
+        grant=store.one('SELECT resource_policy,target_snapshots FROM grants WHERE id=?',(gid,))
+        expected=[{'vps':['other-original-target']}] if mixed else []
+        assert json.loads(grant['resource_policy'])['vps_rules']==expected
+        assert not json.loads(grant['target_snapshots'])['vps_all']
+    finally:
+        store.close()
