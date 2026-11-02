@@ -1683,7 +1683,7 @@ window.CodePierSpaces = (() => {
     if (!old) throw new Error('请在 Devices → Runner 设置授权 SSH Alias；VPS 资源会自动建立。');
     return form(
       '编辑 VPS 资源名称 · ' + old.name,
-      notice('来源：' + old.runner_name + ' / ' + old.host_alias + ' · ' + old.status) +
+      notice(esc('来源：' + old.runner_name + ' / ' + old.host_alias + ' · ' + old.status)) +
         field('name', '名称', old.name, 'required maxlength="253"') +
         textArea('description', '说明（可选）', old.description || '', 'maxlength="2000"') +
         '<p class="form-note">此处只管理资源名称与说明。SSH Alias、连接配置和测试由 Devices 管理，不重新扫描。</p>',

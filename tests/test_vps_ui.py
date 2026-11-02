@@ -159,3 +159,17 @@ def test_explicit_workspace_navigation_does_not_reopen_an_inventory_draft(worksp
     expect(page.locator('#workspace-page h2')).to_have_text('VPS')
     assert all(v['description'] != 'In-memory unsaved draft' for v in server.must(server.client.get('/api/vps'))['vps'])
     assert errors == []
+
+
+def test_inventory_source_label_renders_runner_name_as_text(workspace_server, workspace_browser):
+    server,(context,errors)=workspace_server,workspace_browser
+    name='<span data-runner-markup>Runner label</span>'
+    server.must(server.client.patch('/api/devices/a',json={'name':name,'enabled':True}))
+    page=open_inventory(context,server)
+    resource=next(v for v in server.must(server.client.get('/api/vps'))['vps'] if v['host_alias']=='fixture-extra')
+    page.locator('[data-ws-action="inventory-edit"][data-id="'+resource['id']+'"]').click()
+    form=page.locator('#workspace-form')
+    expect(form).to_be_visible()
+    expect(form.locator('[data-runner-markup]')).to_have_count(0)
+    expect(form).to_contain_text(name)
+    assert errors==[]
